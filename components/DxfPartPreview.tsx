@@ -168,13 +168,14 @@ export default function DxfPartPreview({
   if (isTube && tubeFallback) {
     const isSquare = tubeShape === 'square'
     const isFillOrLarge = size === 'fill' || size === 'large'
+    const svgSize = isFillOrLarge ? 48 : size === 'small' ? 36 : 26
 
     return (
-      <div style={{ ...baseBox, flexDirection: 'column', gap: 6, padding: 10 }}>
+      <div style={{ ...baseBox, flexDirection: 'row', gap: 10, padding: isFillOrLarge ? 12 : 8, alignItems: 'center', justifyContent: 'center' }}>
         {/* Cross-section SVG */}
         <svg
-          width={isFillOrLarge ? 52 : size === 'small' ? 38 : 28}
-          height={isFillOrLarge ? 52 : size === 'small' ? 38 : 28}
+          width={svgSize}
+          height={svgSize}
           viewBox="0 0 52 52"
           style={{ flexShrink: 0 }}
         >
@@ -191,16 +192,17 @@ export default function DxfPartPreview({
           )}
         </svg>
 
-        {isFillOrLarge && (
-          <div style={{ textAlign: 'center', lineHeight: 1.4 }}>
+        {/* Dims / cut length */}
+        {isFillOrLarge && (tubeOd || tubeWall || (cutLength != null && cutLength > 0)) && (
+          <div style={{ lineHeight: 1.4, minWidth: 0 }}>
             {(tubeOd || tubeWall) && (
-              <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#e0a050' }}>
+              <div style={{ fontSize: '0.8rem', fontWeight: 700, color: '#e0a050', whiteSpace: 'nowrap' }}>
                 {[tubeOd, tubeWall].filter(Boolean).join(' × ')}
               </div>
             )}
             {cutLength != null && cutLength > 0 && (
-              <div style={{ fontSize: '0.76rem', color: '#94a3b8', marginTop: 2 }}>
-                {cutLength}&Prime; ({(cutLength / 12).toFixed(2)} ft)
+              <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: 1, whiteSpace: 'nowrap' }}>
+                {cutLength}&Prime; · {(cutLength / 12).toFixed(2)} ft
               </div>
             )}
           </div>

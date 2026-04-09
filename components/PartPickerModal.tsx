@@ -22,7 +22,7 @@ type Props = {
   onClose: () => void
 }
 
-const PREVIEW_HEIGHT = 140 // px — every card has this exact preview area height
+const PREVIEW_HEIGHT = 120 // px — fixed preview area height
 
 export default function PartPickerModal({ parts, onSelect, onClose }: Props) {
   const [search, setSearch] = useState('')
@@ -77,7 +77,7 @@ export default function PartPickerModal({ parts, onSelect, onClose }: Props) {
           border: '1px solid var(--border)',
           borderRadius: 10,
           width: '100%',
-          maxWidth: 900,
+          maxWidth: 980,
           maxHeight: 'calc(100vh - 96px)',
           display: 'flex',
           flexDirection: 'column',
@@ -125,7 +125,7 @@ export default function PartPickerModal({ parts, onSelect, onClose }: Props) {
                 key={t}
                 type="button"
                 className={`btn ${typeFilter === t ? 'btn-primary' : 'btn-secondary'}`}
-                style={{ padding: '6px 12px', fontSize: '0.8rem' }}
+                style={{ padding: '6px 14px', fontSize: '0.8rem' }}
                 onClick={() => setTypeFilter(t)}
               >
                 {t === 'all' ? 'All' : t === 'sheet' ? 'Sheet' : 'Tube'}
@@ -164,9 +164,10 @@ export default function PartPickerModal({ parts, onSelect, onClose }: Props) {
             overflowY: 'auto',
             padding: 14,
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(175px, 1fr))',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))',
             gap: 10,
             alignContent: 'start',
+            alignItems: 'start',   // cards are natural height — no row-stretching
           }}
         >
           {filtered.length === 0 ? (
@@ -202,6 +203,10 @@ function PartCard({
     ? { bg: 'rgba(100,160,220,0.15)', text: '#7ab4e8', border: 'rgba(100,160,220,0.25)' }
     : { bg: 'rgba(220,150,80,0.15)', text: '#e0a050', border: 'rgba(220,150,80,0.25)' }
 
+  const dims = isSheet
+    ? [part.thickness, part.material].filter(Boolean).join(' · ')
+    : [part.tube_od, part.tube_wall, part.material].filter(Boolean).join(' · ')
+
   return (
     <button
       type="button"
@@ -214,9 +219,9 @@ function PartCard({
         cursor: 'pointer',
         display: 'flex',
         flexDirection: 'column',
-        overflow: 'hidden',
         textAlign: 'left',
         transition: 'border-color 0.13s, background 0.13s',
+        width: '100%',
       }}
       onMouseEnter={(e) => {
         e.currentTarget.style.borderColor = 'var(--accent)'
@@ -227,7 +232,7 @@ function PartCard({
         e.currentTarget.style.background = 'var(--panel-2)'
       }}
     >
-      {/* ── Preview area: always exactly previewHeight px ── */}
+      {/* ── Preview area: fixed height ── */}
       <div
         style={{
           width: '100%',
@@ -236,7 +241,7 @@ function PartCard({
           background: 'var(--panel)',
           borderBottom: '1px solid var(--border)',
           overflow: 'hidden',
-          position: 'relative',
+          borderRadius: '8px 8px 0 0',
         }}
       >
         <DxfPartPreview
@@ -253,42 +258,78 @@ function PartCard({
       </div>
 
       {/* ── Info area ── */}
-      <div style={{ padding: '9px 11px', flex: 1 }}>
-        {/* Type badge */}
-        <span
-          style={{
-            display: 'inline-block',
-            fontSize: '0.63rem',
-            fontWeight: 700,
-            textTransform: 'uppercase',
-            letterSpacing: '0.07em',
-            background: typeColor.bg,
-            color: typeColor.text,
-            border: `1px solid ${typeColor.border}`,
-            borderRadius: 4,
-            padding: '1px 5px',
-            marginBottom: 5,
-          }}
-        >
-          {part.part_type}
-        </span>
+      <div style={{ padding: '10px 11px 11px', display: 'flex', flexDirection: 'column', gap: 4 }}>
 
-        {/* Part number */}
-        <div style={{ fontWeight: 700, fontSize: '0.84rem', color: 'var(--text)', marginBottom: 2, wordBreak: 'break-word' }}>
-          {part.part_number}
+        {/* Row 1: badge + part number side by side */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          <span
+            style={{
+              fontSize: '0.6rem',
+              fontWeight: 700,
+              textTransform: 'uppercase',
+              letterSpacing: '0.07em',
+              background: typeColor.bg,
+              color: typeColor.text,
+              border: `1px solid ${typeColor.border}`,
+              borderRadius: 4,
+              padding: '2px 5px',
+              flexShrink: 0,
+              lineHeight: 1.4,
+            }}
+          >
+            {part.part_type}
+          </span>
+          <span
+            style={{
+              fontWeight: 700,
+              fontSize: '0.82rem',
+              color: 'var(--text)',
+              wordBreak: 'break-word',
+              lineHeight: 1.2,
+            }}
+          >
+            {part.part_number}
+          </span>
         </div>
 
-        {/* Description */}
-        <div style={{ fontSize: '0.76rem', color: 'var(--muted)', lineHeight: 1.35, marginBottom: 4 }}>
-          {part.description}
-        </div>
+        {/* Row 2: description — max 2 lines */}
+        {part.description && (
+          <div
+            style={{
+              fontSize: '0.75rem',
+              color: 'var(--muted)',
+              lineHeight: 1.4,
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+            }}
+          >
+            {part.description}
+          </div>
+        )}
 
-        {/* Material / dims */}
-        <div style={{ fontSize: '0.71rem', color: 'var(--muted)', opacity: 0.8 }}>
-          {isSheet
-            ? [part.thickness, part.material].filter(Boolean).join(' · ')
-            : [part.tube_od, part.tube_wall, part.material].filter(Boolean).join(' · ')}
-        </div>
+        {/* Row 3: dims */}
+        {dims && (
+          <div
+            style={{
+              fontSize: '0.7rem',
+              color: typeColor.text,
+              fontWeight: 600,
+              marginTop: 1,
+              wordBreak: 'break-word',
+            }}
+          >
+            {dims}
+          </div>
+        )}
+
+        {/* Row 4: cut length for tubes */}
+        {!isSheet && part.cut_length != null && part.cut_length > 0 && (
+          <div style={{ fontSize: '0.68rem', color: 'var(--muted)' }}>
+            Cut: {part.cut_length}&Prime; &nbsp;({(part.cut_length / 12).toFixed(2)} ft)
+          </div>
+        )}
       </div>
     </button>
   )
