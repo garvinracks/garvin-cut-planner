@@ -5,10 +5,13 @@ import { createBrowserClient } from '@/lib/supabase'
 import { buildCutLists, type SheetResultRow, type TubeResultRow } from '@/lib/planner'
 import { downloadXlsx } from '@/lib/xlsx'
 import DxfPartPreview from '@/components/DxfPartPreview'
+import SkuPickerModal, { type PickableSKU } from '@/components/SkuPickerModal'
 
 type SKU = {
   id: string
   description: string
+  category: string | null
+  active: boolean
 }
 
 type PlannerRow = {
@@ -202,6 +205,7 @@ export default function PlannerPage() {
   const [materials, setMaterials] = useState<MaterialRecord[]>([])
   const [priceLogs, setPriceLogs] = useState<PriceLogRecord[]>([])
   const [orderSheetOpen, setOrderSheetOpen] = useState(true)
+  const [skuPickerOpen, setSkuPickerOpen]   = useState(false)
 
   // Save-job form
   const [jobName, setJobName] = useState('')
@@ -248,7 +252,7 @@ export default function PlannerPage() {
       { data: materialData },
       { data: priceLogData },
     ] = await Promise.all([
-      supabase.from('skus').select('id, description').order('id', { ascending: true }),
+      supabase.from('skus').select('id, description, category, active').order('id', { ascending: true }),
       supabase
         .from('parts')
         .select('id, part_number, description, part_type, material, thickness, tube_od, tube_wall, cut_length, dxf_file'),
@@ -324,6 +328,27 @@ export default function PlannerPage() {
 
   function addRow() {
     setRows((prev) => [...prev, { skuId: '', qty: '', skuLookup: '' }])
+  }
+
+  function handleSkuPickerSelect(picked: PickableSKU[]) {
+    setRows((prev) => {
+      let result = [...prev]
+      for (const sku of picked) {
+        // Try to fill the first empty row
+        const emptyIdx = result.findIndex((r) => r.skuId === '' && r.skuLookup === '')
+        if (emptyIdx !== -1) {
+          result[emptyIdx] = {
+            skuId: sku.id,
+            qty: '1',
+            skuLookup: sku.id,
+          }
+        } else {
+          // No empty row — append a new one
+          result = [...result, { skuId: sku.id, qty: '1', skuLookup: sku.id }]
+        }
+      }
+      return result
+    })
   }
 
   function removeRow(index: number) {
@@ -735,6 +760,13 @@ export default function PlannerPage() {
                 <div className="btn-row" style={{ marginTop: 14 }}>
                   <button type="button" onClick={addRow} className="btn btn-secondary">
                     Add Row
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSkuPickerOpen(true)}
+                    className="btn btn-secondary"
+                  >
+                    Browse SKUs
                   </button>
                   <button type="button" onClick={handleGenerate} className="btn btn-primary">
                     Generate Cut Lists
@@ -1403,6 +1435,15 @@ export default function PlannerPage() {
             )}
           </div>
         </section>
+      )}
+
+      {/* ── SKU Picker Modal ── */}
+      {skuPickerOpen && (
+        <SkuPickerModal
+          skus={skus}
+          onSelect={handleSkuPickerSelect}
+          onClose={() => setSkuPickerOpen(false)}
+        />
       )}
     </div>
   )
