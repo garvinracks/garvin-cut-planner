@@ -78,16 +78,38 @@ function IconDxf() {
   )
 }
 
+function IconOrders() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="2" width="12" height="12" rx="2" />
+      <path d="M5 6h6M5 9h4" />
+    </svg>
+  )
+}
+
+function IconInventory() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M8 1L2 4.5v7L8 15l6-3.5v-7L8 1z" />
+      <path d="M2 4.5l6 3.5 6-3.5" />
+      <path d="M8 8v7" />
+      <path d="M5 3l6 3.5" />
+    </svg>
+  )
+}
+
 // ── Nav config ────────────────────────────────────────────────────────────────
 
 const LINKS = [
-  { href: '/planner',       label: 'Build Planner',  Icon: IconPlanner       },
-  { href: '/jobs',          label: 'Saved Jobs',     Icon: IconJobs          },
-  { href: '/skus',          label: 'SKUs',           Icon: IconSKU           },
-  { href: '/subassemblies', label: 'Subassemblies',  Icon: IconSubassemblies },
-  { href: '/parts',         label: 'Parts',          Icon: IconParts         },
-  { href: '/materials',     label: 'Materials',      Icon: IconMaterials     },
-  { href: '/dxf-manager',   label: 'DXF Files',      Icon: IconDxf           },
+  { href: '/planner',       label: 'Build Planner',  Icon: IconPlanner,    group: 'Operations' },
+  { href: '/orders',        label: 'Orders',         Icon: IconOrders,     group: 'Operations' },
+  { href: '/inventory',     label: 'Inventory',      Icon: IconInventory,  group: 'Operations' },
+  { href: '/jobs',          label: 'Saved Jobs',     Icon: IconJobs,       group: 'Operations' },
+  { href: '/skus',          label: 'SKUs',           Icon: IconSKU,        group: 'Library'    },
+  { href: '/subassemblies', label: 'Subassemblies',  Icon: IconSubassemblies, group: 'Library' },
+  { href: '/parts',         label: 'Parts',          Icon: IconParts,      group: 'Library'    },
+  { href: '/materials',     label: 'Materials',      Icon: IconMaterials,  group: 'Library'    },
+  { href: '/dxf-manager',   label: 'DXF Files',      Icon: IconDxf,        group: 'Library'    },
 ]
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -108,21 +130,24 @@ export default function Sidebar() {
 
       {/* Nav */}
       <nav className="sidebar-nav">
-        <div className="sidebar-section-label">Navigation</div>
-
-        {LINKS.map(({ href, label, Icon }) => {
-          const active = pathname === href
-          return (
-            <Link
-              key={href}
-              href={href}
-              className={`sidebar-link ${active ? 'active' : ''}`}
-            >
-              <Icon />
-              {label}
-            </Link>
-          )
-        })}
+        {(['Operations', 'Library'] as const).map((group) => (
+          <div key={group}>
+            <div className="sidebar-section-label">{group}</div>
+            {LINKS.filter((l) => l.group === group).map(({ href, label, Icon }) => {
+              const active = pathname === href
+              return (
+                <Link
+                  key={href}
+                  href={href}
+                  className={`sidebar-link ${active ? 'active' : ''}`}
+                >
+                  <Icon />
+                  {label}
+                </Link>
+              )
+            })}
+          </div>
+        ))}
       </nav>
 
       {/* Theme toggle + Global search at bottom */}

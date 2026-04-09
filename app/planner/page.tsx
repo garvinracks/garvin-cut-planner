@@ -204,8 +204,9 @@ export default function PlannerPage() {
   const [kerfWidth, setKerfWidth] = useState('0.125')
   const [materials, setMaterials] = useState<MaterialRecord[]>([])
   const [priceLogs, setPriceLogs] = useState<PriceLogRecord[]>([])
-  const [orderSheetOpen, setOrderSheetOpen] = useState(true)
-  const [skuPickerOpen, setSkuPickerOpen]   = useState(false)
+  const [orderSheetOpen, setOrderSheetOpen]     = useState(true)
+  const [skuPickerOpen, setSkuPickerOpen]       = useState(false)
+  const [loadingOrderDemand, setLoadingOrderDemand] = useState(false)
   const [tubeCutOpen, setTubeCutOpen]       = useState(true)
   const [sheetCutOpen, setSheetCutOpen]     = useState(true)
   const [barCalcOpen, setBarCalcOpen]       = useState(true)
@@ -353,6 +354,49 @@ export default function PlannerPage() {
       }
       return result
     })
+  }
+
+  // Pull demand from open orders and populate the planner rows
+  async function loadFromOrders() {
+    setLoadingOrderDemand(true)
+    setMessage('')
+    try {
+      // Fetch all open order lines that have a matched SKU
+      const { data, error } = await supabase
+        .from('order_lines')
+        .select('sku_id, qty, order:order_id(status)')
+        .not('sku_id', 'is', null)
+
+      if (error) {
+        setMessage(`Could not load orders: ${error.message}`)
+        return
+      }
+
+      // Aggregate by sku_id, only open orders
+      const demand: Record<string, number> = {}
+      for (const line of (data ?? []) as any[]) {
+        if (line.order?.status !== 'open') continue
+        const id = line.sku_id as string
+        demand[id] = (demand[id] ?? 0) + (line.qty as number)
+      }
+
+      if (Object.keys(demand).length === 0) {
+        setMessage('No matched SKUs found in open orders. Sync orders first on the Orders page.')
+        return
+      }
+
+      // Replace planner rows with aggregated demand
+      const newRows = Object.entries(demand)
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([skuId, qty]) => ({ skuId, qty: String(qty), skuLookup: skuId }))
+
+      // Keep at least 3 rows
+      while (newRows.length < 3) newRows.push({ skuId: '', qty: '', skuLookup: '' })
+      setRows(newRows)
+      setMessage(`Loaded demand for ${Object.keys(demand).length} SKUs from open orders.`)
+    } finally {
+      setLoadingOrderDemand(false)
+    }
   }
 
   function removeRow(index: number) {
@@ -771,6 +815,15 @@ export default function PlannerPage() {
                     className="btn btn-secondary"
                   >
                     Browse SKUs
+                  </button>
+                  <button
+                    type="button"
+                    onClick={loadFromOrders}
+                    disabled={loadingOrderDemand}
+                    className="btn btn-secondary"
+                    title="Replace rows with aggregated qty from all open ShipStation orders"
+                  >
+                    {loadingOrderDemand ? 'Loading…' : '📋 Load from Orders'}
                   </button>
                   <button type="button" onClick={handleGenerate} className="btn btn-primary">
                     Generate Cut Lists
