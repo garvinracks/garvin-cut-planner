@@ -132,10 +132,8 @@ export default function OrdersPage() {
   const [allocStatuses, setAllocStatuses] = useState<Record<string, AllocStatus>>({})
   const [allocated, setAllocated]         = useState(false)
 
-  // Category grouping + note editing
+  // Category grouping
   const [groupByCategory, setGroupByCategory] = useState(false)
-  const [editingNoteId, setEditingNoteId]     = useState<string | null>(null)
-  const [noteText, setNoteText]               = useState('')
 
   // ── Data loading ────────────────────────────────────────────────────────────
 
@@ -324,16 +322,10 @@ export default function OrdersPage() {
 
   // ── Note editing ───────────────────────────────────────────────────────────
 
-  function openNote(order: Order) {
-    setEditingNoteId(order.id)
-    setNoteText(order.notes ?? '')
-  }
-
-  async function saveNote(orderId: string) {
-    const text = noteText.trim() || null
-    await supabase.from('orders').update({ notes: text }).eq('id', orderId)
-    setOrders((prev) => prev.map((o) => o.id === orderId ? { ...o, notes: text } : o))
-    setEditingNoteId(null)
+  async function saveNote(orderId: string, text: string) {
+    const val = text.trim() || null
+    await supabase.from('orders').update({ notes: val }).eq('id', orderId)
+    setOrders((prev) => prev.map((o) => o.id === orderId ? { ...o, notes: val } : o))
   }
 
   // ── Derived data ─────────────────────────────────────────────────────────────
@@ -544,32 +536,6 @@ export default function OrdersPage() {
                 </span>
               </div>
 
-              {/* Note editing popover */}
-              {editingNoteId && (
-                <div style={{
-                  position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  background: 'rgba(0,0,0,0.45)',
-                }} onClick={() => setEditingNoteId(null)}>
-                  <div style={{ background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 10, padding: 20, width: 360, boxShadow: '0 8px 32px rgba(0,0,0,0.4)' }}
-                    onClick={(e) => e.stopPropagation()}>
-                    <div style={{ fontWeight: 700, marginBottom: 10, color: 'var(--text)' }}>Order Note</div>
-                    <textarea
-                      className="field"
-                      rows={4}
-                      value={noteText}
-                      onChange={(e) => setNoteText(e.target.value)}
-                      placeholder="Add a note for this order…"
-                      style={{ width: '100%', resize: 'vertical', marginBottom: 12 }}
-                      autoFocus
-                    />
-                    <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                      <button className="btn btn-secondary" style={{ height: 30, fontSize: '0.8rem' }} onClick={() => setEditingNoteId(null)}>Cancel</button>
-                      <button className="btn btn-primary" style={{ height: 30, fontSize: '0.8rem' }} onClick={() => saveNote(editingNoteId)}>Save Note</button>
-                    </div>
-                  </div>
-                </div>
-              )}
-
               <div className="table-wrap">
                 <table className="table">
                   <thead>
@@ -593,6 +559,7 @@ export default function OrdersPage() {
                       <th style={{ textAlign: 'center' }}>Qty</th>
                       <th>Customer</th>
                       {allocated && <th>Status</th>}
+                      <th style={{ minWidth: 180 }}>Notes</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -615,7 +582,7 @@ export default function OrdersPage() {
                         for (const order of filtered) rows.push({ type: 'order', order })
                       }
 
-                      const colSpan = allocated ? 7 : 6
+                      const colSpan = allocated ? 8 : 7
 
                       return rows.map((row, idx) => {
                         if (row.type === 'group') {
@@ -642,7 +609,6 @@ export default function OrdersPage() {
                         const alloc        = status ? ALLOC_STYLE[status] : null
                         const chStyle      = CH_STYLE[order.channel] ?? CH_STYLE.shopify
                         const totalQty     = order.order_lines.reduce((s, l) => s + l.qty, 0)
-                        const hasNote      = !!order.notes
 
                         return (
                           <>
@@ -664,7 +630,7 @@ export default function OrdersPage() {
                                 />
                               </td>
 
-                              {/* Order # — expand arrow + channel badge + note flag */}
+                              {/* Order # — expand arrow + channel badge */}
                               <td
                                 style={{ fontWeight: 700, whiteSpace: 'nowrap' }}
                               >
@@ -685,18 +651,6 @@ export default function OrdersPage() {
                                   <span style={{ background: chStyle.bg, color: chStyle.text, borderRadius: 10, padding: '1px 7px', fontSize: '0.68rem', fontWeight: 700, flexShrink: 0 }}>
                                     {order.channel === 'shopify' ? 'S' : 'T5'}
                                   </span>
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); openNote(order) }}
-                                    title={hasNote ? order.notes! : 'Add note'}
-                                    style={{
-                                      background: 'none', border: 'none', cursor: 'pointer',
-                                      fontSize: '0.85rem', padding: '0 2px', opacity: hasNote ? 1 : 0.35,
-                                      color: hasNote ? 'var(--warning)' : 'var(--muted)',
-                                      lineHeight: 1, flexShrink: 0,
-                                    }}
-                                  >
-                                    🚩
-                                  </button>
                                 </div>
                               </td>
 
@@ -748,6 +702,25 @@ export default function OrdersPage() {
                                   )}
                                 </td>
                               )}
+
+                              {/* Inline notes */}
+                              <td onClick={(e) => e.stopPropagation()}>
+                                <input
+                                  key={order.id}
+                                  className="field"
+                                  defaultValue={order.notes ?? ''}
+                                  placeholder="Add note…"
+                                  style={{ height: 28, fontSize: '0.78rem', padding: '0 8px', minWidth: 160 }}
+                                  onBlur={(e) => {
+                                    if (e.target.value !== (order.notes ?? '')) {
+                                      void saveNote(order.id, e.target.value)
+                                    }
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                                  }}
+                                />
+                              </td>
                             </tr>
 
                             {/* Expanded multi-SKU lines */}
