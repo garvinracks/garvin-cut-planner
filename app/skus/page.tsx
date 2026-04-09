@@ -47,7 +47,7 @@ type MaterialRow = {
   thickness: string | null
   tube_od: string | null
   tube_wall: string | null
-  cost_per_lb: number | null
+  unit_weight_lbs: number | null
   scrap_rate: number | null
 }
 
@@ -169,6 +169,8 @@ export default function SkusPage() {
   const [subassemblies, setSubassemblies] = useState<SubAssembly[]>([])
   const [parts, setParts] = useState<Part[]>([])
   const [materials, setMaterials] = useState<MaterialRow[]>([])
+  // latest price per material_id, derived from material_price_logs
+  const [latestPriceByMaterialId, setLatestPriceByMaterialId] = useState<Record<string, number>>({})
   const [selectedSkuId, setSelectedSkuId] = useState('')
 
   const [selectedSkuSubassemblies, setSelectedSkuSubassemblies] = useState<SkuSubAssemblyRow[]>([])
@@ -235,7 +237,7 @@ export default function SkusPage() {
   async function loadSubassemblies() {
     const { data, error } = await supabase
       .from('sub_assemblies')
-      .select('id, name, notes')
+      .select('id, name, notes, image_file')
       .order('id', { ascending: true })
 
     if (!error) {
@@ -246,7 +248,7 @@ export default function SkusPage() {
   async function loadParts() {
     const { data, error } = await supabase
       .from('parts')
-      .select('id, part_number, description, part_type, material, thickness, tube_od, tube_wall, cut_length, dxf_file, notes')
+      .select('id, part_number, description, part_type, material, thickness, tube_od, tube_wall, cut_length, dxf_file, notes, weight_lbs')
       .order('part_number', { ascending: true })
 
     if (!error) {
@@ -257,11 +259,27 @@ export default function SkusPage() {
   async function loadMaterials() {
     const { data, error } = await supabase
       .from('materials')
-      .select('id, name, material_type, material, thickness, tube_od, tube_wall, cost_per_lb, scrap_rate')
+      .select('id, name, material_type, material, thickness, tube_od, tube_wall, unit_weight_lbs, scrap_rate')
       .order('name', { ascending: true })
 
     if (!error) {
       setMaterials((data ?? []) as MaterialRow[])
+    }
+  }
+
+  async function loadPriceLogs() {
+    const { data, error } = await supabase
+      .from('material_price_logs')
+      .select('material_id, price, date_purchased')
+      .order('date_purchased', { ascending: true })
+
+    if (!error && data) {
+      // Keep only the latest price per material_id
+      const map: Record<string, number> = {}
+      for (const row of data as { material_id: string; price: number; date_purchased: string }[]) {
+        map[row.material_id] = row.price
+      }
+      setLatestPriceByMaterialId(map)
     }
   }
 
@@ -365,7 +383,7 @@ export default function SkusPage() {
   async function initialLoad() {
     setLoading(true)
     setMessage('')
-    await Promise.all([loadSkus(), loadSubassemblies(), loadParts(), loadMaterials()])
+    await Promise.all([loadSkus(), loadSubassemblies(), loadParts(), loadMaterials(), loadPriceLogs()])
     setLoading(false)
   }
 
@@ -1149,9 +1167,12 @@ export default function SkusPage() {
     const part = parts.find((p) => p.id === partId)
     if (!part?.weight_lbs) return null
     const mat = findMaterialForPart(part)
-    if (!mat?.cost_per_lb) return null
+    if (!mat?.unit_weight_lbs) return null
+    const latestPrice = latestPriceByMaterialId[mat.id]
+    if (!latestPrice) return null
+    const costPerLb = latestPrice / mat.unit_weight_lbs
     const scrap = mat.scrap_rate ?? 0
-    return qty * part.weight_lbs * mat.cost_per_lb * (1 + scrap)
+    return qty * part.weight_lbs * costPerLb * (1 + scrap)
   }
 
   const skuTotalCost: number | null = (() => {

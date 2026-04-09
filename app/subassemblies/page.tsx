@@ -212,7 +212,21 @@ export default function SubassembliesPage() {
       .upload(filename, file, { upsert: true })
 
     if (uploadError) {
-      setImageMessage(`Upload failed: ${uploadError.message}`)
+      const isRls = uploadError.message.toLowerCase().includes('security policy') ||
+                    uploadError.message.toLowerCase().includes('row-level') ||
+                    uploadError.message.toLowerCase().includes('rls') ||
+                    (uploadError as any).statusCode === '403'
+      if (isRls) {
+        setImageMessage(
+          `Upload blocked by storage policy. Run this SQL in your Supabase SQL Editor:\n\n` +
+          `CREATE POLICY "allow_public_subassembly_images"\n` +
+          `ON storage.objects FOR ALL TO public\n` +
+          `USING (bucket_id = 'subassembly-images')\n` +
+          `WITH CHECK (bucket_id = 'subassembly-images');`
+        )
+      } else {
+        setImageMessage(`Upload failed: ${uploadError.message}`)
+      }
       setUploadingImage(false)
       return
     }
@@ -456,10 +470,15 @@ export default function SubassembliesPage() {
               {' '}→ enable <strong>Public bucket</strong> → Save.
             </li>
             <li>
-              Go to <strong>SQL Editor</strong> → run:{' '}
-              <code style={{ background: 'rgba(0,0,0,0.2)', padding: '2px 6px', borderRadius: 4 }}>
-                ALTER TABLE sub_assemblies ADD COLUMN IF NOT EXISTS image_file text;
-              </code>
+              Go to <strong>SQL Editor</strong> → run these two statements:
+              <pre style={{ background: 'rgba(0,0,0,0.25)', padding: '8px 10px', borderRadius: 6, marginTop: 6, fontSize: '0.78rem', lineHeight: 1.7, overflowX: 'auto', whiteSpace: 'pre-wrap' }}>
+{`ALTER TABLE sub_assemblies ADD COLUMN IF NOT EXISTS image_file text;
+
+CREATE POLICY "allow_public_subassembly_images"
+ON storage.objects FOR ALL TO public
+USING (bucket_id = 'subassembly-images')
+WITH CHECK (bucket_id = 'subassembly-images');`}
+              </pre>
             </li>
           </ol>
           <button
@@ -601,8 +620,8 @@ export default function SubassembliesPage() {
                     </button>
                     {imageMessage && (
                       <div
-                        className={imageMessage.toLowerCase().includes('fail') || imageMessage.toLowerCase().includes('error') ? 'warning-box' : 'message'}
-                        style={{ marginTop: 8, fontSize: '0.8rem' }}
+                        className={imageMessage.toLowerCase().includes('fail') || imageMessage.toLowerCase().includes('blocked') || imageMessage.toLowerCase().includes('error') ? 'warning-box' : 'message'}
+                        style={{ marginTop: 8, fontSize: '0.78rem', whiteSpace: 'pre-wrap', fontFamily: 'monospace', lineHeight: 1.7 }}
                       >
                         {imageMessage}
                       </div>

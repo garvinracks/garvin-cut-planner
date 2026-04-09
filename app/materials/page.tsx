@@ -12,8 +12,8 @@ type MaterialRow = {
   tube_od: string | null
   tube_wall: string | null
   notes: string | null
-  cost_per_lb: number | null
-  scrap_rate: number | null   // stored as 0–1 decimal (e.g. 0.10 = 10 %)
+  unit_weight_lbs: number | null  // weight of one standard purchased sheet or bar (lbs)
+  scrap_rate: number | null       // stored as 0–1 decimal (e.g. 0.10 = 10 %)
 }
 
 type PriceLogEntry = {
@@ -34,8 +34,8 @@ const emptyForm = {
   tube_dimension: '',
   wall_thickness: '',
   notes: '',
-  cost_per_lb: '',
-  scrap_rate: '',   // displayed as percent (e.g. "10" → stored as 0.10)
+  unit_weight_lbs: '',  // weight of one standard purchased unit (sheet or bar) in lbs
+  scrap_rate: '',        // displayed as percent (e.g. "10" → stored as 0.10)
 }
 
 const emptyPriceForm = {
@@ -290,7 +290,7 @@ export default function MaterialsPage() {
       tube_dimension: isTube ? row.tube_od || '' : '',
       wall_thickness: isTube ? row.tube_wall || '' : '',
       notes: row.notes || '',
-      cost_per_lb: row.cost_per_lb != null ? String(row.cost_per_lb) : '',
+      unit_weight_lbs: row.unit_weight_lbs != null ? String(row.unit_weight_lbs) : '',
       scrap_rate: row.scrap_rate != null ? String(Math.round(row.scrap_rate * 100)) : '',
     })
     setMessage('')
@@ -321,7 +321,7 @@ export default function MaterialsPage() {
       tube_od: form.material_type === 'tube' ? form.tube_dimension.trim() || null : null,
       tube_wall: form.material_type === 'tube' ? form.wall_thickness.trim() || null : null,
       notes: form.notes.trim() || null,
-      cost_per_lb: form.cost_per_lb.trim() ? parseFloat(form.cost_per_lb) : null,
+      unit_weight_lbs: form.unit_weight_lbs.trim() ? parseFloat(form.unit_weight_lbs) : null,
       scrap_rate: form.scrap_rate.trim() ? parseFloat(form.scrap_rate) / 100 : null,
     }
 
@@ -545,15 +545,15 @@ export default function MaterialsPage() {
               </div>
 
               <div>
-                <label className="label">Cost per lb ($)</label>
+                <label className="label">Unit Weight (lbs) — one sheet or bar</label>
                 <input
                   className="field"
                   type="number"
-                  step="0.001"
+                  step="0.01"
                   min="0"
-                  value={form.cost_per_lb}
-                  onChange={(e) => updateField('cost_per_lb', e.target.value)}
-                  placeholder="0.45"
+                  value={form.unit_weight_lbs}
+                  onChange={(e) => updateField('unit_weight_lbs', e.target.value)}
+                  placeholder="130"
                 />
               </div>
 
