@@ -5,10 +5,13 @@ import { createBrowserClient } from '@/lib/supabase'
 import DxfPartPreview from '@/components/DxfPartPreview'
 import PartPickerModal from '@/components/PartPickerModal'
 
+const IMAGE_BUCKET = 'subassembly-images'
+
 type SubAssembly = {
   id: string
   name: string
   notes: string | null
+  image_file: string | null
 }
 
 type Part = {
@@ -53,6 +56,11 @@ export default function SubassembliesPage() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [form, setForm] = useState(emptySubassemblyForm)
 
+  // Image upload
+  const [selectedImageFile, setSelectedImageFile] = useState<File | null>(null)
+  const [uploadingImage, setUploadingImage] = useState(false)
+  const [imageMessage, setImageMessage] = useState('')
+
   const [partIdToAdd, setPartIdToAdd] = useState('')
   const [partLabelToAdd, setPartLabelToAdd] = useState('')
   const [qtyToAdd, setQtyToAdd] = useState('1')
@@ -63,7 +71,7 @@ export default function SubassembliesPage() {
   async function loadSubassemblies() {
     const { data, error } = await supabase
       .from('sub_assemblies')
-      .select('*')
+      .select('id, name, notes, image_file')
       .order('name', { ascending: true })
 
     if (error) {
@@ -155,10 +163,46 @@ export default function SubassembliesPage() {
     setForm((prev) => ({ ...prev, [name]: value }))
   }
 
+  function getImageUrl(imageFile: string | null) {
+    if (!imageFile) return null
+    return supabase.storage.from(IMAGE_BUCKET).getPublicUrl(imageFile).data.publicUrl
+  }
+
+  async function handleUploadImage(file: File) {
+    if (!editingId) return
+    setUploadingImage(true)
+    setImageMessage('')
+    const ext = file.name.split('.').pop()
+    const filename = `${editingId}-${Date.now()}.${ext}`
+    const { error } = await supabase.storage.from(IMAGE_BUCKET).upload(filename, file, { upsert: true })
+    if (error) {
+      setImageMessage(`Upload failed: ${error.message}`)
+    } else {
+      await supabase.from('sub_assemblies').update({ image_file: filename }).eq('id', editingId)
+      setImageMessage('Image uploaded.')
+      setSelectedImageFile(null)
+      await loadSubassemblies()
+    }
+    setUploadingImage(false)
+  }
+
+  async function handleRemoveImage() {
+    if (!editingId) return
+    const item = items.find((i) => i.id === editingId)
+    if (item?.image_file) {
+      await supabase.storage.from(IMAGE_BUCKET).remove([item.image_file])
+    }
+    await supabase.from('sub_assemblies').update({ image_file: null }).eq('id', editingId)
+    setImageMessage('Image removed.')
+    await loadSubassemblies()
+  }
+
   function startNew() {
     setEditingId(null)
     setForm(emptySubassemblyForm)
     setMessage('')
+    setSelectedImageFile(null)
+    setImageMessage('')
   }
 
   function startEdit(item: SubAssembly) {
@@ -389,6 +433,65 @@ export default function SubassembliesPage() {
 
             {message && <div className="message">{message}</div>}
           </form>
+
+          {/* Image upload — shown only when editing */}
+          {editingId && (() => {
+            const currentItem = items.find((i) => i.id === editingId)
+            const imgUrl = getImageUrl(currentItem?.image_file ?? null)
+            return (
+              <div style={{ borderTop: '1px solid var(--border)', padding: '18px 20px' }}>
+                <div className="group-title" style={{ marginBottom: 12 }}>Assembly Photo</div>
+                <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                  {imgUrl ? (
+                    <div style={{ position: 'relative', flexShrink: 0 }}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={imgUrl}
+                        alt={editingId}
+                        style={{ width: 180, height: 130, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--border)', display: 'block' }}
+                      />
+                      <button
+                        type="button"
+                        onClick={handleRemoveImage}
+                        style={{
+                          position: 'absolute', top: 6, right: 6,
+                          background: 'rgba(0,0,0,0.7)', border: 'none', borderRadius: '50%',
+                          width: 24, height: 24, cursor: 'pointer', color: '#fff', fontSize: '0.75rem',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        }}
+                      >✕</button>
+                    </div>
+                  ) : (
+                    <div style={{
+                      width: 180, height: 130, borderRadius: 8, border: '1px dashed var(--border)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      color: 'var(--muted)', fontSize: '0.8rem', flexShrink: 0,
+                    }}>
+                      No photo yet
+                    </div>
+                  )}
+                  <div style={{ flex: 1, minWidth: 200 }}>
+                    <label className="label">Upload Photo</label>
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      style={{ display: 'block', marginBottom: 10, fontSize: '0.85rem', color: 'var(--muted)' }}
+                      onChange={(e) => setSelectedImageFile(e.target.files?.[0] ?? null)}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      disabled={!selectedImageFile || uploadingImage}
+                      onClick={() => selectedImageFile && handleUploadImage(selectedImageFile)}
+                    >
+                      {uploadingImage ? 'Uploading…' : 'Upload Photo'}
+                    </button>
+                    {imageMessage && <div className="message" style={{ marginTop: 8 }}>{imageMessage}</div>}
+                  </div>
+                </div>
+              </div>
+            )
+          })()}
         </div>
       </section>
 
@@ -431,31 +534,49 @@ export default function SubassembliesPage() {
               <div className="empty">No matching subassemblies.</div>
             ) : (
               <div className="section-stack" style={{ gap: 10 }}>
-                {filteredItems.map((item) => (
-                  <div key={item.id} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 10 }}>
-                    <button
-                      type="button"
-                      onClick={() => startEdit(item)}
-                      className={`sidebar-link ${selectedSubassemblyId === item.id ? 'active' : ''}`}
-                      style={{
-                        width: '100%',
-                        textAlign: 'left',
-                        background: selectedSubassemblyId === item.id ? 'var(--accent-soft)' : 'var(--panel-2)',
-                        borderColor: selectedSubassemblyId === item.id ? 'rgba(216, 87, 22, 0.38)' : 'var(--border)',
-                        color: selectedSubassemblyId === item.id ? '#ffd7c4' : 'var(--text)',
-                      }}
-                    >
-                      <div style={{ fontWeight: 700 }}>{item.id}</div>
-                      <div style={{ fontSize: '0.9rem', color: selectedSubassemblyId === item.id ? '#ffd7c4' : 'var(--muted)' }}>
-                        {item.name}
-                      </div>
-                    </button>
+                {filteredItems.map((item) => {
+                  const imgUrl = getImageUrl(item.image_file)
+                  const isActive = selectedSubassemblyId === item.id
+                  return (
+                    <div key={item.id} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 10 }}>
+                      <button
+                        type="button"
+                        onClick={() => startEdit(item)}
+                        className={`sidebar-link ${isActive ? 'active' : ''}`}
+                        style={{
+                          width: '100%',
+                          textAlign: 'left',
+                          background: isActive ? 'var(--accent-soft)' : 'var(--panel-2)',
+                          borderColor: isActive ? 'rgba(216, 87, 22, 0.38)' : 'var(--border)',
+                          color: isActive ? '#ffd7c4' : 'var(--text)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 10,
+                          padding: '8px 12px',
+                        }}
+                      >
+                        {imgUrl && (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={imgUrl}
+                            alt={item.id}
+                            style={{ width: 44, height: 44, objectFit: 'cover', borderRadius: 6, flexShrink: 0, border: '1px solid var(--border)' }}
+                          />
+                        )}
+                        <div>
+                          <div style={{ fontWeight: 700 }}>{item.id}</div>
+                          <div style={{ fontSize: '0.85rem', color: isActive ? '#ffd7c4' : 'var(--muted)' }}>
+                            {item.name}
+                          </div>
+                        </div>
+                      </button>
 
-                    <button className="btn btn-secondary" onClick={() => duplicateSubassembly(item)}>
-                      Duplicate
-                    </button>
-                  </div>
-                ))}
+                      <button className="btn btn-secondary" onClick={() => duplicateSubassembly(item)}>
+                        Duplicate
+                      </button>
+                    </div>
+                  )
+                })}
               </div>
             )}
           </div>
