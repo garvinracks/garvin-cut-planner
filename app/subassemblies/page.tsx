@@ -17,6 +17,11 @@ type Part = {
   description: string
   part_type: 'tube' | 'sheet'
   dxf_file: string | null
+  material: string | null
+  thickness: string | null
+  tube_od: string | null
+  tube_wall: string | null
+  cut_length: number | null
 }
 
 type SubAssemblyPartRow = {
@@ -78,7 +83,7 @@ export default function SubassembliesPage() {
   async function loadParts() {
     const { data, error } = await supabase
       .from('parts')
-      .select('id, part_number, description, part_type, dxf_file')
+      .select('id, part_number, description, part_type, dxf_file, material, thickness, tube_od, tube_wall, cut_length')
       .order('part_number', { ascending: true })
 
     if (error) {

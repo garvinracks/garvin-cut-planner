@@ -13,6 +13,7 @@ export type PickablePart = {
   thickness: string | null
   tube_od: string | null
   tube_wall: string | null
+  cut_length: number | null
 }
 
 type Props = {
@@ -21,6 +22,8 @@ type Props = {
   onClose: () => void
 }
 
+const PREVIEW_HEIGHT = 140 // px — every card has this exact preview area height
+
 export default function PartPickerModal({ parts, onSelect, onClose }: Props) {
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState<'all' | 'sheet' | 'tube'>('all')
@@ -28,7 +31,6 @@ export default function PartPickerModal({ parts, onSelect, onClose }: Props) {
 
   useEffect(() => {
     searchRef.current?.focus()
-
     function handleKey(e: KeyboardEvent) {
       if (e.key === 'Escape') onClose()
     }
@@ -55,13 +57,6 @@ export default function PartPickerModal({ parts, onSelect, onClose }: Props) {
     })
   }, [parts, search, typeFilter])
 
-  function partSubtitle(p: PickablePart) {
-    if (p.part_type === 'sheet') {
-      return [p.thickness, p.material].filter(Boolean).join(' · ')
-    }
-    return [p.tube_od, p.tube_wall, p.material].filter(Boolean).join(' · ')
-  }
-
   return (
     <div
       style={{
@@ -72,7 +67,7 @@ export default function PartPickerModal({ parts, onSelect, onClose }: Props) {
         display: 'flex',
         alignItems: 'flex-start',
         justifyContent: 'center',
-        paddingTop: 60,
+        paddingTop: 48,
       }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
     >
@@ -82,22 +77,22 @@ export default function PartPickerModal({ parts, onSelect, onClose }: Props) {
           border: '1px solid var(--border)',
           borderRadius: 10,
           width: '100%',
-          maxWidth: 860,
-          maxHeight: 'calc(100vh - 120px)',
+          maxWidth: 900,
+          maxHeight: 'calc(100vh - 96px)',
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
-          boxShadow: '0 24px 64px rgba(0,0,0,0.6)',
+          boxShadow: '0 24px 64px rgba(0,0,0,0.65)',
         }}
       >
-        {/* Header */}
+        {/* ── Header ── */}
         <div
           style={{
-            padding: '16px 20px',
+            padding: '14px 16px',
             borderBottom: '1px solid var(--border)',
             display: 'flex',
             alignItems: 'center',
-            gap: 12,
+            gap: 10,
             flexShrink: 0,
           }}
         >
@@ -105,12 +100,11 @@ export default function PartPickerModal({ parts, onSelect, onClose }: Props) {
             <span
               style={{
                 position: 'absolute',
-                left: 12,
+                left: 11,
                 top: '50%',
                 transform: 'translateY(-50%)',
                 color: 'var(--muted)',
                 pointerEvents: 'none',
-                fontSize: '1rem',
               }}
             >
               🔍
@@ -121,7 +115,7 @@ export default function PartPickerModal({ parts, onSelect, onClose }: Props) {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search part number, description, material…"
-              style={{ paddingLeft: 36, fontSize: '0.95rem' }}
+              style={{ paddingLeft: 34, fontSize: '0.92rem' }}
             />
           </div>
 
@@ -142,162 +136,160 @@ export default function PartPickerModal({ parts, onSelect, onClose }: Props) {
           <button
             type="button"
             className="btn btn-secondary"
-            style={{ padding: '6px 10px', fontSize: '1rem', lineHeight: 1 }}
+            style={{ padding: '6px 10px', lineHeight: 1 }}
             onClick={onClose}
           >
             ✕
           </button>
         </div>
 
-        {/* Count */}
+        {/* ── Count bar ── */}
         <div
           style={{
-            padding: '8px 20px',
-            fontSize: '0.78rem',
+            padding: '7px 16px',
+            fontSize: '0.76rem',
             color: 'var(--muted)',
             borderBottom: '1px solid var(--border)',
             flexShrink: 0,
           }}
         >
           {filtered.length} part{filtered.length !== 1 ? 's' : ''}
-          {search && ` matching "${search}"`}
+          {search ? ` matching "${search}"` : ''}
           {' — click a card to select'}
         </div>
 
-        {/* Grid */}
+        {/* ── Card grid ── */}
         <div
           style={{
             overflowY: 'auto',
-            padding: 16,
+            padding: 14,
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
-            gap: 12,
+            gridTemplateColumns: 'repeat(auto-fill, minmax(175px, 1fr))',
+            gap: 10,
             alignContent: 'start',
           }}
         >
           {filtered.length === 0 ? (
-            <div
-              className="empty"
-              style={{ gridColumn: '1 / -1', padding: '40px 0' }}
-            >
+            <div className="empty" style={{ gridColumn: '1 / -1', padding: '40px 0' }}>
               No matching parts.
             </div>
           ) : (
             filtered.map((part) => (
-              <button
-                key={part.id}
-                type="button"
-                onClick={() => onSelect(part)}
-                style={{
-                  background: 'var(--panel-2)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 8,
-                  padding: 0,
-                  cursor: 'pointer',
-                  text: 'left',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  overflow: 'hidden',
-                  transition: 'border-color 0.15s, background 0.15s',
-                  textAlign: 'left',
-                }}
-                onMouseEnter={(e) => {
-                  (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--accent)'
-                  ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--accent-soft)'
-                }}
-                onMouseLeave={(e) => {
-                  (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border)'
-                  ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--panel-2)'
-                }}
-              >
-                {/* DXF preview area */}
-                <div
-                  style={{
-                    width: '100%',
-                    height: 110,
-                    background: 'var(--panel)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    borderBottom: '1px solid var(--border)',
-                    overflow: 'hidden',
-                  }}
-                >
-                  <DxfPartPreview
-                    dxfFile={part.dxf_file}
-                    partNumber={part.part_number}
-                    size="small"
-                    isTube={part.part_type === 'tube'}
-                    tubeFallback={part.part_type === 'tube'}
-                  />
-                </div>
-
-                {/* Info */}
-                <div style={{ padding: '10px 12px' }}>
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 6,
-                      marginBottom: 4,
-                    }}
-                  >
-                    <span
-                      style={{
-                        fontSize: '0.68rem',
-                        fontWeight: 700,
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.06em',
-                        background: part.part_type === 'sheet'
-                          ? 'rgba(100, 160, 220, 0.15)'
-                          : 'rgba(220, 150, 80, 0.15)',
-                        color: part.part_type === 'sheet' ? '#7ab4e8' : '#e0a050',
-                        border: `1px solid ${part.part_type === 'sheet' ? 'rgba(100,160,220,0.25)' : 'rgba(220,150,80,0.25)'}`,
-                        borderRadius: 4,
-                        padding: '1px 5px',
-                      }}
-                    >
-                      {part.part_type}
-                    </span>
-                  </div>
-                  <div
-                    style={{
-                      fontWeight: 700,
-                      fontSize: '0.85rem',
-                      color: 'var(--text)',
-                      marginBottom: 2,
-                      wordBreak: 'break-all',
-                    }}
-                  >
-                    {part.part_number}
-                  </div>
-                  <div
-                    style={{
-                      fontSize: '0.78rem',
-                      color: 'var(--muted)',
-                      lineHeight: 1.3,
-                    }}
-                  >
-                    {part.description}
-                  </div>
-                  {partSubtitle(part) && (
-                    <div
-                      style={{
-                        fontSize: '0.73rem',
-                        color: 'var(--muted)',
-                        marginTop: 4,
-                        opacity: 0.75,
-                      }}
-                    >
-                      {partSubtitle(part)}
-                    </div>
-                  )}
-                </div>
-              </button>
+              <PartCard key={part.id} part={part} onSelect={onSelect} previewHeight={PREVIEW_HEIGHT} />
             ))
           )}
         </div>
       </div>
     </div>
+  )
+}
+
+// ── Individual card ──────────────────────────────────────────────────────────
+
+function PartCard({
+  part,
+  onSelect,
+  previewHeight,
+}: {
+  part: PickablePart
+  onSelect: (p: PickablePart) => void
+  previewHeight: number
+}) {
+  const isSheet = part.part_type === 'sheet'
+  const isSquare = (part.tube_od ?? '').toLowerCase().includes('x')
+
+  const typeColor = isSheet
+    ? { bg: 'rgba(100,160,220,0.15)', text: '#7ab4e8', border: 'rgba(100,160,220,0.25)' }
+    : { bg: 'rgba(220,150,80,0.15)', text: '#e0a050', border: 'rgba(220,150,80,0.25)' }
+
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(part)}
+      style={{
+        background: 'var(--panel-2)',
+        border: '1px solid var(--border)',
+        borderRadius: 8,
+        padding: 0,
+        cursor: 'pointer',
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+        textAlign: 'left',
+        transition: 'border-color 0.13s, background 0.13s',
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.borderColor = 'var(--accent)'
+        e.currentTarget.style.background = 'var(--accent-soft)'
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.borderColor = 'var(--border)'
+        e.currentTarget.style.background = 'var(--panel-2)'
+      }}
+    >
+      {/* ── Preview area: always exactly previewHeight px ── */}
+      <div
+        style={{
+          width: '100%',
+          height: previewHeight,
+          flexShrink: 0,
+          background: 'var(--panel)',
+          borderBottom: '1px solid var(--border)',
+          overflow: 'hidden',
+          position: 'relative',
+        }}
+      >
+        <DxfPartPreview
+          dxfFile={part.dxf_file}
+          partNumber={part.part_number}
+          size="fill"
+          isTube={!isSheet}
+          tubeFallback={true}
+          tubeOd={part.tube_od}
+          tubeWall={part.tube_wall}
+          tubeShape={isSquare ? 'square' : 'round'}
+          cutLength={part.cut_length}
+        />
+      </div>
+
+      {/* ── Info area ── */}
+      <div style={{ padding: '9px 11px', flex: 1 }}>
+        {/* Type badge */}
+        <span
+          style={{
+            display: 'inline-block',
+            fontSize: '0.63rem',
+            fontWeight: 700,
+            textTransform: 'uppercase',
+            letterSpacing: '0.07em',
+            background: typeColor.bg,
+            color: typeColor.text,
+            border: `1px solid ${typeColor.border}`,
+            borderRadius: 4,
+            padding: '1px 5px',
+            marginBottom: 5,
+          }}
+        >
+          {part.part_type}
+        </span>
+
+        {/* Part number */}
+        <div style={{ fontWeight: 700, fontSize: '0.84rem', color: 'var(--text)', marginBottom: 2, wordBreak: 'break-word' }}>
+          {part.part_number}
+        </div>
+
+        {/* Description */}
+        <div style={{ fontSize: '0.76rem', color: 'var(--muted)', lineHeight: 1.35, marginBottom: 4 }}>
+          {part.description}
+        </div>
+
+        {/* Material / dims */}
+        <div style={{ fontSize: '0.71rem', color: 'var(--muted)', opacity: 0.8 }}>
+          {isSheet
+            ? [part.thickness, part.material].filter(Boolean).join(' · ')
+            : [part.tube_od, part.tube_wall, part.material].filter(Boolean).join(' · ')}
+        </div>
+      </div>
+    </button>
   )
 }
