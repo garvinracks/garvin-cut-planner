@@ -18,13 +18,25 @@ export function createBrowserClient() {
 
   if (!url || !key) {
     console.error(
-      '[supabase] NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY is not set. ' +
-        'Add these to your Vercel project environment variables.'
+      '[Garvin] Missing Supabase env vars.\n' +
+      'In Vercel → Project Settings → Environment Variables, add:\n' +
+      '  NEXT_PUBLIC_SUPABASE_URL  = https://xxxx.supabase.co\n' +
+      '  NEXT_PUBLIC_SUPABASE_ANON_KEY = eyJ...'
     )
     return createClient(SSR_URL, SSR_KEY)
   }
 
-  return createClient(url, key)
+  // Guard against a URL that is set but malformed (e.g. missing https://)
+  try {
+    return createClient(url, key)
+  } catch (err) {
+    console.error(
+      '[Garvin] Invalid NEXT_PUBLIC_SUPABASE_URL — must start with https://\n' +
+      'Current value:', url, '\n',
+      err
+    )
+    return createClient(SSR_URL, SSR_KEY)
+  }
 }
 
 export function createAdminClient() {
