@@ -206,6 +206,10 @@ export default function PlannerPage() {
   const [priceLogs, setPriceLogs] = useState<PriceLogRecord[]>([])
   const [orderSheetOpen, setOrderSheetOpen] = useState(true)
   const [skuPickerOpen, setSkuPickerOpen]   = useState(false)
+  const [tubeCutOpen, setTubeCutOpen]       = useState(true)
+  const [sheetCutOpen, setSheetCutOpen]     = useState(true)
+  const [barCalcOpen, setBarCalcOpen]       = useState(true)
+  const [saveJobOpen, setSaveJobOpen]       = useState(true)
 
   // Save-job form
   const [jobName, setJobName] = useState('')
@@ -837,13 +841,16 @@ export default function PlannerPage() {
       {/* ── Save Job ── */}
       {(tubeRows.length > 0 || sheetRows.length > 0) && (
         <section className="card no-print">
-          <div className="card-header">
-            <h2 className="card-title">Save Job</h2>
-            <div className="card-subtitle">
-              Save this build run so you can reload it or reference it later on the Saved Jobs page.
+          <div className="card-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+            <div>
+              <h2 className="card-title">Save Job</h2>
+              <div className="card-subtitle">Save this build run so you can reload it or reference it later on the Saved Jobs page.</div>
             </div>
+            <button type="button" className="btn btn-secondary" onClick={() => setSaveJobOpen((v) => !v)}>
+              {saveJobOpen ? 'Collapse' : 'Expand'}
+            </button>
           </div>
-          <div className="card-body">
+          {saveJobOpen && <div className="card-body">
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, alignItems: 'end' }}>
               <div>
                 <label className="label">Job name <span style={{ color: 'var(--danger)' }}>*</span></label>
@@ -884,7 +891,7 @@ export default function PlannerPage() {
               </button>
             </div>
             {jobMessage && <div className="message" style={{ marginTop: 10 }}>{jobMessage}</div>}
-          </div>
+          </div>}
         </section>
       )}
 
@@ -900,13 +907,16 @@ export default function PlannerPage() {
       )}
 
       <section className="card">
-        <div className="card-header">
-          <h2 className="card-title">Tube Cut List</h2>
-          <div className="card-subtitle">
-            Grouped by material, tube OD, and wall.
+        <div className="card-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+          <div>
+            <h2 className="card-title">Tube Cut List</h2>
+            <div className="card-subtitle">Grouped by material, tube OD, and wall.</div>
           </div>
+          <button type="button" className="btn btn-secondary" onClick={() => setTubeCutOpen((v) => !v)}>
+            {tubeCutOpen ? 'Collapse' : 'Expand'}
+          </button>
         </div>
-        <div className="card-body">
+        {tubeCutOpen && <div className="card-body">
           {groupedTubeSections.length === 0 ? (
             <div className="empty">No tube results yet.</div>
           ) : (
@@ -956,20 +966,23 @@ export default function PlannerPage() {
               ))}
             </div>
           )}
-        </div>
+        </div>}
       </section>
 
       {/* ── Tube Bar Calculator ── */}
       {tubeRows.length > 0 && (
         <section className="card">
-          <div className="card-header">
-            <h2 className="card-title">Tube Bar Calculator</h2>
-            <div className="card-subtitle">
-              How many stock bars to pull and how to cut them, with a kerf-accurate cut plan.
+          <div className="card-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+            <div>
+              <h2 className="card-title">Tube Bar Calculator</h2>
+              <div className="card-subtitle">How many stock bars to pull and how to cut them, with a kerf-accurate cut plan.</div>
             </div>
+            <button type="button" className="btn btn-secondary" onClick={() => setBarCalcOpen((v) => !v)}>
+              {barCalcOpen ? 'Collapse' : 'Expand'}
+            </button>
           </div>
 
-          <div className="card-body">
+          {barCalcOpen && <div className="card-body">
             {/* Settings row */}
             <div style={{ display: 'flex', gap: 16, alignItems: 'flex-end', marginBottom: 28, flexWrap: 'wrap' }}>
               <div>
@@ -1140,7 +1153,7 @@ export default function PlannerPage() {
                 )
               })}
             </div>
-          </div>
+          </div>}
         </section>
       )}
 
@@ -1275,13 +1288,16 @@ export default function PlannerPage() {
       )}
 
       <section className="card">
-        <div className="card-header">
-          <h2 className="card-title">Sheet Cut List</h2>
-          <div className="card-subtitle">
-            Grouped by material and thickness. Export button makes the CypCut Excel import file.
+        <div className="card-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+          <div>
+            <h2 className="card-title">Sheet Cut List</h2>
+            <div className="card-subtitle">Grouped by material and thickness. Export button makes the CypCut Excel import file.</div>
           </div>
+          <button type="button" className="btn btn-secondary" onClick={() => setSheetCutOpen((v) => !v)}>
+            {sheetCutOpen ? 'Collapse' : 'Expand'}
+          </button>
         </div>
-        <div className="card-body">
+        {sheetCutOpen && <div className="card-body">
           {groupedSheetSections.length === 0 ? (
             <div className="empty">No sheet results yet.</div>
           ) : (
@@ -1334,7 +1350,7 @@ export default function PlannerPage() {
               ))}
             </div>
           )}
-        </div>
+        </div>}
       </section>
 
       {/* ── Shop Floor View ── */}

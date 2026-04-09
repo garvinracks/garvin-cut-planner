@@ -200,12 +200,30 @@ export default function SubassembliesPage() {
     setImageMessage('')
     const ext = file.name.split('.').pop()
     const filename = `${editingId}-${Date.now()}.${ext}`
-    const { error } = await supabase.storage.from(IMAGE_BUCKET).upload(filename, file, { upsert: true })
-    if (error) {
-      setImageMessage(`Upload failed: ${error.message}`)
+
+    const { error: uploadError } = await supabase.storage
+      .from(IMAGE_BUCKET)
+      .upload(filename, file, { upsert: true })
+
+    if (uploadError) {
+      setImageMessage(`Upload failed: ${uploadError.message}`)
+      setUploadingImage(false)
+      return
+    }
+
+    const { error: updateError } = await supabase
+      .from('sub_assemblies')
+      .update({ image_file: filename })
+      .eq('id', editingId)
+
+    if (updateError) {
+      // File is in storage but DB record not updated — likely missing column
+      setImageMessage(
+        `File uploaded to storage but database update failed: ${updateError.message}. ` +
+        `Run this in Supabase SQL editor: ALTER TABLE sub_assemblies ADD COLUMN IF NOT EXISTS image_file text;`
+      )
     } else {
-      await supabase.from('sub_assemblies').update({ image_file: filename }).eq('id', editingId)
-      setImageMessage('Image uploaded.')
+      setImageMessage('Photo saved.')
       setSelectedImageFile(null)
       await loadSubassemblies()
     }

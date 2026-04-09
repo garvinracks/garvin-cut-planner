@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import GlobalSearch from '@/components/GlobalSearch'
+import ThemeToggle from '@/components/ThemeToggle'
 
 // ── Minimal inline SVG icons ──────────────────────────────────────────────────
 
@@ -112,8 +113,9 @@ export default function Sidebar() {
         })}
       </nav>
 
-      {/* Global search at bottom */}
-      <div style={{ padding: '8px 8px 16px' }}>
+      {/* Theme toggle + Global search at bottom */}
+      <div style={{ padding: '4px 8px 16px', display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <ThemeToggle />
         <GlobalSearch />
       </div>
     </aside>
