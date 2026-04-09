@@ -48,6 +48,28 @@ type SubAssemblyPartRecord = {
   qty: number
 }
 
+type PartOperationRecord = {
+  part_id: string
+  step: number
+  operation: string
+  notes: string | null
+}
+
+type ShopFloorStation = {
+  operation: string
+  parts: Array<{
+    part_id: string
+    part_number: string
+    description: string
+    qty: number
+    step: number
+    totalSteps: number
+    nextOp: string | null
+    prevOp: string | null
+    fullRoute: string
+  }>
+}
+
 type GroupedTubeSection = {
   key: string
   material: string
@@ -83,10 +105,12 @@ export default function PlannerPage() {
 
   const [tubeRows, setTubeRows] = useState<TubeResultRow[]>([])
   const [sheetRows, setSheetRows] = useState<SheetResultRow[]>([])
+  const [partOperations, setPartOperations] = useState<PartOperationRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState('')
   const [warnings, setWarnings] = useState<string[]>([])
   const [printedAt, setPrintedAt] = useState('')
+  const [shopFloorOpen, setShopFloorOpen] = useState(false)
 
   useEffect(() => {
     setPrintedAt(new Date().toLocaleString())
@@ -102,6 +126,7 @@ export default function PlannerPage() {
       { data: skuPartData, error: skuPartError },
       { data: skuSubData, error: skuSubError },
       { data: subPartData, error: subPartError },
+      { data: opData },
     ] = await Promise.all([
       supabase.from('skus').select('id, description').order('id', { ascending: true }),
       supabase
@@ -110,6 +135,7 @@ export default function PlannerPage() {
       supabase.from('sku_parts').select('sku_id, part_id, qty'),
       supabase.from('sku_sub_assemblies').select('sku_id, sub_assembly_id, qty'),
       supabase.from('sub_assembly_parts').select('sub_assembly_id, part_id, qty'),
+      supabase.from('part_operations').select('part_id, step, operation, notes').order('step', { ascending: true }),
     ])
 
     if (skuError || partError || skuPartError || skuSubError || subPartError) {
@@ -130,6 +156,7 @@ export default function PlannerPage() {
     setSkuParts((skuPartData ?? []) as SkuPartRecord[])
     setSkuSubAssemblies((skuSubData ?? []) as SkuSubAssemblyRecord[])
     setSubAssemblyParts((subPartData ?? []) as SubAssemblyPartRecord[])
+    setPartOperations((opData ?? []) as PartOperationRecord[])
 
     setLoading(false)
   }
@@ -373,6 +400,75 @@ export default function PlannerPage() {
     window.print()
   }
 
+  // Build shop floor stations from current cut list + operations
+  const shopFloorStations = useMemo<ShopFloorStation[]>(() => {
+    const allRows = [
+      ...tubeRows.map((r) => ({ part_id: r.part_number, part_number: r.part_number, description: r.description, qty: r.qty })),
+      ...sheetRows.map((r) => ({ part_id: r.part_number, part_number: r.part_number, description: r.description, qty: r.qty })),
+    ]
+
+    // Find part_id (uuid) from part_number via the parts array
+    const partByNumber = new Map(parts.map((p) => [p.part_number, p]))
+
+    const stationMap = new Map<string, ShopFloorStation>()
+
+    for (const row of allRows) {
+      const part = partByNumber.get(row.part_number)
+      if (!part) continue
+      const ops = partOperations
+        .filter((o) => o.part_id === part.id)
+        .sort((a, b) => a.step - b.step)
+
+      if (ops.length === 0) {
+        // Parts with no routing go to a "No Route Defined" station
+        const key = '__no_route__'
+        if (!stationMap.has(key)) stationMap.set(key, { operation: 'No Route Defined', parts: [] })
+        stationMap.get(key)!.parts.push({
+          part_id: part.id,
+          part_number: row.part_number,
+          description: row.description,
+          qty: row.qty,
+          step: 0,
+          totalSteps: 0,
+          nextOp: null,
+          prevOp: null,
+          fullRoute: '—',
+        })
+        continue
+      }
+
+      const fullRoute = ops.map((o) => o.operation).join(' → ')
+
+      for (let i = 0; i < ops.length; i++) {
+        const op = ops[i]
+        const key = op.operation
+        if (!stationMap.has(key)) stationMap.set(key, { operation: op.operation, parts: [] })
+        // Avoid duplicate entries (same part can appear multiple times across SKUs)
+        const existing = stationMap.get(key)!.parts.find((p) => p.part_id === part.id)
+        if (!existing) {
+          stationMap.get(key)!.parts.push({
+            part_id: part.id,
+            part_number: row.part_number,
+            description: row.description,
+            qty: row.qty,
+            step: op.step,
+            totalSteps: ops.length,
+            prevOp: i > 0 ? ops[i - 1].operation : null,
+            nextOp: i < ops.length - 1 ? ops[i + 1].operation : null,
+            fullRoute,
+          })
+        }
+      }
+    }
+
+    // Sort stations: no-route last, others alphabetically
+    return Array.from(stationMap.values()).sort((a, b) => {
+      if (a.operation === 'No Route Defined') return 1
+      if (b.operation === 'No Route Defined') return -1
+      return a.operation.localeCompare(b.operation)
+    })
+  }, [tubeRows, sheetRows, parts, partOperations])
+
   return (
     <div className="section-stack">
       <div className="print-only" style={{ marginBottom: 18 }}>
@@ -482,6 +578,14 @@ export default function PlannerPage() {
                 disabled={tubeRows.length === 0 && sheetRows.length === 0}
               >
                 Print
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setShopFloorOpen((v) => !v)}
+                disabled={tubeRows.length === 0 && sheetRows.length === 0}
+              >
+                {shopFloorOpen ? 'Hide Shop Floor View' : 'Shop Floor View'}
               </button>
             </div>
 
@@ -630,6 +734,106 @@ export default function PlannerPage() {
           )}
         </div>
       </section>
+
+      {/* ── Shop Floor View ── */}
+      {shopFloorOpen && (tubeRows.length > 0 || sheetRows.length > 0) && (
+        <section className="card">
+          <div className="card-header">
+            <h2 className="card-title">Shop Floor View</h2>
+            <div className="card-subtitle">
+              Parts grouped by manufacturing station. Each card shows what arrives, what qty, and where it goes next.
+            </div>
+          </div>
+
+          <div className="card-body section-stack" style={{ gap: 24 }}>
+            {shopFloorStations.length === 0 ? (
+              <div className="empty">
+                No operation routes defined yet. Add manufacturing steps to parts on the Parts page.
+              </div>
+            ) : (
+              shopFloorStations.map((station) => (
+                <div key={station.operation}>
+                  {/* Station header */}
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 12,
+                    marginBottom: 12,
+                    paddingBottom: 10,
+                    borderBottom: '2px solid var(--accent)',
+                  }}>
+                    <div style={{
+                      background: station.operation === 'No Route Defined' ? 'var(--panel-2)' : 'var(--accent)',
+                      color: station.operation === 'No Route Defined' ? 'var(--muted)' : '#fff',
+                      fontWeight: 800,
+                      fontSize: '0.78rem',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.1em',
+                      padding: '5px 14px',
+                      borderRadius: 20,
+                    }}>
+                      {station.operation}
+                    </div>
+                    <div style={{ fontSize: '0.82rem', color: 'var(--muted)' }}>
+                      {station.parts.length} part{station.parts.length !== 1 ? 's' : ''} · {station.parts.reduce((s, p) => s + p.qty, 0)} total pieces
+                    </div>
+                  </div>
+
+                  {/* Parts table */}
+                  <div className="table-wrap">
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>Part #</th>
+                          <th>Description</th>
+                          <th>Qty</th>
+                          <th>Full Route</th>
+                          <th>← Prev</th>
+                          <th>Next →</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {station.parts.map((p) => (
+                          <tr key={p.part_id}>
+                            <td style={{ fontWeight: 700 }}>{p.part_number}</td>
+                            <td>{p.description}</td>
+                            <td style={{ fontWeight: 700, color: 'var(--accent)' }}>{p.qty}</td>
+                            <td style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>{p.fullRoute}</td>
+                            <td>
+                              {p.prevOp ? (
+                                <span style={{ fontSize: '0.78rem', color: 'var(--muted)' }}>{p.prevOp}</span>
+                              ) : (
+                                <span style={{ fontSize: '0.75rem', color: 'var(--accent)', fontWeight: 600 }}>START</span>
+                              )}
+                            </td>
+                            <td>
+                              {p.nextOp ? (
+                                <span style={{
+                                  background: 'var(--accent-soft)',
+                                  border: '1px solid var(--accent-border)',
+                                  borderRadius: 12,
+                                  padding: '2px 10px',
+                                  fontSize: '0.78rem',
+                                  fontWeight: 600,
+                                  color: '#ffd7c4',
+                                }}>
+                                  {p.nextOp}
+                                </span>
+                              ) : (
+                                <span style={{ fontSize: '0.75rem', color: '#27ae60', fontWeight: 600 }}>✓ DONE</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+      )}
     </div>
   )
 }

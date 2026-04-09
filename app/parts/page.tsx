@@ -30,6 +30,33 @@ type MaterialRow = {
 
 const DXF_BUCKET = 'dxf-files'
 
+type PartOperation = {
+  id: string
+  part_id: string
+  step: number
+  operation: string
+  notes: string | null
+}
+
+const OPERATION_OPTIONS = [
+  'Laser Cut',
+  'Plasma Cut',
+  'Bend',
+  'Roll',
+  'Punch',
+  'Drill',
+  'Tap',
+  'MIG Weld',
+  'TIG Weld',
+  'Grind / Deburr',
+  'Paint',
+  'Powder Coat',
+  'Hardware',
+  'Assembly',
+]
+
+const emptyOpForm = { operation: 'Laser Cut', notes: '' }
+
 const emptyForm = {
   id: '',
   part_number: '',
@@ -54,6 +81,13 @@ export default function PartsPage() {
   const [form, setForm] = useState(emptyForm)
   const [selectedDxfFile, setSelectedDxfFile] = useState<File | null>(null)
   const [previewPart, setPreviewPart] = useState<Part | null>(null)
+
+  // Operation routing
+  const [operations, setOperations] = useState<PartOperation[]>([])
+  const [opForm, setOpForm] = useState(emptyOpForm)
+  const [savingOp, setSavingOp] = useState(false)
+  const [opMessage, setOpMessage] = useState('')
+  const [loadingOps, setLoadingOps] = useState(false)
 
   async function loadParts() {
     const { data, error } = await supabase
@@ -113,6 +147,8 @@ export default function PartsPage() {
     setForm(emptyForm)
     setSelectedDxfFile(null)
     setMessage('')
+    setOperations([])
+    setOpMessage('')
   }
 
   function findMatchingMaterialId(part: Part) {
@@ -150,6 +186,8 @@ export default function PartsPage() {
       notes: part.notes || '',
     })
     setMessage('')
+    setOpMessage('')
+    void loadOperations(part.id)
   }
 
   function duplicatePart(part: Part) {
@@ -276,6 +314,62 @@ export default function PartsPage() {
       startNew()
       await loadParts()
     }
+  }
+
+  async function loadOperations(partId: string) {
+    setLoadingOps(true)
+    const { data, error } = await supabase
+      .from('part_operations')
+      .select('*')
+      .eq('part_id', partId)
+      .order('step', { ascending: true })
+    if (!error) setOperations((data ?? []) as PartOperation[])
+    setLoadingOps(false)
+  }
+
+  async function handleAddOperation(e: React.FormEvent) {
+    e.preventDefault()
+    if (!editingId) return
+    setSavingOp(true)
+    setOpMessage('')
+    const nextStep = operations.length > 0 ? Math.max(...operations.map((o) => o.step)) + 1 : 1
+    const { error } = await supabase.from('part_operations').insert({
+      part_id: editingId,
+      step: nextStep,
+      operation: opForm.operation,
+      notes: opForm.notes.trim() || null,
+    })
+    if (error) {
+      setOpMessage(`Failed: ${error.message}`)
+    } else {
+      setOpForm(emptyOpForm)
+      await loadOperations(editingId)
+    }
+    setSavingOp(false)
+  }
+
+  async function handleDeleteOperation(id: string) {
+    if (!editingId) return
+    await supabase.from('part_operations').delete().eq('id', id)
+    await loadOperations(editingId)
+    // Re-number steps sequentially
+    const updated = operations.filter((o) => o.id !== id)
+    for (let i = 0; i < updated.length; i++) {
+      await supabase.from('part_operations').update({ step: i + 1 }).eq('id', updated[i].id)
+    }
+    await loadOperations(editingId)
+  }
+
+  async function handleMoveOperation(id: string, direction: 'up' | 'down') {
+    if (!editingId) return
+    const idx = operations.findIndex((o) => o.id === id)
+    const swapIdx = direction === 'up' ? idx - 1 : idx + 1
+    if (swapIdx < 0 || swapIdx >= operations.length) return
+    const a = operations[idx]
+    const b = operations[swapIdx]
+    await supabase.from('part_operations').update({ step: b.step }).eq('id', a.id)
+    await supabase.from('part_operations').update({ step: a.step }).eq('id', b.id)
+    await loadOperations(editingId)
   }
 
   const filteredParts = parts.filter((part) => {
@@ -493,6 +587,134 @@ export default function PartsPage() {
           </form>
         </div>
       </section>
+
+      {/* ── Operation Routing ── */}
+      {editingId && (
+        <section className="card">
+          <div className="card-header">
+            <h2 className="card-title">Manufacturing Route</h2>
+            <div className="card-subtitle">
+              Define the ordered operations this part goes through — e.g. Laser Cut → Bend → Weld.
+            </div>
+          </div>
+
+          <div className="card-body">
+            {/* Route flow display */}
+            {operations.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginBottom: 20 }}>
+                {operations.map((op, i) => (
+                  <div key={op.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <div style={{
+                      background: 'var(--accent-soft)',
+                      border: '1px solid var(--accent-border)',
+                      borderRadius: 20,
+                      padding: '4px 14px',
+                      fontSize: '0.82rem',
+                      fontWeight: 700,
+                      color: '#ffd7c4',
+                      whiteSpace: 'nowrap',
+                    }}>
+                      {op.step}. {op.operation}
+                    </div>
+                    {i < operations.length - 1 && (
+                      <span style={{ color: 'var(--muted)', fontSize: '1rem' }}>→</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="grid-2" style={{ alignItems: 'start', gap: 24 }}>
+              {/* Add operation form */}
+              <form onSubmit={handleAddOperation}>
+                <div className="group-title" style={{ marginBottom: 12 }}>Add Step</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                  <div>
+                    <label className="label">Operation</label>
+                    <select
+                      className="select"
+                      value={opForm.operation}
+                      onChange={(e) => setOpForm((p) => ({ ...p, operation: e.target.value }))}
+                    >
+                      {OPERATION_OPTIONS.map((op) => (
+                        <option key={op} value={op}>{op}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="label">Notes (optional)</label>
+                    <input
+                      className="field"
+                      value={opForm.notes}
+                      onChange={(e) => setOpForm((p) => ({ ...p, notes: e.target.value }))}
+                      placeholder="e.g. 90° bend, 4 places"
+                    />
+                  </div>
+                </div>
+                <div className="btn-row" style={{ marginTop: 12 }}>
+                  <button type="submit" disabled={savingOp} className="btn btn-primary">
+                    {savingOp ? 'Adding…' : 'Add Step'}
+                  </button>
+                </div>
+                {opMessage && <div className="message">{opMessage}</div>}
+              </form>
+
+              {/* Steps table */}
+              <div>
+                <div className="group-title" style={{ marginBottom: 12 }}>
+                  Steps {loadingOps ? '(loading…)' : `(${operations.length})`}
+                </div>
+                {operations.length === 0 ? (
+                  <div className="empty">No operations added yet.</div>
+                ) : (
+                  <div className="table-wrap">
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th style={{ width: 40 }}>#</th>
+                          <th>Operation</th>
+                          <th>Notes</th>
+                          <th style={{ width: 100 }}></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {operations.map((op, i) => (
+                          <tr key={op.id}>
+                            <td style={{ fontWeight: 700, color: 'var(--accent)' }}>{op.step}</td>
+                            <td style={{ fontWeight: 600 }}>{op.operation}</td>
+                            <td style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>{op.notes || ''}</td>
+                            <td>
+                              <div style={{ display: 'flex', gap: 4 }}>
+                                <button
+                                  className="btn btn-secondary"
+                                  style={{ padding: '3px 7px', fontSize: '0.78rem' }}
+                                  onClick={() => handleMoveOperation(op.id, 'up')}
+                                  disabled={i === 0}
+                                >↑</button>
+                                <button
+                                  className="btn btn-secondary"
+                                  style={{ padding: '3px 7px', fontSize: '0.78rem' }}
+                                  onClick={() => handleMoveOperation(op.id, 'down')}
+                                  disabled={i === operations.length - 1}
+                                >↓</button>
+                                <button
+                                  className="btn btn-danger"
+                                  style={{ padding: '3px 7px', fontSize: '0.78rem' }}
+                                  onClick={() => handleDeleteOperation(op.id)}
+                                >✕</button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
 
       <section className="card">
         <div
