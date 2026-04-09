@@ -73,6 +73,90 @@ type UsageRef = {
   qty: number
 }
 
+type CsvImportRow = {
+  id: string
+  part_number: string
+  description: string
+  part_type: 'tube' | 'sheet'
+  material: string
+  thickness: string
+  tube_od: string
+  tube_wall: string
+  cut_length: string
+  notes: string
+  errors: string[]
+}
+
+// ── CSV helpers (no extra deps) ───────────────────────────────────────────────
+
+function parseCsvLine(line: string): string[] {
+  const fields: string[] = []
+  let cur = ''
+  let inQ = false
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]
+    if (ch === '"') {
+      if (inQ && line[i + 1] === '"') { cur += '"'; i++ }
+      else inQ = !inQ
+    } else if (ch === ',' && !inQ) {
+      fields.push(cur.trim()); cur = ''
+    } else {
+      cur += ch
+    }
+  }
+  fields.push(cur.trim())
+  return fields
+}
+
+function parseCsvText(text: string): CsvImportRow[] {
+  const lines = text.replace(/\r\n/g, '\n').split('\n').filter((l) => l.trim())
+  if (lines.length < 2) return []
+
+  const headers = parseCsvLine(lines[0]).map((h) => h.toLowerCase().replace(/\s+/g, '_'))
+  const col = (row: string[], name: string) => {
+    const i = headers.indexOf(name)
+    return i >= 0 ? (row[i] ?? '').trim() : ''
+  }
+
+  return lines.slice(1).map((line) => {
+    const row = parseCsvLine(line)
+    const partType = col(row, 'part_type').toLowerCase()
+    const errors: string[] = []
+
+    const id = col(row, 'id') || col(row, 'part_number')
+    const part_number = col(row, 'part_number')
+    const description = col(row, 'description')
+
+    if (!id) errors.push('id or part_number required')
+    if (!part_number) errors.push('part_number required')
+    if (!description) errors.push('description required')
+    if (partType !== 'tube' && partType !== 'sheet') errors.push('part_type must be "tube" or "sheet"')
+
+    const cut_length = col(row, 'cut_length')
+    if (cut_length && isNaN(Number(cut_length))) errors.push('cut_length must be a number')
+
+    return {
+      id,
+      part_number,
+      description,
+      part_type: (partType === 'tube' ? 'tube' : 'sheet') as 'tube' | 'sheet',
+      material: col(row, 'material'),
+      thickness: col(row, 'thickness'),
+      tube_od: col(row, 'tube_od'),
+      tube_wall: col(row, 'tube_wall'),
+      cut_length,
+      notes: col(row, 'notes'),
+      errors,
+    }
+  })
+}
+
+const CSV_TEMPLATE = [
+  'id,part_number,description,part_type,material,thickness,tube_od,tube_wall,cut_length,notes',
+  '20000-L1,20000-L1,Wind Deflector Left,sheet,HRPO,3/16,,,,',
+  '20000-T1,20000-T1,Main Frame Rail,tube,DOM,,,1.25,.120,48,',
+].join('\n')
+
 const emptyForm = {
   id: '',
   part_number: '',
@@ -113,6 +197,12 @@ export default function PartsPage() {
   const [revisions, setRevisions] = useState<PartRevision[]>([])
   const [loadingRevisions, setLoadingRevisions] = useState(false)
 
+  // CSV import
+  const [importOpen, setImportOpen] = useState(false)
+  const [csvRows, setCsvRows] = useState<CsvImportRow[]>([])
+  const [importing, setImporting] = useState(false)
+  const [importMessage, setImportMessage] = useState('')
+
   async function loadParts() {
     const { data, error } = await supabase
       .from('parts')
@@ -146,6 +236,65 @@ export default function PartsPage() {
     setMessage('')
     await Promise.all([loadParts(), loadMaterials()])
     setLoading(false)
+  }
+
+  function handleCsvFile(file: File) {
+    setImportMessage('')
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const text = e.target?.result as string
+      const rows = parseCsvText(text)
+      setCsvRows(rows)
+      if (rows.length === 0) setImportMessage('No data rows found in CSV.')
+    }
+    reader.readAsText(file)
+  }
+
+  async function handleImport() {
+    const valid = csvRows.filter((r) => r.errors.length === 0)
+    if (valid.length === 0) {
+      setImportMessage('No valid rows to import.')
+      return
+    }
+    setImporting(true)
+    setImportMessage('')
+
+    const payload = valid.map((r) => ({
+      id: r.id,
+      part_number: r.part_number,
+      description: r.description,
+      part_type: r.part_type,
+      material: r.material || null,
+      thickness: r.thickness || null,
+      tube_od: r.tube_od || null,
+      tube_wall: r.tube_wall || null,
+      cut_length: r.cut_length ? Number(r.cut_length) : null,
+      notes: r.notes || null,
+    }))
+
+    const { error } = await supabase
+      .from('parts')
+      .upsert(payload, { onConflict: 'id' })
+
+    if (error) {
+      setImportMessage(`Import failed: ${error.message}`)
+    } else {
+      setImportMessage(`✓ ${valid.length} part${valid.length !== 1 ? 's' : ''} imported successfully.`)
+      setCsvRows([])
+      await loadParts()
+    }
+
+    setImporting(false)
+  }
+
+  function downloadTemplate() {
+    const blob = new Blob([CSV_TEMPLATE], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'parts-import-template.csv'
+    a.click()
+    URL.revokeObjectURL(url)
   }
 
   useEffect(() => {
@@ -1097,6 +1246,181 @@ export default function PartsPage() {
             )}
           </div>
         </div>
+      </section>
+
+      {/* ── CSV Bulk Import ── */}
+      <section className="card">
+        <div
+          className="card-header"
+          style={{ cursor: 'pointer' }}
+          onClick={() => { setImportOpen((v) => !v); setImportMessage('') }}
+        >
+          <div style={{ flex: 1 }}>
+            <h2 className="card-title">Import Parts from CSV</h2>
+            <div className="card-subtitle">
+              Bulk-create or update parts by uploading a CSV file. Existing parts with the same ID are updated.
+            </div>
+          </div>
+          <button type="button" className="btn btn-secondary" style={{ flexShrink: 0 }}>
+            {importOpen ? 'Collapse ▲' : 'Expand ▼'}
+          </button>
+        </div>
+
+        {importOpen && (
+          <div className="card-body">
+            {/* Template + upload */}
+            <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 18 }}>
+              <div style={{ flex: 1, minWidth: 260 }}>
+                <label className="label">Upload CSV file</label>
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  className="field"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0]
+                    if (f) handleCsvFile(f)
+                  }}
+                />
+                <div style={{ fontSize: '0.76rem', color: 'var(--muted)', marginTop: 5 }}>
+                  Required columns: <code style={{ background: 'var(--panel-2)', padding: '1px 4px', borderRadius: 3 }}>id, part_number, description, part_type</code>
+                  <br />
+                  Optional: <code style={{ background: 'var(--panel-2)', padding: '1px 4px', borderRadius: 3 }}>material, thickness, tube_od, tube_wall, cut_length, notes</code>
+                </div>
+              </div>
+              <div style={{ paddingTop: 22 }}>
+                <button type="button" className="btn btn-secondary" onClick={downloadTemplate}>
+                  ↓ Download Template
+                </button>
+              </div>
+            </div>
+
+            {/* Preview table */}
+            {csvRows.length > 0 && (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+                  <div style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>
+                    <span style={{ color: '#27ae60', fontWeight: 700 }}>
+                      {csvRows.filter((r) => r.errors.length === 0).length} valid
+                    </span>
+                    {csvRows.filter((r) => r.errors.length > 0).length > 0 && (
+                      <span style={{ color: 'var(--danger)', fontWeight: 700, marginLeft: 10 }}>
+                        {csvRows.filter((r) => r.errors.length > 0).length} with errors
+                      </span>
+                    )}
+                    <span style={{ marginLeft: 10 }}>
+                      of {csvRows.length} row{csvRows.length !== 1 ? 's' : ''}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={handleImport}
+                    disabled={importing || csvRows.every((r) => r.errors.length > 0)}
+                  >
+                    {importing ? 'Importing…' : `Import ${csvRows.filter((r) => r.errors.length === 0).length} Parts`}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => { setCsvRows([]); setImportMessage('') }}
+                  >
+                    Clear
+                  </button>
+                </div>
+
+                <div className="table-wrap">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th style={{ width: 28 }}></th>
+                        <th>ID</th>
+                        <th>Part #</th>
+                        <th>Description</th>
+                        <th>Type</th>
+                        <th>Material</th>
+                        <th>Thickness</th>
+                        <th>OD</th>
+                        <th>Wall</th>
+                        <th>Cut Length</th>
+                        <th>Notes</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {csvRows.map((row, i) => (
+                        <tr
+                          key={i}
+                          style={{
+                            background: row.errors.length > 0 ? 'rgba(231,76,60,0.08)' : undefined,
+                          }}
+                        >
+                          <td style={{ textAlign: 'center' }}>
+                            {row.errors.length === 0 ? (
+                              <span style={{ color: '#27ae60', fontSize: '0.85rem' }}>✓</span>
+                            ) : (
+                              <span
+                                title={row.errors.join('\n')}
+                                style={{ color: 'var(--danger)', fontSize: '0.85rem', cursor: 'help' }}
+                              >
+                                ✕
+                              </span>
+                            )}
+                          </td>
+                          <td style={{ fontSize: '0.8rem' }}>{row.id}</td>
+                          <td style={{ fontWeight: 600, fontSize: '0.82rem' }}>{row.part_number}</td>
+                          <td style={{ fontSize: '0.8rem' }}>{row.description}</td>
+                          <td>
+                            <span style={{
+                              fontSize: '0.68rem',
+                              fontWeight: 700,
+                              background: row.part_type === 'sheet' ? 'rgba(100,160,220,0.15)' : 'rgba(220,150,80,0.15)',
+                              color: row.part_type === 'sheet' ? '#7ab4e8' : '#e0a050',
+                              borderRadius: 4,
+                              padding: '1px 5px',
+                            }}>
+                              {row.part_type}
+                            </span>
+                          </td>
+                          <td style={{ fontSize: '0.8rem' }}>{row.material}</td>
+                          <td style={{ fontSize: '0.8rem' }}>{row.thickness}</td>
+                          <td style={{ fontSize: '0.8rem' }}>{row.tube_od}</td>
+                          <td style={{ fontSize: '0.8rem' }}>{row.tube_wall}</td>
+                          <td style={{ fontSize: '0.8rem' }}>{row.cut_length}</td>
+                          <td style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>{row.notes}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Validation errors summary */}
+                {csvRows.some((r) => r.errors.length > 0) && (
+                  <div className="warning-box" style={{ marginTop: 12 }}>
+                    <strong>Row errors (hover ✕ for details):</strong>
+                    <ul className="warning-list">
+                      {csvRows.flatMap((r, i) =>
+                        r.errors.map((e) => (
+                          <li key={`${i}-${e}`}>Row {i + 1} ({r.part_number || '?'}): {e}</li>
+                        ))
+                      )}
+                    </ul>
+                  </div>
+                )}
+              </>
+            )}
+
+            {importMessage && (
+              <div
+                className="message"
+                style={{
+                  marginTop: 12,
+                  color: importMessage.startsWith('✓') ? '#27ae60' : undefined,
+                }}
+              >
+                {importMessage}
+              </div>
+            )}
+          </div>
+        )}
       </section>
 
       {previewPart && (
