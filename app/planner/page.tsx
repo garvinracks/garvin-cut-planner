@@ -80,6 +80,7 @@ type MaterialRecord = {
   material: string | null
   tube_od: string | null
   tube_wall: string | null
+  stock_length_in: number | null
 }
 
 type PriceLogRecord = {
@@ -282,7 +283,7 @@ export default function PlannerPage() {
       supabase.from('sku_sub_assemblies').select('sku_id, sub_assembly_id, qty'),
       supabase.from('sub_assembly_parts').select('sub_assembly_id, part_id, qty'),
       supabase.from('part_operations').select('part_id, step, operation, notes').order('step', { ascending: true }),
-      supabase.from('materials').select('id, name, material_type, material, tube_od, tube_wall'),
+      supabase.from('materials').select('id, name, material_type, material, tube_od, tube_wall, stock_length_in'),
       supabase.from('material_price_logs').select('id, material_id, price, date_purchased, order_number, supplier').order('date_purchased', { ascending: false }),
     ])
 
@@ -734,10 +735,18 @@ export default function PlannerPage() {
   }, [tubeRows, sheetRows, parts, partOperations])
 
   const tubeBarPlans = useMemo<TubeBarPlan[]>(() => {
-    const sl = parseFloat(stockLength) || 240
+    const defaultSl = parseFloat(stockLength) || 240
     const kerf = parseFloat(kerfWidth) || 0.125
 
     return groupedTubeSections.map((section) => {
+      // Use stock_length_in from the matching material record, fall back to global default
+      const mat = materials.find(
+        (m) => m.material_type === 'tube' &&
+          m.tube_od === section.tube_od &&
+          m.tube_wall === section.tube_wall
+      )
+      const sl = mat?.stock_length_in ?? defaultSl
+
       const bars = packBars(section.rows, sl, kerf)
       const totalCuts = bars.reduce((s, b) => s + b.segments.length, 0)
       const totalStock = bars.length * sl
@@ -758,7 +767,7 @@ export default function PlannerPage() {
         utilizationPct,
       }
     })
-  }, [groupedTubeSections, stockLength, kerfWidth])
+  }, [groupedTubeSections, stockLength, kerfWidth, materials])
 
   return (
     <div className="section-stack">
@@ -1082,7 +1091,8 @@ export default function PlannerPage() {
 
             <div className="section-stack">
               {tubeBarPlans.map((plan) => {
-                const sl = parseFloat(stockLength) || 240
+                // sl is already baked into plan.totalStock / bar count; derive it back for display
+                const sl = plan.bars.length > 0 ? Math.round(plan.totalStock / plan.bars.length) : (parseFloat(stockLength) || 240)
                 return (
                   <div key={plan.key}>
                     {/* Group header */}
@@ -1249,7 +1259,7 @@ export default function PlannerPage() {
           {orderSheetOpen && (
             <div className="card-body">
               {(() => {
-                const sl = parseFloat(stockLength) || 240
+                const defaultSl = parseFloat(stockLength) || 240
                 type OrderRow = {
                   key: string
                   spec: string
@@ -1269,6 +1279,8 @@ export default function PlannerPage() {
                       (m.tube_od ?? '') === (section.tube_od ?? '') &&
                       (m.tube_wall ?? '') === (section.tube_wall ?? '')
                   )
+                  // Use per-material stock length if set, otherwise fall back to global default
+                  const sl = matchedMaterial?.stock_length_in ?? defaultSl
                   const latestLog = matchedMaterial
                     ? priceLogs.find((p) => p.material_id === matchedMaterial.id) ?? null
                     : null

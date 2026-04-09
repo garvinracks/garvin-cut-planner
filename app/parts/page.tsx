@@ -4,6 +4,28 @@ import { useEffect, useMemo, useState } from 'react'
 import { createBrowserClient } from '@/lib/supabase'
 import DxfPartPreview from '@/components/DxfPartPreview'
 
+// Manufacturing stage keys and display labels
+export const STAGE_KEYS = [
+  'requires_laser',
+  'requires_sheet_bend',
+  'requires_tube_bend',
+  'requires_saw',
+  'requires_drill',
+  'requires_weld',
+  'requires_powder',
+] as const
+export type StageKey = typeof STAGE_KEYS[number]
+
+export const STAGE_LABELS: Record<StageKey, string> = {
+  requires_laser:      'Laser',
+  requires_sheet_bend: 'Sheet Bend',
+  requires_tube_bend:  'Tube Bend',
+  requires_saw:        'Saw',
+  requires_drill:      'Drill Press',
+  requires_weld:       'Weld',
+  requires_powder:     'Powder Coat',
+}
+
 type Part = {
   id: string
   part_number: string
@@ -17,6 +39,13 @@ type Part = {
   dxf_file: string | null
   notes: string | null
   weight_lbs: number | null
+  requires_laser:      boolean
+  requires_sheet_bend: boolean
+  requires_tube_bend:  boolean
+  requires_saw:        boolean
+  requires_drill:      boolean
+  requires_weld:       boolean
+  requires_powder:     boolean
 }
 
 type MaterialRow = {
@@ -168,11 +197,19 @@ const emptyForm = {
   weight_lbs: '',
   dxf_file: '',
   notes: '',
+  requires_laser:      false,
+  requires_sheet_bend: false,
+  requires_tube_bend:  false,
+  requires_saw:        false,
+  requires_drill:      false,
+  requires_weld:       false,
+  requires_powder:     false,
 }
 
 export default function PartsPage() {
   const supabase = useMemo(() => createBrowserClient(), [])
   const [parts, setParts] = useState<Part[]>([])
+  const [weightUnit, setWeightUnit] = useState<'lbs' | 'oz'>('lbs')
   const [materials, setMaterials] = useState<MaterialRow[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -371,6 +408,7 @@ export default function PartsPage() {
   function startEdit(part: Part) {
     setEditingId(part.id)
     setSelectedDxfFile(null)
+    setWeightUnit('lbs')
     setForm({
       id: part.id,
       part_number: part.part_number,
@@ -381,6 +419,13 @@ export default function PartsPage() {
       weight_lbs: part.weight_lbs == null ? '' : String(part.weight_lbs),
       dxf_file: part.dxf_file || '',
       notes: part.notes || '',
+      requires_laser:      part.requires_laser,
+      requires_sheet_bend: part.requires_sheet_bend,
+      requires_tube_bend:  part.requires_tube_bend,
+      requires_saw:        part.requires_saw,
+      requires_drill:      part.requires_drill,
+      requires_weld:       part.requires_weld,
+      requires_powder:     part.requires_powder,
     })
     setMessage('')
     setOpMessage('')
@@ -392,6 +437,7 @@ export default function PartsPage() {
   function duplicatePart(part: Part) {
     setEditingId(null)
     setSelectedDxfFile(null)
+    setWeightUnit('lbs')
     setForm({
       id: `${part.id}-COPY`,
       part_number: `${part.part_number}-COPY`,
@@ -402,6 +448,13 @@ export default function PartsPage() {
       weight_lbs: part.weight_lbs == null ? '' : String(part.weight_lbs),
       dxf_file: part.dxf_file || '',
       notes: part.notes || '',
+      requires_laser:      part.requires_laser,
+      requires_sheet_bend: part.requires_sheet_bend,
+      requires_tube_bend:  part.requires_tube_bend,
+      requires_saw:        part.requires_saw,
+      requires_drill:      part.requires_drill,
+      requires_weld:       part.requires_weld,
+      requires_powder:     part.requires_powder,
     })
     setMessage('Duplicated into form. Change the part number and save.')
   }
@@ -462,6 +515,13 @@ export default function PartsPage() {
         weight_lbs: form.weight_lbs.trim() !== '' ? Number(form.weight_lbs) : null,
         dxf_file: form.part_type === 'sheet' ? uploadedDxfFileName : null,
         notes: form.notes.trim() || null,
+        requires_laser:      form.requires_laser,
+        requires_sheet_bend: form.requires_sheet_bend,
+        requires_tube_bend:  form.requires_tube_bend,
+        requires_saw:        form.requires_saw,
+        requires_drill:      form.requires_drill,
+        requires_weld:       form.requires_weld,
+        requires_powder:     form.requires_powder,
       }
 
       if (!payload.id || !payload.part_number || !payload.description) {
@@ -803,16 +863,58 @@ export default function PartsPage() {
               )}
 
               <div>
-                <label className="label">Part Weight (lbs)</label>
-                <input
-                  className="field"
-                  type="number"
-                  step="0.001"
-                  min="0"
-                  value={form.weight_lbs}
-                  onChange={(e) => updateField('weight_lbs', e.target.value)}
-                  placeholder="2.35"
-                />
+                <label className="label">Part Weight</label>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <input
+                    className="field"
+                    type="number"
+                    step={weightUnit === 'oz' ? '0.1' : '0.001'}
+                    min="0"
+                    value={
+                      // display in oz when oz mode: stored lbs × 16
+                      weightUnit === 'oz' && form.weight_lbs !== ''
+                        ? String(Math.round(parseFloat(form.weight_lbs) * 16 * 100) / 100)
+                        : form.weight_lbs
+                    }
+                    onChange={(e) => {
+                      const raw = e.target.value
+                      if (raw === '') { updateField('weight_lbs', ''); return }
+                      const num = parseFloat(raw)
+                      if (isNaN(num)) return
+                      // always store as lbs
+                      const lbs = weightUnit === 'oz' ? num / 16 : num
+                      updateField('weight_lbs', String(Math.round(lbs * 100000) / 100000))
+                    }}
+                    placeholder={weightUnit === 'oz' ? '37.6' : '2.35'}
+                    style={{ flex: 1 }}
+                  />
+                  {/* lbs / oz toggle */}
+                  <div style={{ display: 'flex', border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', flexShrink: 0 }}>
+                    {(['lbs', 'oz'] as const).map((unit) => (
+                      <button
+                        key={unit}
+                        type="button"
+                        onClick={() => setWeightUnit(unit)}
+                        style={{
+                          padding: '0 10px', height: 34, fontSize: '0.78rem', fontWeight: 600,
+                          background: weightUnit === unit ? 'var(--accent)' : 'var(--panel-2)',
+                          color:      weightUnit === unit ? '#fff' : 'var(--text-2)',
+                          border: 'none', cursor: 'pointer',
+                        }}
+                      >
+                        {unit}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {form.weight_lbs !== '' && (
+                  <div style={{ fontSize: '0.74rem', color: 'var(--muted)', marginTop: 4 }}>
+                    = {weightUnit === 'oz'
+                        ? `${form.weight_lbs} lbs`
+                        : `${Math.round(parseFloat(form.weight_lbs) * 16 * 10) / 10} oz`
+                      }
+                  </div>
+                )}
               </div>
 
               {selectedMaterial && (
@@ -840,6 +942,29 @@ export default function PartsPage() {
                   rows={4}
                   placeholder="Optional notes"
                 />
+              </div>
+
+              {/* ── Manufacturing Stages ─────────────────────────────────────── */}
+              <div style={{ gridColumn: '1 / -1' }}>
+                <label className="label">Manufacturing Stages</label>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 18px', marginTop: 6 }}>
+                  {(STAGE_KEYS.filter((k) => {
+                    // Hide sheet-bend for tube parts and tube-bend for sheet parts
+                    if (form.part_type === 'tube' && k === 'requires_sheet_bend') return false
+                    if (form.part_type === 'sheet' && k === 'requires_tube_bend') return false
+                    return true
+                  })).map((key) => (
+                    <label key={key} style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer', fontSize: '0.88rem', color: 'var(--text-2)' }}>
+                      <input
+                        type="checkbox"
+                        checked={form[key]}
+                        onChange={(e) => setForm((prev) => ({ ...prev, [key]: e.target.checked }))}
+                        style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--accent)' }}
+                      />
+                      {STAGE_LABELS[key]}
+                    </label>
+                  ))}
+                </div>
               </div>
             </div>
 
@@ -1232,9 +1357,28 @@ export default function PartsPage() {
                             )}
                             {part.weight_lbs != null && (
                               <div style={{ fontSize: '0.68rem', color: 'var(--muted)', marginTop: 1 }}>
-                                {part.weight_lbs} lbs
+                                {part.weight_lbs} lbs ({Math.round(part.weight_lbs * 16 * 10) / 10} oz)
                               </div>
                             )}
+                            {/* Stage badges */}
+                            {(() => {
+                              const activeStages = STAGE_KEYS.filter((k) => part[k])
+                              if (activeStages.length === 0) return null
+                              return (
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginTop: 5 }}>
+                                  {activeStages.map((k) => (
+                                    <span key={k} style={{
+                                      fontSize: '0.62rem', fontWeight: 700, letterSpacing: '0.04em',
+                                      background: 'var(--panel-2)', color: 'var(--accent)',
+                                      border: '1px solid var(--accent)', borderRadius: 3,
+                                      padding: '1px 5px', lineHeight: 1.5,
+                                    }}>
+                                      {STAGE_LABELS[k]}
+                                    </span>
+                                  ))}
+                                </div>
+                              )
+                            })()}
                           </div>
 
                           {/* ── Actions ── */}

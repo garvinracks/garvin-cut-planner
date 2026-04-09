@@ -39,6 +39,7 @@ type Order = {
   status: string
   ss_status: string | null
   synced_at: string | null
+  notes: string | null
   order_lines: OrderLine[]
 }
 
@@ -47,6 +48,31 @@ type InventoryRow = { sku_id: string; qty_on_hand: number }
 type AllocStatus = 'ready' | 'partial' | 'build_needed' | 'unmatched'
 type ViewMode = 'by_order' | 'by_sku'
 type SortDir = 'asc' | 'desc'
+
+// ── Category inference ────────────────────────────────────────────────────────
+
+const CATEGORY_ORDER = ['Racks', 'Ladders', 'Deflectors', 'Accessories', 'Uncategorized'] as const
+type Category = typeof CATEGORY_ORDER[number]
+
+function getCategory(description: string): Category {
+  const d = (description ?? '').toLowerCase()
+  if (d.includes('rack')) return 'Racks'
+  if (d.includes('ladder')) return 'Ladders'
+  if (d.includes('deflect')) return 'Deflectors'
+  if (d.includes('basket') || d.includes('mount') || d.includes('bracket') ||
+      d.includes('accessory') || d.includes('accessories') || d.includes('light') ||
+      d.includes('clamp') || d.includes('tie') || d.includes('cargo')) return 'Accessories'
+  return 'Uncategorized'
+}
+
+function orderCategory(order: Order, skus: SKU[]): Category {
+  for (const line of order.order_lines) {
+    const sku = skus.find((s) => s.id === line.sku_id)
+    const cat = getCategory(sku?.description ?? line.description ?? '')
+    if (cat !== 'Uncategorized') return cat
+  }
+  return 'Uncategorized'
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -106,6 +132,11 @@ export default function OrdersPage() {
   const [allocStatuses, setAllocStatuses] = useState<Record<string, AllocStatus>>({})
   const [allocated, setAllocated]         = useState(false)
 
+  // Category grouping + note editing
+  const [groupByCategory, setGroupByCategory] = useState(false)
+  const [editingNoteId, setEditingNoteId]     = useState<string | null>(null)
+  const [noteText, setNoteText]               = useState('')
+
   // ── Data loading ────────────────────────────────────────────────────────────
 
   async function loadConfig() {
@@ -120,7 +151,7 @@ export default function OrdersPage() {
       .from('orders')
       .select(`
         id, order_number, channel, customer_name, order_date, ship_by_date,
-        status, ss_status, synced_at,
+        status, ss_status, synced_at, notes,
         order_lines(id, sku_id, ss_sku, description, qty, unit_price)
       `)
       .eq('status', 'open')
@@ -291,6 +322,20 @@ export default function OrdersPage() {
     router.push('/planner')
   }
 
+  // ── Note editing ───────────────────────────────────────────────────────────
+
+  function openNote(order: Order) {
+    setEditingNoteId(order.id)
+    setNoteText(order.notes ?? '')
+  }
+
+  async function saveNote(orderId: string) {
+    const text = noteText.trim() || null
+    await supabase.from('orders').update({ notes: text }).eq('id', orderId)
+    setOrders((prev) => prev.map((o) => o.id === orderId ? { ...o, notes: text } : o))
+    setEditingNoteId(null)
+  }
+
   // ── Derived data ─────────────────────────────────────────────────────────────
 
   const sorted = useMemo(() =>
@@ -439,8 +484,8 @@ export default function OrdersPage() {
             </div>
           </div>
 
-          {/* View toggle */}
-          <div style={{ display: 'flex', gap: 6 }}>
+          {/* View toggle + group toggle */}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {(['by_order', 'by_sku'] as const).map((mode) => (
               <button
                 key={mode}
@@ -451,6 +496,15 @@ export default function OrdersPage() {
                 {mode === 'by_order' ? 'By Order' : 'By SKU'}
               </button>
             ))}
+            {viewMode === 'by_order' && (
+              <button
+                onClick={() => setGroupByCategory((v) => !v)}
+                className={groupByCategory ? 'btn btn-primary' : 'btn btn-secondary'}
+                style={{ fontSize: '0.78rem', padding: '4px 12px', height: 30 }}
+              >
+                🏷 Group by Category
+              </button>
+            )}
           </div>
         </div>
 
@@ -490,6 +544,32 @@ export default function OrdersPage() {
                 </span>
               </div>
 
+              {/* Note editing popover */}
+              {editingNoteId && (
+                <div style={{
+                  position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: 'rgba(0,0,0,0.45)',
+                }} onClick={() => setEditingNoteId(null)}>
+                  <div style={{ background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 10, padding: 20, width: 360, boxShadow: '0 8px 32px rgba(0,0,0,0.4)' }}
+                    onClick={(e) => e.stopPropagation()}>
+                    <div style={{ fontWeight: 700, marginBottom: 10, color: 'var(--text)' }}>Order Note</div>
+                    <textarea
+                      className="field"
+                      rows={4}
+                      value={noteText}
+                      onChange={(e) => setNoteText(e.target.value)}
+                      placeholder="Add a note for this order…"
+                      style={{ width: '100%', resize: 'vertical', marginBottom: 12 }}
+                      autoFocus
+                    />
+                    <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                      <button className="btn btn-secondary" style={{ height: 30, fontSize: '0.8rem' }} onClick={() => setEditingNoteId(null)}>Cancel</button>
+                      <button className="btn btn-primary" style={{ height: 30, fontSize: '0.8rem' }} onClick={() => saveNote(editingNoteId)}>Save Note</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div className="table-wrap">
                 <table className="table">
                   <thead>
@@ -503,154 +583,208 @@ export default function OrdersPage() {
                         />
                       </th>
                       <th>Order #</th>
-                      <th>Channel</th>
-                      <th>Customer</th>
                       <th
                         style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
                         onClick={() => setSortDir((d) => d === 'asc' ? 'desc' : 'asc')}
                       >
-                        Order Date {sortDir === 'asc' ? '↑' : '↓'}
+                        Date {sortDir === 'asc' ? '↑' : '↓'}
                       </th>
-                      <th>SKU(s)</th>
+                      <th>SKU</th>
                       <th style={{ textAlign: 'center' }}>Qty</th>
+                      <th>Customer</th>
                       {allocated && <th>Status</th>}
                     </tr>
                   </thead>
                   <tbody>
-                    {filtered.map((order) => {
-                      const isExpanded   = expandedIds.has(order.id)
-                      const isSelected   = selectedIds.has(order.id)
-                      const isMultiSku   = order.order_lines.length > 1
-                      const days         = daysSince(order.order_date)
-                      const status       = allocStatuses[order.id]
-                      const alloc        = status ? ALLOC_STYLE[status] : null
-                      const chStyle      = CH_STYLE[order.channel] ?? CH_STYLE.shopify
-                      const totalQty     = order.order_lines.reduce((s, l) => s + l.qty, 0)
+                    {(() => {
+                      // Build rows list, optionally with category group headers
+                      const rows: Array<{ type: 'group'; label: string } | { type: 'order'; order: Order }> = []
+                      if (groupByCategory) {
+                        const byCategory: Record<string, Order[]> = {}
+                        for (const cat of CATEGORY_ORDER) byCategory[cat] = []
+                        for (const order of filtered) {
+                          const cat = orderCategory(order, skus)
+                          byCategory[cat].push(order)
+                        }
+                        for (const cat of CATEGORY_ORDER) {
+                          if (byCategory[cat].length === 0) continue
+                          rows.push({ type: 'group', label: cat })
+                          for (const order of byCategory[cat]) rows.push({ type: 'order', order })
+                        }
+                      } else {
+                        for (const order of filtered) rows.push({ type: 'order', order })
+                      }
 
-                      return (
-                        <>
-                          <tr
-                            key={order.id}
-                            style={{
-                              background: isSelected
-                                ? 'var(--accent-soft)'
-                                : alloc?.bg ?? 'transparent',
-                            }}
-                          >
-                            {/* Checkbox */}
-                            <td onClick={(e) => e.stopPropagation()}>
-                              <input
-                                type="checkbox"
-                                checked={isSelected}
-                                onChange={() => toggleSelect(order.id)}
-                                style={{ cursor: 'pointer' }}
-                              />
-                            </td>
+                      const colSpan = allocated ? 7 : 6
 
-                            {/* Order # with optional expand arrow */}
-                            <td
-                              style={{ fontWeight: 700, cursor: isMultiSku ? 'pointer' : 'default', whiteSpace: 'nowrap' }}
-                              onClick={() => {
-                                if (!isMultiSku) return
-                                setExpandedIds((prev) => {
-                                  const next = new Set(prev)
-                                  next.has(order.id) ? next.delete(order.id) : next.add(order.id)
-                                  return next
-                                })
+                      return rows.map((row, idx) => {
+                        if (row.type === 'group') {
+                          return (
+                            <tr key={`group-${row.label}`}>
+                              <td colSpan={colSpan} style={{
+                                background: 'var(--panel-2)', color: 'var(--accent)',
+                                fontWeight: 800, fontSize: '0.78rem', letterSpacing: '0.1em',
+                                textTransform: 'uppercase', padding: '6px 14px',
+                                borderTop: idx > 0 ? '2px solid var(--border)' : undefined,
+                              }}>
+                                {row.label}
+                              </td>
+                            </tr>
+                          )
+                        }
+
+                        const { order } = row
+                        const isExpanded   = expandedIds.has(order.id)
+                        const isSelected   = selectedIds.has(order.id)
+                        const isMultiSku   = order.order_lines.length > 1
+                        const days         = daysSince(order.order_date)
+                        const status       = allocStatuses[order.id]
+                        const alloc        = status ? ALLOC_STYLE[status] : null
+                        const chStyle      = CH_STYLE[order.channel] ?? CH_STYLE.shopify
+                        const totalQty     = order.order_lines.reduce((s, l) => s + l.qty, 0)
+                        const hasNote      = !!order.notes
+
+                        return (
+                          <>
+                            <tr
+                              key={order.id}
+                              style={{
+                                background: isSelected
+                                  ? 'var(--accent-soft)'
+                                  : alloc?.bg ?? 'transparent',
                               }}
                             >
-                              {isMultiSku && (
-                                <span style={{ marginRight: 4, fontSize: '0.8rem', opacity: 0.7 }}>
-                                  {isExpanded ? '▾' : '▸'}
-                                </span>
-                              )}
-                              {order.order_number}
-                            </td>
+                              {/* Checkbox */}
+                              <td onClick={(e) => e.stopPropagation()}>
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={() => toggleSelect(order.id)}
+                                  style={{ cursor: 'pointer' }}
+                                />
+                              </td>
 
-                            {/* Channel */}
-                            <td>
-                              <span style={{ background: chStyle.bg, color: chStyle.text, borderRadius: 12, padding: '2px 9px', fontSize: '0.74rem', fontWeight: 700 }}>
-                                {order.channel === 'shopify' ? 'Shopify' : 'Turn5'}
-                              </span>
-                            </td>
+                              {/* Order # — expand arrow + channel badge + note flag */}
+                              <td
+                                style={{ fontWeight: 700, whiteSpace: 'nowrap' }}
+                              >
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                                  {isMultiSku && (
+                                    <span
+                                      style={{ fontSize: '0.8rem', opacity: 0.7, cursor: 'pointer', flexShrink: 0 }}
+                                      onClick={() => setExpandedIds((prev) => {
+                                        const next = new Set(prev)
+                                        next.has(order.id) ? next.delete(order.id) : next.add(order.id)
+                                        return next
+                                      })}
+                                    >
+                                      {isExpanded ? '▾' : '▸'}
+                                    </span>
+                                  )}
+                                  <span>{order.order_number}</span>
+                                  <span style={{ background: chStyle.bg, color: chStyle.text, borderRadius: 10, padding: '1px 7px', fontSize: '0.68rem', fontWeight: 700, flexShrink: 0 }}>
+                                    {order.channel === 'shopify' ? 'S' : 'T5'}
+                                  </span>
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); openNote(order) }}
+                                    title={hasNote ? order.notes! : 'Add note'}
+                                    style={{
+                                      background: 'none', border: 'none', cursor: 'pointer',
+                                      fontSize: '0.85rem', padding: '0 2px', opacity: hasNote ? 1 : 0.35,
+                                      color: hasNote ? 'var(--warning)' : 'var(--muted)',
+                                      lineHeight: 1, flexShrink: 0,
+                                    }}
+                                  >
+                                    🚩
+                                  </button>
+                                </div>
+                              </td>
 
-                            {/* Customer */}
-                            <td style={{ color: 'var(--text-2)' }}>{order.customer_name ?? '—'}</td>
-
-                            {/* Order Date */}
-                            <td style={{ whiteSpace: 'nowrap' }}>
-                              <span>{formatDate(order.order_date)}</span>
-                              {days !== null && (
-                                <span style={{
-                                  marginLeft: 6, fontSize: '0.72rem',
-                                  color: days > 14 ? 'var(--danger)' : days > 7 ? 'var(--warning)' : 'var(--muted)',
-                                  fontWeight: days > 7 ? 700 : 400,
-                                }}>
-                                  {days}d
-                                </span>
-                              )}
-                            </td>
-
-                            {/* SKU(s) */}
-                            <td style={{ fontFamily: 'monospace', fontSize: '0.84rem' }}>
-                              {isMultiSku ? (
-                                <span style={{ color: 'var(--muted)' }}>
-                                  {order.order_lines.length} SKUs
-                                </span>
-                              ) : (
-                                order.order_lines[0]?.ss_sku ?? '—'
-                              )}
-                            </td>
-
-                            {/* Qty */}
-                            <td style={{ textAlign: 'center', fontWeight: 700 }}>{totalQty}</td>
-
-                            {/* Alloc status */}
-                            {allocated && (
-                              <td>
-                                {alloc && (
-                                  <span style={{ fontSize: '0.78rem', color: alloc.color, fontWeight: 600, whiteSpace: 'nowrap' }}>
-                                    {alloc.icon} {alloc.label}
+                              {/* Date */}
+                              <td style={{ whiteSpace: 'nowrap' }}>
+                                <span>{formatDate(order.order_date)}</span>
+                                {days !== null && (
+                                  <span style={{
+                                    marginLeft: 6, fontSize: '0.72rem',
+                                    color: days > 14 ? 'var(--danger)' : days > 7 ? 'var(--warning)' : 'var(--muted)',
+                                    fontWeight: days > 7 ? 700 : 400,
+                                  }}>
+                                    {days}d
                                   </span>
                                 )}
                               </td>
-                            )}
-                          </tr>
 
-                          {/* Expanded multi-SKU lines */}
-                          {isMultiSku && isExpanded && (
-                            <tr key={`${order.id}-exp`}>
-                              <td colSpan={allocated ? 8 : 7} style={{ padding: 0, background: 'var(--panel-2)' }}>
-                                <div style={{ padding: '6px 20px 10px 52px' }}>
-                                  <table className="table" style={{ background: 'transparent' }}>
-                                    <thead>
-                                      <tr>
-                                        <th>SKU</th>
-                                        <th>Description</th>
-                                        <th style={{ textAlign: 'center' }}>Qty</th>
-                                      </tr>
-                                    </thead>
-                                    <tbody>
-                                      {order.order_lines.map((line) => (
-                                        <tr key={line.id}>
-                                          <td style={{ fontFamily: 'monospace', fontSize: '0.83rem', fontWeight: 600 }}>
-                                            {line.ss_sku}
-                                          </td>
-                                          <td style={{ color: 'var(--text-2)', fontSize: '0.83rem' }}>
-                                            {line.description ?? skus.find((s) => s.id === line.sku_id)?.description ?? '—'}
-                                          </td>
-                                          <td style={{ textAlign: 'center', fontWeight: 700 }}>{line.qty}</td>
-                                        </tr>
-                                      ))}
-                                    </tbody>
-                                  </table>
-                                </div>
+                              {/* SKU */}
+                              <td style={{ fontFamily: 'monospace', fontSize: '0.84rem' }}>
+                                {isMultiSku ? (
+                                  <span
+                                    style={{ color: 'var(--muted)', cursor: 'pointer' }}
+                                    onClick={() => setExpandedIds((prev) => {
+                                      const next = new Set(prev)
+                                      next.has(order.id) ? next.delete(order.id) : next.add(order.id)
+                                      return next
+                                    })}
+                                  >
+                                    {order.order_lines.length} SKUs ▸
+                                  </span>
+                                ) : (
+                                  order.order_lines[0]?.ss_sku ?? '—'
+                                )}
                               </td>
+
+                              {/* Qty */}
+                              <td style={{ textAlign: 'center', fontWeight: 700 }}>{totalQty}</td>
+
+                              {/* Customer */}
+                              <td style={{ color: 'var(--text-2)' }}>{order.customer_name ?? '—'}</td>
+
+                              {/* Alloc status */}
+                              {allocated && (
+                                <td>
+                                  {alloc && (
+                                    <span style={{ fontSize: '0.78rem', color: alloc.color, fontWeight: 600, whiteSpace: 'nowrap' }}>
+                                      {alloc.icon} {alloc.label}
+                                    </span>
+                                  )}
+                                </td>
+                              )}
                             </tr>
-                          )}
-                        </>
-                      )
-                    })}
+
+                            {/* Expanded multi-SKU lines */}
+                            {isMultiSku && isExpanded && (
+                              <tr key={`${order.id}-exp`}>
+                                <td colSpan={colSpan} style={{ padding: 0, background: 'var(--panel-2)' }}>
+                                  <div style={{ padding: '6px 20px 10px 52px' }}>
+                                    <table className="table" style={{ background: 'transparent' }}>
+                                      <thead>
+                                        <tr>
+                                          <th>SKU</th>
+                                          <th>Description</th>
+                                          <th style={{ textAlign: 'center' }}>Qty</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {order.order_lines.map((line) => (
+                                          <tr key={line.id}>
+                                            <td style={{ fontFamily: 'monospace', fontSize: '0.83rem', fontWeight: 600 }}>
+                                              {line.ss_sku}
+                                            </td>
+                                            <td style={{ color: 'var(--text-2)', fontSize: '0.83rem' }}>
+                                              {line.description ?? skus.find((s) => s.id === line.sku_id)?.description ?? '—'}
+                                            </td>
+                                            <td style={{ textAlign: 'center', fontWeight: 700 }}>{line.qty}</td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </>
+                        )
+                      })
+                    })()}
                   </tbody>
                 </table>
               </div>
