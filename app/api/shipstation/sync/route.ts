@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { createAdminClient } from '@/lib/supabase'
+import { createClient } from '@supabase/supabase-js'
 
 const SS_BASE = 'https://ssapi.shipstation.com'
 
@@ -36,7 +36,10 @@ async function fetchAllOrders(storeId: number): Promise<any[]> {
 
 export async function POST() {
   try {
-    const supabase = createAdminClient()
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    )
 
     // ── Load store configuration saved in app_settings ─────────────────────────
     const { data: setting } = await supabase
