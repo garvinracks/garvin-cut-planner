@@ -88,6 +88,74 @@ type GroupedSheetSection = {
   totalQty: number
 }
 
+type BarSegment = {
+  partNumber: string
+  cutLength: number
+}
+
+type TubeBar = {
+  segments: BarSegment[]
+  used: number
+  remnant: number
+}
+
+type TubeBarPlan = {
+  key: string
+  material: string
+  tube_od: string
+  tube_wall: string
+  bars: TubeBar[]
+  totalCuts: number
+  totalStock: number
+  totalUsed: number
+  totalRemnant: number
+  utilizationPct: number
+}
+
+// Deterministic color per part number
+const BAR_COLORS = [
+  '#e67e22', '#3498db', '#2ecc71', '#9b59b6', '#e74c3c',
+  '#1abc9c', '#f1c40f', '#2980b9', '#27ae60', '#d35400',
+]
+function segmentColor(partNumber: string): string {
+  let h = 0
+  for (let i = 0; i < partNumber.length; i++) h = (h * 31 + partNumber.charCodeAt(i)) | 0
+  return BAR_COLORS[Math.abs(h) % BAR_COLORS.length]
+}
+
+function packBars(rows: TubeResultRow[], stockLength: number, kerf: number): TubeBar[] {
+  // Expand each row into individual cuts
+  const cuts: BarSegment[] = []
+  for (const row of rows) {
+    for (let i = 0; i < row.qty; i++) {
+      cuts.push({ partNumber: row.part_number, cutLength: row.cut_length })
+    }
+  }
+  // Sort longest-first for better utilization
+  cuts.sort((a, b) => b.cutLength - a.cutLength)
+
+  const bars: TubeBar[] = []
+
+  for (const cut of cuts) {
+    const cost = cut.cutLength + kerf // each piece costs its length + one saw kerf
+    let placed = false
+    for (const bar of bars) {
+      if (bar.used + cost <= stockLength) {
+        bar.segments.push(cut)
+        bar.used += cost
+        bar.remnant = stockLength - bar.used
+        placed = true
+        break
+      }
+    }
+    if (!placed) {
+      bars.push({ segments: [cut], used: cost, remnant: stockLength - cost })
+    }
+  }
+
+  return bars
+}
+
 export default function PlannerPage() {
   const supabase = useMemo(() => createBrowserClient(), [])
 
@@ -111,6 +179,8 @@ export default function PlannerPage() {
   const [warnings, setWarnings] = useState<string[]>([])
   const [printedAt, setPrintedAt] = useState('')
   const [shopFloorOpen, setShopFloorOpen] = useState(false)
+  const [stockLength, setStockLength] = useState('240')
+  const [kerfWidth, setKerfWidth] = useState('0.125')
 
   useEffect(() => {
     setPrintedAt(new Date().toLocaleString())
@@ -469,6 +539,33 @@ export default function PlannerPage() {
     })
   }, [tubeRows, sheetRows, parts, partOperations])
 
+  const tubeBarPlans = useMemo<TubeBarPlan[]>(() => {
+    const sl = parseFloat(stockLength) || 240
+    const kerf = parseFloat(kerfWidth) || 0.125
+
+    return groupedTubeSections.map((section) => {
+      const bars = packBars(section.rows, sl, kerf)
+      const totalCuts = bars.reduce((s, b) => s + b.segments.length, 0)
+      const totalStock = bars.length * sl
+      const totalUsed = bars.reduce((s, b) => s + b.used, 0)
+      const totalRemnant = bars.reduce((s, b) => s + b.remnant, 0)
+      const utilizationPct = totalStock > 0 ? (totalUsed / totalStock) * 100 : 0
+
+      return {
+        key: section.key,
+        material: section.material,
+        tube_od: section.tube_od,
+        tube_wall: section.tube_wall,
+        bars,
+        totalCuts,
+        totalStock,
+        totalUsed,
+        totalRemnant,
+        utilizationPct,
+      }
+    })
+  }, [groupedTubeSections, stockLength, kerfWidth])
+
   return (
     <div className="section-stack">
       <div className="print-only" style={{ marginBottom: 18 }}>
@@ -671,6 +768,191 @@ export default function PlannerPage() {
           )}
         </div>
       </section>
+
+      {/* ── Tube Bar Calculator ── */}
+      {tubeRows.length > 0 && (
+        <section className="card">
+          <div className="card-header">
+            <h2 className="card-title">Tube Bar Calculator</h2>
+            <div className="card-subtitle">
+              How many stock bars to pull and how to cut them, with a kerf-accurate cut plan.
+            </div>
+          </div>
+
+          <div className="card-body">
+            {/* Settings row */}
+            <div style={{ display: 'flex', gap: 16, alignItems: 'flex-end', marginBottom: 28, flexWrap: 'wrap' }}>
+              <div>
+                <label className="label" style={{ marginBottom: 4 }}>Stock bar length (inches)</label>
+                <input
+                  className="field"
+                  value={stockLength}
+                  onChange={(e) => setStockLength(e.target.value)}
+                  style={{ width: 110 }}
+                  placeholder="240"
+                />
+              </div>
+              <div>
+                <label className="label" style={{ marginBottom: 4 }}>Kerf width (inches)</label>
+                <input
+                  className="field"
+                  value={kerfWidth}
+                  onChange={(e) => setKerfWidth(e.target.value)}
+                  style={{ width: 90 }}
+                  placeholder="0.125"
+                />
+              </div>
+              <div style={{ fontSize: '0.8rem', color: 'var(--muted)', paddingBottom: 6 }}>
+                Default: 240&Prime; (20 ft) bar · ⅛&Prime; kerf
+              </div>
+            </div>
+
+            <div className="section-stack">
+              {tubeBarPlans.map((plan) => {
+                const sl = parseFloat(stockLength) || 240
+                return (
+                  <div key={plan.key}>
+                    {/* Group header */}
+                    <div className="group-title" style={{ marginBottom: 10 }}>
+                      {plan.material || 'Unspecified'} / {plan.tube_od || '?'} × {plan.tube_wall || '?'} wall
+                    </div>
+
+                    {/* Summary pills */}
+                    <div className="result-summary" style={{ marginBottom: 14 }}>
+                      <div className="pill" style={{ fontWeight: 700, background: 'var(--accent-soft)', border: '1px solid var(--accent-border)', color: 'var(--accent)' }}>
+                        {plan.bars.length} bar{plan.bars.length !== 1 ? 's' : ''} of {sl}&Prime;
+                      </div>
+                      <div className="pill">
+                        {plan.totalCuts} cuts
+                      </div>
+                      <div className="pill">
+                        Utilization: <strong>{plan.utilizationPct.toFixed(1)}%</strong>
+                      </div>
+                      <div className="pill">
+                        Total remnant: <strong>{plan.totalRemnant.toFixed(2)}&Prime;</strong>
+                        {' '}({(plan.totalRemnant / 12).toFixed(2)} ft)
+                      </div>
+                    </div>
+
+                    {/* Per-bar visual layout */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {plan.bars.map((bar, bi) => (
+                        <div key={bi} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          {/* Bar label */}
+                          <div style={{
+                            width: 44,
+                            flexShrink: 0,
+                            fontSize: '0.72rem',
+                            fontWeight: 700,
+                            color: 'var(--muted)',
+                            textAlign: 'right',
+                          }}>
+                            #{bi + 1}
+                          </div>
+
+                          {/* Visual bar */}
+                          <div style={{
+                            flex: 1,
+                            height: 30,
+                            display: 'flex',
+                            border: '1px solid var(--border)',
+                            borderRadius: 5,
+                            overflow: 'hidden',
+                            background: 'var(--panel-2)',
+                          }}>
+                            {bar.segments.map((seg, si) => {
+                              const pct = ((seg.cutLength + (parseFloat(kerfWidth) || 0.125)) / sl) * 100
+                              const color = segmentColor(seg.partNumber)
+                              return (
+                                <div
+                                  key={si}
+                                  title={`${seg.partNumber}: ${seg.cutLength}"`}
+                                  style={{
+                                    width: `${pct}%`,
+                                    background: color,
+                                    borderRight: '2px solid rgba(0,0,0,0.35)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    overflow: 'hidden',
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  <span style={{
+                                    fontSize: '0.58rem',
+                                    fontWeight: 700,
+                                    color: '#fff',
+                                    textShadow: '0 1px 2px rgba(0,0,0,0.7)',
+                                    whiteSpace: 'nowrap',
+                                    padding: '0 3px',
+                                    overflow: 'hidden',
+                                  }}>
+                                    {seg.cutLength}&Prime;
+                                  </span>
+                                </div>
+                              )
+                            })}
+                            {/* Remnant */}
+                            {bar.remnant > 0 && (
+                              <div style={{
+                                flex: 1,
+                                background: 'var(--panel)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                paddingLeft: 6,
+                                minWidth: 0,
+                              }}>
+                                <span style={{
+                                  fontSize: '0.62rem',
+                                  color: 'var(--muted)',
+                                  fontStyle: 'italic',
+                                  whiteSpace: 'nowrap',
+                                  overflow: 'hidden',
+                                }}>
+                                  {bar.remnant.toFixed(2)}&Prime; remnant
+                                </span>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Bar info */}
+                          <div style={{
+                            width: 80,
+                            flexShrink: 0,
+                            fontSize: '0.68rem',
+                            color: 'var(--muted)',
+                            lineHeight: 1.3,
+                          }}>
+                            <div>{bar.segments.length} pc{bar.segments.length !== 1 ? 's' : ''}</div>
+                            <div style={{ color: bar.remnant < 6 ? '#e74c3c' : 'inherit' }}>
+                              {bar.remnant.toFixed(2)}&Prime; left
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Legend */}
+                    {(() => {
+                      const uniqueParts = Array.from(new Set(plan.bars.flatMap((b) => b.segments.map((s) => s.partNumber))))
+                      return (
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+                          {uniqueParts.map((pn) => (
+                            <div key={pn} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.72rem', color: 'var(--muted)' }}>
+                              <div style={{ width: 12, height: 12, borderRadius: 2, background: segmentColor(pn), flexShrink: 0 }} />
+                              {pn}
+                            </div>
+                          ))}
+                        </div>
+                      )
+                    })()}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </section>
+      )}
 
       <section className="card">
         <div className="card-header">
