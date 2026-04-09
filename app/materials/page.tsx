@@ -12,6 +12,8 @@ type MaterialRow = {
   tube_od: string | null
   tube_wall: string | null
   notes: string | null
+  cost_per_lb: number | null
+  scrap_rate: number | null   // stored as 0–1 decimal (e.g. 0.10 = 10 %)
 }
 
 type PriceLogEntry = {
@@ -32,6 +34,8 @@ const emptyForm = {
   tube_dimension: '',
   wall_thickness: '',
   notes: '',
+  cost_per_lb: '',
+  scrap_rate: '',   // displayed as percent (e.g. "10" → stored as 0.10)
 }
 
 const emptyPriceForm = {
@@ -286,6 +290,8 @@ export default function MaterialsPage() {
       tube_dimension: isTube ? row.tube_od || '' : '',
       wall_thickness: isTube ? row.tube_wall || '' : '',
       notes: row.notes || '',
+      cost_per_lb: row.cost_per_lb != null ? String(row.cost_per_lb) : '',
+      scrap_rate: row.scrap_rate != null ? String(Math.round(row.scrap_rate * 100)) : '',
     })
     setMessage('')
     setPriceMessage('')
@@ -315,6 +321,8 @@ export default function MaterialsPage() {
       tube_od: form.material_type === 'tube' ? form.tube_dimension.trim() || null : null,
       tube_wall: form.material_type === 'tube' ? form.wall_thickness.trim() || null : null,
       notes: form.notes.trim() || null,
+      cost_per_lb: form.cost_per_lb.trim() ? parseFloat(form.cost_per_lb) : null,
+      scrap_rate: form.scrap_rate.trim() ? parseFloat(form.scrap_rate) / 100 : null,
     }
 
     const query = editingId
@@ -533,6 +541,33 @@ export default function MaterialsPage() {
                   value={generatedName}
                   readOnly
                   placeholder="Auto-generated"
+                />
+              </div>
+
+              <div>
+                <label className="label">Cost per lb ($)</label>
+                <input
+                  className="field"
+                  type="number"
+                  step="0.001"
+                  min="0"
+                  value={form.cost_per_lb}
+                  onChange={(e) => updateField('cost_per_lb', e.target.value)}
+                  placeholder="0.45"
+                />
+              </div>
+
+              <div>
+                <label className="label">Scrap / Utilization Rate (%)</label>
+                <input
+                  className="field"
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  max="100"
+                  value={form.scrap_rate}
+                  onChange={(e) => updateField('scrap_rate', e.target.value)}
+                  placeholder="10"
                 />
               </div>
 

@@ -275,8 +275,9 @@ export default function SubassembliesPage() {
     setSaving(true)
     setMessage('')
 
+    const newId = form.id.trim()
     const payload = {
-      id: form.id.trim(),
+      id: newId,
       name: form.name.trim(),
       notes: form.notes.trim() || null,
     }
@@ -287,6 +288,32 @@ export default function SubassembliesPage() {
       return
     }
 
+    // ── ID rename: insert new + re-point FK refs + delete old ─────────────────
+    if (editingId && editingId !== newId) {
+      const currentItem = items.find((i) => i.id === editingId)
+      const { error: insertErr } = await supabase.from('sub_assemblies').insert({
+        ...payload,
+        image_file: currentItem?.image_file ?? null,
+      })
+      if (insertErr) {
+        setMessage(`Rename failed: ${insertErr.message}`)
+        setSaving(false)
+        return
+      }
+      await Promise.all([
+        supabase.from('sub_assembly_parts').update({ sub_assembly_id: newId }).eq('sub_assembly_id', editingId),
+        supabase.from('sku_sub_assemblies').update({ sub_assembly_id: newId }).eq('sub_assembly_id', editingId),
+      ])
+      await supabase.from('sub_assemblies').delete().eq('id', editingId)
+      setMessage(`Renamed ${editingId} → ${newId}.`)
+      setEditingId(newId)
+      setSelectedSubassemblyId(newId)
+      await loadSubassemblies()
+      setSaving(false)
+      return
+    }
+
+    // ── Normal save / update ───────────────────────────────────────────────────
     const query = editingId
       ? supabase.from('sub_assemblies').update(payload).eq('id', editingId)
       : supabase.from('sub_assemblies').insert(payload)
@@ -425,13 +452,16 @@ export default function SubassembliesPage() {
               }}
             >
               <div>
-                <label className="label">ID</label>
+                <label className="label">ID {editingId && editingId !== form.id.trim() && (
+                  <span style={{ color: 'var(--warning)', fontSize: '0.7rem', textTransform: 'none', letterSpacing: 0 }}>
+                    {' '}— will rename from {editingId}
+                  </span>
+                )}</label>
                 <input
                   className="field"
                   value={form.id}
                   onChange={(e) => updateField('id', e.target.value)}
                   placeholder="44307-SIDE"
-                  disabled={!!editingId}
                 />
               </div>
 
@@ -599,13 +629,19 @@ export default function SubassembliesPage() {
                           padding: '8px 12px',
                         }}
                       >
-                        {imgUrl && (
+                        {imgUrl ? (
                           // eslint-disable-next-line @next/next/no-img-element
                           <img
                             src={imgUrl}
                             alt={item.id}
                             style={{ width: 44, height: 44, objectFit: 'cover', borderRadius: 6, flexShrink: 0, border: '1px solid var(--border)' }}
                           />
+                        ) : (
+                          <div style={{
+                            width: 44, height: 44, borderRadius: 6, border: '1px dashed var(--border)',
+                            flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            fontSize: '1.1rem', color: 'var(--border-2)',
+                          }}>🔩</div>
                         )}
                         <div>
                           <div style={{ fontWeight: 700 }}>{item.id}</div>

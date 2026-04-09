@@ -36,6 +36,7 @@ type Part = {
   cut_length: number | null
   dxf_file: string | null
   notes?: string | null
+  weight_lbs: number | null
 }
 
 type MaterialRow = {
@@ -46,6 +47,8 @@ type MaterialRow = {
   thickness: string | null
   tube_od: string | null
   tube_wall: string | null
+  cost_per_lb: number | null
+  scrap_rate: number | null
 }
 
 type SkuSubAssemblyRow = {
@@ -254,7 +257,7 @@ export default function SkusPage() {
   async function loadMaterials() {
     const { data, error } = await supabase
       .from('materials')
-      .select('id, name, material_type, material, thickness, tube_od, tube_wall')
+      .select('id, name, material_type, material, thickness, tube_od, tube_wall, cost_per_lb, scrap_rate')
       .order('name', { ascending: true })
 
     if (!error) {
@@ -1125,6 +1128,51 @@ export default function SkusPage() {
   const selectedSku = skus.find((sku) => sku.id === selectedSkuId) || null
   const selectedMaterials = materials.filter((material) => material.material_type === newPartForm.part_type)
 
+  // ── Cost estimation helpers ───────────────────────────────────────────────
+  function findMaterialForPart(part: Part): MaterialRow | null {
+    return (
+      materials.find((m) => {
+        if (m.material_type !== part.part_type) return false
+        if (part.part_type === 'sheet') {
+          return m.material === part.material && m.thickness === part.thickness
+        }
+        return (
+          m.material === part.material &&
+          m.tube_od === part.tube_od &&
+          m.tube_wall === part.tube_wall
+        )
+      }) ?? null
+    )
+  }
+
+  function calcPartLineCost(partId: string, qty: number): number | null {
+    const part = parts.find((p) => p.id === partId)
+    if (!part?.weight_lbs) return null
+    const mat = findMaterialForPart(part)
+    if (!mat?.cost_per_lb) return null
+    const scrap = mat.scrap_rate ?? 0
+    return qty * part.weight_lbs * mat.cost_per_lb * (1 + scrap)
+  }
+
+  const skuTotalCost: number | null = (() => {
+    if (!selectedSkuId) return null
+    let total = 0
+    let hasAny = false
+    for (const row of selectedSkuParts) {
+      const c = calcPartLineCost(row.part_id, row.qty)
+      if (c != null) { total += c; hasAny = true }
+    }
+    // Sub-assembly parts
+    for (const subRow of selectedSkuSubassemblies) {
+      const subParts = subassemblyPartMap[subRow.sub_assembly_id] ?? []
+      for (const sp of subParts) {
+        const c = calcPartLineCost(sp.part_id, sp.qty * subRow.qty)
+        if (c != null) { total += c; hasAny = true }
+      }
+    }
+    return hasAny ? total : null
+  })()
+
   return (
     <div className="section-stack">
       <div className="page-header">
@@ -1695,12 +1743,14 @@ export default function SkusPage() {
                                 <th style={{ width: 120 }}>Preview</th>
                                 <th>Part</th>
                                 <th>Qty</th>
+                                <th>Est. Cost</th>
                                 <th></th>
                               </tr>
                             </thead>
                             <tbody>
                               {selectedSkuParts.map((row) => {
                                 const fullPart = parts.find((part) => part.id === row.part_id)
+                                const lineCost = calcPartLineCost(row.part_id, row.qty)
 
                                 return (
                                   <tr key={row.id}>
@@ -1720,6 +1770,11 @@ export default function SkusPage() {
                                           {row.part_description}
                                         </div>
                                       )}
+                                      {fullPart?.weight_lbs != null && (
+                                        <div style={{ color: 'var(--muted)', fontSize: '0.75rem' }}>
+                                          {fullPart.weight_lbs} lb/ea
+                                        </div>
+                                      )}
                                     </td>
                                     <td>
                                       <input
@@ -1727,6 +1782,17 @@ export default function SkusPage() {
                                         defaultValue={row.qty}
                                         onBlur={(e) => void handleUpdateSkuPartQty(row.id, Number(e.target.value))}
                                       />
+                                    </td>
+                                    <td style={{ whiteSpace: 'nowrap' }}>
+                                      {lineCost != null ? (
+                                        <span style={{ color: 'var(--success)', fontWeight: 600 }}>
+                                          ${lineCost.toFixed(2)}
+                                        </span>
+                                      ) : (
+                                        <span style={{ color: 'var(--muted)', fontSize: '0.75rem' }}>
+                                          —
+                                        </span>
+                                      )}
                                     </td>
                                     <td>
                                       <button
@@ -1741,6 +1807,15 @@ export default function SkusPage() {
                                 )
                               })}
                             </tbody>
+                            {skuTotalCost != null && (
+                              <tfoot>
+                                <tr>
+                                  <td colSpan={3} style={{ textAlign: 'right', paddingRight: 8 }}>Est. material cost (direct parts)</td>
+                                  <td style={{ color: 'var(--success)', whiteSpace: 'nowrap' }}>${skuTotalCost.toFixed(2)}</td>
+                                  <td />
+                                </tr>
+                              </tfoot>
+                            )}
                           </table>
                         </div>
                       )}

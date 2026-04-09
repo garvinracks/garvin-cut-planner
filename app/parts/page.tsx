@@ -16,6 +16,7 @@ type Part = {
   cut_length: number | null
   dxf_file: string | null
   notes: string | null
+  weight_lbs: number | null
 }
 
 type MaterialRow = {
@@ -164,6 +165,7 @@ const emptyForm = {
   part_type: 'sheet',
   material_id: '',
   cut_length: '',
+  weight_lbs: '',
   dxf_file: '',
   notes: '',
 }
@@ -376,6 +378,7 @@ export default function PartsPage() {
       part_type: part.part_type,
       material_id: findMatchingMaterialId(part),
       cut_length: part.cut_length == null ? '' : String(part.cut_length),
+      weight_lbs: part.weight_lbs == null ? '' : String(part.weight_lbs),
       dxf_file: part.dxf_file || '',
       notes: part.notes || '',
     })
@@ -455,6 +458,7 @@ export default function PartsPage() {
           form.part_type === 'tube' && form.cut_length.trim() !== ''
             ? Number(form.cut_length)
             : null,
+        weight_lbs: form.weight_lbs.trim() !== '' ? Number(form.weight_lbs) : null,
         dxf_file: form.part_type === 'sheet' ? uploadedDxfFileName : null,
         notes: form.notes.trim() || null,
       }
@@ -796,6 +800,19 @@ export default function PartsPage() {
                   />
                 </div>
               )}
+
+              <div>
+                <label className="label">Part Weight (lbs)</label>
+                <input
+                  className="field"
+                  type="number"
+                  step="0.001"
+                  min="0"
+                  value={form.weight_lbs}
+                  onChange={(e) => updateField('weight_lbs', e.target.value)}
+                  placeholder="2.35"
+                />
+              </div>
 
               {selectedMaterial && (
                 <div style={{ gridColumn: '1 / -1' }} className="warning-box">
