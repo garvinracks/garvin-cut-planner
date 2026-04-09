@@ -57,6 +57,22 @@ const OPERATION_OPTIONS = [
 
 const emptyOpForm = { operation: 'Laser Cut', notes: '' }
 
+type PartRevision = {
+  id: string
+  part_id: string
+  changed_at: string
+  changed_fields: string
+  old_values: string
+  new_values: string
+}
+
+type UsageRef = {
+  type: 'sku' | 'subassembly'
+  id: string
+  name: string
+  qty: number
+}
+
 const emptyForm = {
   id: '',
   part_number: '',
@@ -88,6 +104,14 @@ export default function PartsPage() {
   const [savingOp, setSavingOp] = useState(false)
   const [opMessage, setOpMessage] = useState('')
   const [loadingOps, setLoadingOps] = useState(false)
+
+  // Usage map
+  const [usageRefs, setUsageRefs] = useState<UsageRef[]>([])
+  const [loadingUsage, setLoadingUsage] = useState(false)
+
+  // Revision log
+  const [revisions, setRevisions] = useState<PartRevision[]>([])
+  const [loadingRevisions, setLoadingRevisions] = useState(false)
 
   async function loadParts() {
     const { data, error } = await supabase
@@ -149,6 +173,8 @@ export default function PartsPage() {
     setMessage('')
     setOperations([])
     setOpMessage('')
+    setUsageRefs([])
+    setRevisions([])
   }
 
   function findMatchingMaterialId(part: Part) {
@@ -188,6 +214,8 @@ export default function PartsPage() {
     setMessage('')
     setOpMessage('')
     void loadOperations(part.id)
+    void loadUsage(part.id)
+    void loadRevisions(part.id)
   }
 
   function duplicatePart(part: Part) {
@@ -277,6 +305,11 @@ export default function PartsPage() {
         setMessage('Cut Length must be a valid number.')
         setSaving(false)
         return
+      }
+
+      if (editingId) {
+        const oldPart = parts.find((p) => p.id === editingId)
+        if (oldPart) await logRevision(editingId, oldPart, payload)
       }
 
       const query = editingId
@@ -370,6 +403,61 @@ export default function PartsPage() {
     await supabase.from('part_operations').update({ step: b.step }).eq('id', a.id)
     await supabase.from('part_operations').update({ step: a.step }).eq('id', b.id)
     await loadOperations(editingId)
+  }
+
+  async function loadUsage(partId: string) {
+    setLoadingUsage(true)
+    const [{ data: skuPartData }, { data: subPartData }] = await Promise.all([
+      supabase
+        .from('sku_parts')
+        .select('qty, sku:skus(id, description)')
+        .eq('part_id', partId),
+      supabase
+        .from('sub_assembly_parts')
+        .select('qty, sub_assembly:sub_assemblies(id, name)')
+        .eq('part_id', partId),
+    ])
+    const refs: UsageRef[] = []
+    for (const row of (skuPartData ?? []) as any[]) {
+      if (row.sku) refs.push({ type: 'sku', id: row.sku.id, name: row.sku.description || row.sku.id, qty: row.qty })
+    }
+    for (const row of (subPartData ?? []) as any[]) {
+      if (row.sub_assembly) refs.push({ type: 'subassembly', id: row.sub_assembly.id, name: row.sub_assembly.name, qty: row.qty })
+    }
+    setUsageRefs(refs)
+    setLoadingUsage(false)
+  }
+
+  async function loadRevisions(partId: string) {
+    setLoadingRevisions(true)
+    const { data } = await supabase
+      .from('part_revisions')
+      .select('*')
+      .eq('part_id', partId)
+      .order('changed_at', { ascending: false })
+    setRevisions((data ?? []) as PartRevision[])
+    setLoadingRevisions(false)
+  }
+
+  async function logRevision(partId: string, oldPart: Part, newValues: Record<string, unknown>) {
+    const changed: string[] = []
+    const oldVals: Record<string, unknown> = {}
+    const newVals: Record<string, unknown> = {}
+    const fields: (keyof Part)[] = ['part_number', 'description', 'part_type', 'material', 'thickness', 'tube_od', 'tube_wall', 'cut_length', 'dxf_file', 'notes']
+    for (const f of fields) {
+      if (String(oldPart[f] ?? '') !== String(newValues[f] ?? '')) {
+        changed.push(f)
+        oldVals[f] = oldPart[f]
+        newVals[f] = newValues[f]
+      }
+    }
+    if (changed.length === 0) return
+    await supabase.from('part_revisions').insert({
+      part_id: partId,
+      changed_fields: changed.join(', '),
+      old_values: JSON.stringify(oldVals),
+      new_values: JSON.stringify(newVals),
+    })
   }
 
   const filteredParts = parts.filter((part) => {
@@ -714,6 +802,101 @@ export default function PartsPage() {
             </div>
           </div>
         </section>
+      )}
+
+      {/* ── Part Usage Map + Revision Log ── */}
+      {editingId && (
+        <div className="grid-2" style={{ alignItems: 'start' }}>
+          {/* Usage map */}
+          <section className="card">
+            <div className="card-header">
+              <h2 className="card-title">Used In</h2>
+              <div className="card-subtitle">Every SKU and subassembly that includes this part.</div>
+            </div>
+            <div className="card-body">
+              {loadingUsage ? (
+                <div className="empty">Loading…</div>
+              ) : usageRefs.length === 0 ? (
+                <div className="empty">Not used in any SKU or subassembly yet.</div>
+              ) : (
+                <div className="table-wrap">
+                  <table className="table">
+                    <thead>
+                      <tr><th>Type</th><th>ID / Name</th><th>Qty per</th></tr>
+                    </thead>
+                    <tbody>
+                      {usageRefs.map((ref) => (
+                        <tr key={`${ref.type}-${ref.id}`}>
+                          <td>
+                            <span style={{
+                              fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase',
+                              background: ref.type === 'sku' ? 'rgba(100,160,220,0.15)' : 'rgba(220,150,80,0.15)',
+                              color: ref.type === 'sku' ? '#7ab4e8' : '#e0a050',
+                              border: `1px solid ${ref.type === 'sku' ? 'rgba(100,160,220,0.25)' : 'rgba(220,150,80,0.25)'}`,
+                              borderRadius: 4, padding: '1px 6px',
+                            }}>
+                              {ref.type === 'sku' ? 'SKU' : 'Sub'}
+                            </span>
+                          </td>
+                          <td>
+                            <div style={{ fontWeight: 600, fontSize: '0.85rem' }}>{ref.id}</div>
+                            <div style={{ fontSize: '0.78rem', color: 'var(--muted)' }}>{ref.name}</div>
+                          </td>
+                          <td style={{ fontWeight: 700, color: 'var(--accent)' }}>×{ref.qty}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* Revision log */}
+          <section className="card">
+            <div className="card-header">
+              <h2 className="card-title">Revision Log</h2>
+              <div className="card-subtitle">Every time this part was updated.</div>
+            </div>
+            <div className="card-body">
+              {loadingRevisions ? (
+                <div className="empty">Loading…</div>
+              ) : revisions.length === 0 ? (
+                <div className="empty">No revisions recorded yet.</div>
+              ) : (
+                <div className="section-stack" style={{ gap: 10 }}>
+                  {revisions.map((rev) => (
+                    <div key={rev.id} style={{
+                      background: 'var(--panel-2)', border: '1px solid var(--border)',
+                      borderRadius: 6, padding: '10px 14px',
+                    }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                        <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--accent)' }}>
+                          {rev.changed_fields}
+                        </span>
+                        <span style={{ fontSize: '0.72rem', color: 'var(--muted)' }}>
+                          {new Date(rev.changed_at).toLocaleString()}
+                        </span>
+                      </div>
+                      {(() => {
+                        const oldV = JSON.parse(rev.old_values || '{}')
+                        const newV = JSON.parse(rev.new_values || '{}')
+                        return rev.changed_fields.split(', ').map((field) => (
+                          <div key={field} style={{ fontSize: '0.78rem', color: 'var(--muted)', marginBottom: 2 }}>
+                            <strong style={{ color: 'var(--text)' }}>{field}:</strong>{' '}
+                            <span style={{ textDecoration: 'line-through', opacity: 0.6 }}>{String(oldV[field] ?? '—')}</span>
+                            {' → '}
+                            <span style={{ color: '#7ab4e8' }}>{String(newV[field] ?? '—')}</span>
+                          </div>
+                        ))
+                      })()}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
       )}
 
       <section className="card">
