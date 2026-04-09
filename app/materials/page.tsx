@@ -14,6 +14,8 @@ type MaterialRow = {
   notes: string | null
   unit_weight_lbs: number | null  // weight of one standard purchased sheet or bar (lbs)
   scrap_rate: number | null       // stored as 0–1 decimal (e.g. 0.10 = 10 %)
+  stock_length_in: number | null  // tube stock length in inches (e.g. 240 = 20ft, 288 = 24ft)
+  qty_on_hand: number | null      // bars (tubes) or sheets currently in stock
 }
 
 type PriceLogEntry = {
@@ -36,6 +38,8 @@ const emptyForm = {
   notes: '',
   unit_weight_lbs: '',  // weight of one standard purchased unit (sheet or bar) in lbs
   scrap_rate: '',        // displayed as percent (e.g. "10" → stored as 0.10)
+  stock_length_in: '',  // tube stock length in inches — leave blank for sheets
+  qty_on_hand: '',      // bars or sheets currently in stock
 }
 
 const emptyPriceForm = {
@@ -292,6 +296,8 @@ export default function MaterialsPage() {
       notes: row.notes || '',
       unit_weight_lbs: row.unit_weight_lbs != null ? String(row.unit_weight_lbs) : '',
       scrap_rate: row.scrap_rate != null ? String(Math.round(row.scrap_rate * 100)) : '',
+      stock_length_in: row.stock_length_in != null ? String(row.stock_length_in) : '',
+      qty_on_hand: row.qty_on_hand != null ? String(row.qty_on_hand) : '',
     })
     setMessage('')
     setPriceMessage('')
@@ -323,6 +329,8 @@ export default function MaterialsPage() {
       notes: form.notes.trim() || null,
       unit_weight_lbs: form.unit_weight_lbs.trim() ? parseFloat(form.unit_weight_lbs) : null,
       scrap_rate: form.scrap_rate.trim() ? parseFloat(form.scrap_rate) / 100 : null,
+      stock_length_in: form.stock_length_in.trim() ? parseInt(form.stock_length_in, 10) : null,
+      qty_on_hand: form.qty_on_hand.trim() ? parseFloat(form.qty_on_hand) : null,
     }
 
     const query = editingId
@@ -557,6 +565,44 @@ export default function MaterialsPage() {
                 />
               </div>
 
+              {form.material_type === 'tube' && (
+                <div>
+                  <label className="label">
+                    Stock Length (inches)
+                    <span style={{ color: 'var(--muted)', fontWeight: 400, marginLeft: 6 }}>
+                      — 20ft = 240, 24ft = 288
+                    </span>
+                  </label>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input
+                      className="field"
+                      type="number"
+                      step="1"
+                      min="1"
+                      value={form.stock_length_in}
+                      onChange={(e) => updateField('stock_length_in', e.target.value)}
+                      placeholder="240"
+                    />
+                    <div style={{ display: 'flex', gap: 4 }}>
+                      {[['20ft', '240'], ['24ft', '288']].map(([label, val]) => (
+                        <button
+                          key={val}
+                          type="button"
+                          className="btn btn-secondary"
+                          style={{ height: 32, fontSize: '0.75rem', padding: '0 10px', whiteSpace: 'nowrap',
+                            background: form.stock_length_in === val ? 'var(--accent)' : undefined,
+                            color:      form.stock_length_in === val ? '#fff' : undefined,
+                          }}
+                          onClick={() => updateField('stock_length_in', val)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div>
                 <label className="label">Scrap / Utilization Rate (%)</label>
                 <input
@@ -568,6 +614,24 @@ export default function MaterialsPage() {
                   value={form.scrap_rate}
                   onChange={(e) => updateField('scrap_rate', e.target.value)}
                   placeholder="10"
+                />
+              </div>
+
+              <div>
+                <label className="label">
+                  Stock On Hand
+                  <span style={{ color: 'var(--muted)', fontWeight: 400, marginLeft: 6 }}>
+                    {form.material_type === 'tube' ? '— bars' : '— sheets'}
+                  </span>
+                </label>
+                <input
+                  className="field"
+                  type="number"
+                  step="0.5"
+                  min="0"
+                  value={form.qty_on_hand}
+                  onChange={(e) => updateField('qty_on_hand', e.target.value)}
+                  placeholder="0"
                 />
               </div>
 
@@ -818,6 +882,7 @@ export default function MaterialsPage() {
                           <th>Name</th>
                           <th>Material</th>
                           <th>Thickness</th>
+                          <th style={{ textAlign: 'center' }}>On Hand</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -834,6 +899,11 @@ export default function MaterialsPage() {
                             <td>{row.name}</td>
                             <td>{row.material || ''}</td>
                             <td>{row.thickness || ''}</td>
+                            <td style={{ textAlign: 'center' }}>
+                              {row.qty_on_hand != null
+                                ? <span style={{ fontWeight: 700, color: row.qty_on_hand > 0 ? 'var(--success)' : 'var(--danger)' }}>{row.qty_on_hand} sheets</span>
+                                : <span style={{ color: 'var(--muted)' }}>—</span>}
+                            </td>
                           </tr>
                         ))}
                       </tbody>
@@ -857,6 +927,7 @@ export default function MaterialsPage() {
                           <th>Material</th>
                           <th>Dimension</th>
                           <th>Wall</th>
+                          <th style={{ textAlign: 'center' }}>On Hand</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -874,6 +945,11 @@ export default function MaterialsPage() {
                             <td>{row.material || ''}</td>
                             <td>{row.tube_od || ''}</td>
                             <td>{row.tube_wall || ''}</td>
+                            <td style={{ textAlign: 'center' }}>
+                              {row.qty_on_hand != null
+                                ? <span style={{ fontWeight: 700, color: row.qty_on_hand > 0 ? 'var(--success)' : 'var(--danger)' }}>{row.qty_on_hand} bars</span>
+                                : <span style={{ color: 'var(--muted)' }}>—</span>}
+                            </td>
                           </tr>
                         ))}
                       </tbody>

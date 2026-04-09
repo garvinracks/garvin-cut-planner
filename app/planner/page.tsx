@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { createBrowserClient } from '@/lib/supabase'
 import { buildCutLists, type SheetResultRow, type TubeResultRow } from '@/lib/planner'
 import { downloadXlsx } from '@/lib/xlsx'
@@ -180,6 +181,7 @@ function packBars(rows: TubeResultRow[], stockLength: number, kerf: number): Tub
 
 export default function PlannerPage() {
   const supabase = useMemo(() => createBrowserClient(), [])
+  const router   = useRouter()
 
   const [skus, setSkus] = useState<SKU[]>([])
   const [parts, setParts] = useState<PartRecord[]>([])
@@ -415,6 +417,18 @@ export default function PlannerPage() {
     } finally {
       setLoadingOrderDemand(false)
     }
+  }
+
+  // Send current planner rows to the Batches page as a new batch
+  function saveAsBatch() {
+    const filledRows = rows.filter((r) => r.skuId.trim() && r.qty.trim())
+    if (filledRows.length === 0) {
+      setMessage('Add at least one SKU before saving as a batch.')
+      return
+    }
+    const batchRows = filledRows.map((r) => ({ skuId: r.skuId.trim(), qty: r.qty.trim(), skuLookup: r.skuLookup }))
+    sessionStorage.setItem('garvin:batch_import', JSON.stringify(batchRows))
+    router.push('/batches')
   }
 
   function removeRow(index: number) {
@@ -850,6 +864,14 @@ export default function PlannerPage() {
                     title="Replace rows with aggregated qty from all open ShipStation orders"
                   >
                     {loadingOrderDemand ? 'Loading…' : '📋 Load from Orders'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={saveAsBatch}
+                    className="btn btn-secondary"
+                    title="Save current SKU quantities as a new build batch"
+                  >
+                    📦 Save as Batch
                   </button>
                   <button type="button" onClick={handleGenerate} className="btn btn-primary">
                     Generate Cut Lists
