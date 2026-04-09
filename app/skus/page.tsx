@@ -15,10 +15,13 @@ type SKU = {
   active: boolean
 }
 
+const SUB_IMAGE_BUCKET = 'subassembly-images'
+
 type SubAssembly = {
   id: string
   name: string
   notes?: string | null
+  image_file?: string | null
 }
 
 type Part = {
@@ -50,6 +53,7 @@ type SkuSubAssemblyRow = {
   qty: number
   sub_assembly_id: string
   sub_assembly_name: string
+  image_file: string | null
 }
 
 type SkuPartRow = {
@@ -79,7 +83,7 @@ type JoinedSubassemblyRow = {
   id: string | number
   qty: number | string
   sub_assembly_id: string | number
-  sub_assembly?: { name?: string | null } | null
+  sub_assembly?: { name?: string | null; image_file?: string | null } | null
 }
 
 type JoinedSkuPartRow = {
@@ -308,7 +312,8 @@ export default function SkusPage() {
           sub_assembly_id,
           sub_assembly:sub_assemblies (
             id,
-            name
+            name,
+            image_file
           )
         `)
         .eq('sku_id', skuId),
@@ -335,6 +340,7 @@ export default function SkusPage() {
         qty: Number(row.qty),
         sub_assembly_id: String(row.sub_assembly_id),
         sub_assembly_name: row.sub_assembly?.name ?? '',
+        image_file: row.sub_assembly?.image_file ?? null,
       }))
       setSelectedSkuSubassemblies(mappedSubRows)
     }
@@ -1806,11 +1812,42 @@ export default function SkusPage() {
                                 <div
                                   style={{
                                     display: 'grid',
-                                    gridTemplateColumns: 'minmax(200px, 1fr) 120px auto auto',
-                                    gap: 10,
+                                    gridTemplateColumns: 'auto minmax(180px, 1fr) 110px auto auto',
+                                    gap: 12,
                                     alignItems: 'center',
                                   }}
                                 >
+                                  {/* Thumbnail */}
+                                  {row.image_file ? (
+                                    <img
+                                      src={supabase.storage.from(SUB_IMAGE_BUCKET).getPublicUrl(row.image_file).data.publicUrl}
+                                      alt={row.sub_assembly_name}
+                                      style={{
+                                        width: 64,
+                                        height: 64,
+                                        objectFit: 'cover',
+                                        borderRadius: 8,
+                                        border: '1px solid var(--border)',
+                                        flexShrink: 0,
+                                      }}
+                                    />
+                                  ) : (
+                                    <div style={{
+                                      width: 64,
+                                      height: 64,
+                                      borderRadius: 8,
+                                      border: '1px solid var(--border)',
+                                      background: 'var(--panel)',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      fontSize: '1.4rem',
+                                      flexShrink: 0,
+                                    }}>
+                                      🔩
+                                    </div>
+                                  )}
+
                                   <div>
                                     <div style={{ fontWeight: 800 }}>{row.sub_assembly_id}</div>
                                     <div style={{ color: 'var(--muted)' }}>{row.sub_assembly_name || 'No name'}</div>
