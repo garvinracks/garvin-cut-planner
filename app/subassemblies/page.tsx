@@ -60,6 +60,7 @@ export default function SubassembliesPage() {
   const [selectedImageFile, setSelectedImageFile] = useState<File | null>(null)
   const [uploadingImage, setUploadingImage] = useState(false)
   const [imageMessage, setImageMessage] = useState('')
+  const [bucketOk, setBucketOk] = useState<boolean | null>(null) // null = not checked yet
 
   const [partIdToAdd, setPartIdToAdd] = useState('')
   const [partLabelToAdd, setPartLabelToAdd] = useState('')
@@ -67,6 +68,12 @@ export default function SubassembliesPage() {
   const [addingPart, setAddingPart] = useState(false)
   const [partMessage, setPartMessage] = useState('')
   const [partPickerOpen, setPartPickerOpen] = useState(false)
+
+  // Check that the storage bucket exists by attempting a list
+  async function checkBucket() {
+    const { error } = await supabase.storage.from(IMAGE_BUCKET).list('', { limit: 1 })
+    setBucketOk(!error)
+  }
 
   async function loadSubassemblies() {
     // Use select('*') so the query succeeds even if image_file column hasn't
@@ -151,8 +158,7 @@ export default function SubassembliesPage() {
   async function initialLoad() {
     setLoading(true)
     setMessage('')
-    await loadSubassemblies()
-    await loadParts()
+    await Promise.all([loadSubassemblies(), loadParts(), checkBucket()])
     setLoading(false)
   }
 
@@ -434,6 +440,39 @@ export default function SubassembliesPage() {
         </div>
       </div>
 
+      {/* ── Storage setup warning ── */}
+      {bucketOk === false && (
+        <div className="warning-box" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--danger)' }}>
+            ⚠️ Storage bucket not found — photos cannot be uploaded yet
+          </div>
+          <div style={{ color: 'var(--text-2)', fontSize: '0.84rem', lineHeight: 1.6 }}>
+            To fix this, do both of the following in your Supabase dashboard:
+          </div>
+          <ol style={{ margin: '0 0 0 20px', color: 'var(--text-2)', fontSize: '0.84rem', lineHeight: 2 }}>
+            <li>
+              Go to <strong>Storage</strong> → click <strong>New bucket</strong> → name it exactly{' '}
+              <code style={{ background: 'rgba(0,0,0,0.2)', padding: '2px 6px', borderRadius: 4 }}>subassembly-images</code>
+              {' '}→ enable <strong>Public bucket</strong> → Save.
+            </li>
+            <li>
+              Go to <strong>SQL Editor</strong> → run:{' '}
+              <code style={{ background: 'rgba(0,0,0,0.2)', padding: '2px 6px', borderRadius: 4 }}>
+                ALTER TABLE sub_assemblies ADD COLUMN IF NOT EXISTS image_file text;
+              </code>
+            </li>
+          </ol>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            style={{ alignSelf: 'flex-start', marginTop: 4 }}
+            onClick={() => void checkBucket()}
+          >
+            Re-check setup
+          </button>
+        </div>
+      )}
+
       <section className="card">
         <div className="card-header">
           <h2 className="card-title">{editingId ? `Edit Subassembly: ${editingId}` : 'Add Subassembly'}</h2>
@@ -560,7 +599,14 @@ export default function SubassembliesPage() {
                     >
                       {uploadingImage ? 'Uploading…' : 'Upload Photo'}
                     </button>
-                    {imageMessage && <div className="message" style={{ marginTop: 8 }}>{imageMessage}</div>}
+                    {imageMessage && (
+                      <div
+                        className={imageMessage.toLowerCase().includes('fail') || imageMessage.toLowerCase().includes('error') ? 'warning-box' : 'message'}
+                        style={{ marginTop: 8, fontSize: '0.8rem' }}
+                      >
+                        {imageMessage}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>

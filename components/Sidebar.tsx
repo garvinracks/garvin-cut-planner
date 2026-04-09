@@ -67,6 +67,17 @@ function IconMaterials() {
   )
 }
 
+function IconDxf() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 2h7l3 3v9H3V2z" />
+      <path d="M10 2v3h3" />
+      <path d="M5 9h2m2 0h2" />
+      <path d="M5 12h6" />
+    </svg>
+  )
+}
+
 // ── Nav config ────────────────────────────────────────────────────────────────
 
 const LINKS = [
@@ -76,6 +87,7 @@ const LINKS = [
   { href: '/subassemblies', label: 'Subassemblies',  Icon: IconSubassemblies },
   { href: '/parts',         label: 'Parts',          Icon: IconParts         },
   { href: '/materials',     label: 'Materials',      Icon: IconMaterials     },
+  { href: '/dxf-manager',   label: 'DXF Files',      Icon: IconDxf           },
 ]
 
 // ── Component ─────────────────────────────────────────────────────────────────
