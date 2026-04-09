@@ -357,11 +357,15 @@ export default function PlannerPage() {
     downloadXlsx(
       'cypcut-sheet-import.xlsx',
       'PartsDefinition',
-      sheetRows.map((row) => ({
-        PartName: row.part_number,
-        Amount: Math.ceil(row.qty * 1.05),
-        FilePath: row.dxf_file || '',
-      }))
+      sheetRows.map((row) => {
+        const materialTag = [row.thickness, row.material].filter(Boolean).join(' ')
+        const partName = materialTag ? `[${materialTag}] ${row.part_number}` : row.part_number
+        return {
+          PartName: partName,
+          Amount: Math.ceil(row.qty * 1.05),
+          FilePath: row.dxf_file || '',
+        }
+      })
     )
   }
 
@@ -482,7 +486,12 @@ export default function PlannerPage() {
             </div>
 
             <div style={{ marginTop: 14, color: 'var(--muted)', fontSize: '0.92rem' }}>
-              CypCut Excel columns: <strong>PartName</strong>, <strong>Amount</strong>, <strong>FilePath</strong>
+              CypCut columns: <strong>PartName</strong>, <strong>Amount</strong>, <strong>FilePath</strong>
+              <br />
+              <span style={{ fontSize: '0.82rem' }}>
+                PartName format: <code style={{ background: 'var(--panel-2)', padding: '1px 5px', borderRadius: 3 }}>[3/16 HRPO] 20000-L1</code> — search by thickness in CypCut to nest one material at a time.
+                Amount is +5% (rounded up) for scrap.
+              </span>
             </div>
           </div>
         </section>

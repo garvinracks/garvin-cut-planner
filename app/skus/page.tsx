@@ -5,6 +5,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createBrowserClient } from '@/lib/supabase'
 import DxfPartPreview from '@/components/DxfPartPreview'
+import PartPickerModal from '@/components/PartPickerModal'
 
 type SKU = {
   id: string
@@ -199,6 +200,9 @@ export default function SkusPage() {
   const [subassemblyPartLookup, setSubassemblyPartLookup] = useState<Record<string, string>>({})
   const [subassemblyDraftPartId, setSubassemblyDraftPartId] = useState<Record<string, string>>({})
   const [subassemblyDraftQty, setSubassemblyDraftQty] = useState<Record<string, string>>({})
+
+  // 'sku' = adding a loose part to the SKU; a sub_assembly_id string = adding inside that subassembly
+  const [partPickerOpenFor, setPartPickerOpenFor] = useState<'sku' | string | null>(null)
 
   async function loadSkus() {
     const { data, error } = await supabase
@@ -1601,25 +1605,35 @@ export default function SkusPage() {
                       >
                         <div>
                           <label className="label">Part</label>
-                          <input
-                            className="field"
-                            list="parts-list"
-                            value={partLookup}
-                            onChange={(e) => {
-                              const value = e.target.value
-                              setPartLookup(value)
-                              const match = findPartByLookup(value)
-                              setPartIdToAdd(match?.id || '')
-                            }}
-                            placeholder="Type part number or description"
-                          />
-                          <datalist id="parts-list">
-                            {parts.map((part) => (
-                              <option key={part.id} value={part.part_number}>
-                                {part.description}
-                              </option>
-                            ))}
-                          </datalist>
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            <input
+                              className="field"
+                              list="parts-list"
+                              value={partLookup}
+                              onChange={(e) => {
+                                const value = e.target.value
+                                setPartLookup(value)
+                                const match = findPartByLookup(value)
+                                setPartIdToAdd(match?.id || '')
+                              }}
+                              placeholder="Type part number or description"
+                            />
+                            <datalist id="parts-list">
+                              {parts.map((part) => (
+                                <option key={part.id} value={part.part_number}>
+                                  {part.description}
+                                </option>
+                              ))}
+                            </datalist>
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              style={{ whiteSpace: 'nowrap' }}
+                              onClick={() => setPartPickerOpenFor('sku')}
+                            >
+                              Browse
+                            </button>
+                          </div>
                         </div>
 
                         <div>
@@ -1861,31 +1875,41 @@ export default function SkusPage() {
                                       >
                                         <div>
                                           <label className="label">Add Part Inside Subassembly</label>
-                                          <input
-                                            className="field"
-                                            list={`subassembly-parts-list-${row.sub_assembly_id}`}
-                                            value={subassemblyPartLookup[row.sub_assembly_id] || ''}
-                                            onChange={(e) => {
-                                              const value = e.target.value
-                                              setSubassemblyPartLookup((prev) => ({
-                                                ...prev,
-                                                [row.sub_assembly_id]: value,
-                                              }))
-                                              const match = findPartByLookup(value)
-                                              setSubassemblyDraftPartId((prev) => ({
-                                                ...prev,
-                                                [row.sub_assembly_id]: match?.id || '',
-                                              }))
-                                            }}
-                                            placeholder="Type part number or description"
-                                          />
-                                          <datalist id={`subassembly-parts-list-${row.sub_assembly_id}`}>
-                                            {parts.map((part) => (
-                                              <option key={part.id} value={part.part_number}>
-                                                {part.description}
-                                              </option>
-                                            ))}
-                                          </datalist>
+                                          <div style={{ display: 'flex', gap: 8 }}>
+                                            <input
+                                              className="field"
+                                              list={`subassembly-parts-list-${row.sub_assembly_id}`}
+                                              value={subassemblyPartLookup[row.sub_assembly_id] || ''}
+                                              onChange={(e) => {
+                                                const value = e.target.value
+                                                setSubassemblyPartLookup((prev) => ({
+                                                  ...prev,
+                                                  [row.sub_assembly_id]: value,
+                                                }))
+                                                const match = findPartByLookup(value)
+                                                setSubassemblyDraftPartId((prev) => ({
+                                                  ...prev,
+                                                  [row.sub_assembly_id]: match?.id || '',
+                                                }))
+                                              }}
+                                              placeholder="Type part number or description"
+                                            />
+                                            <datalist id={`subassembly-parts-list-${row.sub_assembly_id}`}>
+                                              {parts.map((part) => (
+                                                <option key={part.id} value={part.part_number}>
+                                                  {part.description}
+                                                </option>
+                                              ))}
+                                            </datalist>
+                                            <button
+                                              type="button"
+                                              className="btn btn-secondary"
+                                              style={{ whiteSpace: 'nowrap' }}
+                                              onClick={() => setPartPickerOpenFor(row.sub_assembly_id)}
+                                            >
+                                              Browse
+                                            </button>
+                                          </div>
                                         </div>
 
                                         <div>
@@ -2057,6 +2081,30 @@ export default function SkusPage() {
             )}
           </div>
         </section>
+      )}
+
+      {partPickerOpenFor !== null && (
+        <PartPickerModal
+          parts={parts}
+          onClose={() => setPartPickerOpenFor(null)}
+          onSelect={(part) => {
+            if (partPickerOpenFor === 'sku') {
+              setPartLookup(part.part_number)
+              setPartIdToAdd(part.id)
+            } else {
+              // partPickerOpenFor is a sub_assembly_id
+              setSubassemblyPartLookup((prev) => ({
+                ...prev,
+                [partPickerOpenFor]: part.part_number,
+              }))
+              setSubassemblyDraftPartId((prev) => ({
+                ...prev,
+                [partPickerOpenFor]: part.id,
+              }))
+            }
+            setPartPickerOpenFor(null)
+          }}
+        />
       )}
     </div>
   )

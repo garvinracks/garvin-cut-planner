@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createBrowserClient } from '@/lib/supabase'
 import DxfPartPreview from '@/components/DxfPartPreview'
+import PartPickerModal from '@/components/PartPickerModal'
 
 type SubAssembly = {
   id: string
@@ -48,9 +49,11 @@ export default function SubassembliesPage() {
   const [form, setForm] = useState(emptySubassemblyForm)
 
   const [partIdToAdd, setPartIdToAdd] = useState('')
+  const [partLabelToAdd, setPartLabelToAdd] = useState('')
   const [qtyToAdd, setQtyToAdd] = useState('1')
   const [addingPart, setAddingPart] = useState(false)
   const [partMessage, setPartMessage] = useState('')
+  const [partPickerOpen, setPartPickerOpen] = useState(false)
 
   async function loadSubassemblies() {
     const { data, error } = await supabase
@@ -482,18 +485,64 @@ export default function SubassembliesPage() {
                     >
                       <div>
                         <label className="label">Part</label>
-                        <select
-                          className="select"
-                          value={partIdToAdd}
-                          onChange={(e) => setPartIdToAdd(e.target.value)}
-                        >
-                          <option value="">Select a part</option>
-                          {parts.map((part) => (
-                            <option key={part.id} value={part.id}>
-                              {part.part_number} — {part.description}
-                            </option>
-                          ))}
-                        </select>
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                          {partIdToAdd ? (
+                            <div
+                              style={{
+                                flex: 1,
+                                background: 'var(--accent-soft)',
+                                border: '1px solid var(--accent-border)',
+                                borderRadius: 6,
+                                padding: '7px 12px',
+                                fontSize: '0.88rem',
+                                color: 'var(--text)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                gap: 8,
+                              }}
+                            >
+                              <span style={{ fontWeight: 600 }}>{partLabelToAdd}</span>
+                              <button
+                                type="button"
+                                onClick={() => { setPartIdToAdd(''); setPartLabelToAdd('') }}
+                                style={{
+                                  background: 'none',
+                                  border: 'none',
+                                  color: 'var(--muted)',
+                                  cursor: 'pointer',
+                                  padding: 0,
+                                  fontSize: '0.9rem',
+                                  lineHeight: 1,
+                                }}
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          ) : (
+                            <div
+                              style={{
+                                flex: 1,
+                                background: 'var(--panel-2)',
+                                border: '1px solid var(--border)',
+                                borderRadius: 6,
+                                padding: '7px 12px',
+                                fontSize: '0.85rem',
+                                color: 'var(--muted)',
+                              }}
+                            >
+                              No part selected
+                            </div>
+                          )}
+                          <button
+                            type="button"
+                            className="btn btn-secondary"
+                            style={{ whiteSpace: 'nowrap' }}
+                            onClick={() => setPartPickerOpen(true)}
+                          >
+                            Browse Parts
+                          </button>
+                        </div>
                       </div>
 
                       <div>
@@ -584,6 +633,18 @@ export default function SubassembliesPage() {
           </div>
         </section>
       </div>
+
+      {partPickerOpen && (
+        <PartPickerModal
+          parts={parts}
+          onClose={() => setPartPickerOpen(false)}
+          onSelect={(part) => {
+            setPartIdToAdd(part.id)
+            setPartLabelToAdd(`${part.part_number} — ${part.description}`)
+            setPartPickerOpen(false)
+          }}
+        />
+      )}
     </div>
   )
 }
