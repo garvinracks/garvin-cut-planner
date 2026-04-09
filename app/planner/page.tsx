@@ -182,8 +182,35 @@ export default function PlannerPage() {
   const [stockLength, setStockLength] = useState('240')
   const [kerfWidth, setKerfWidth] = useState('0.125')
 
+  // Save-job form
+  const [jobName, setJobName] = useState('')
+  const [jobOrderNumber, setJobOrderNumber] = useState('')
+  const [jobNotes, setJobNotes] = useState('')
+  const [savingJob, setSavingJob] = useState(false)
+  const [jobMessage, setJobMessage] = useState('')
+
   useEffect(() => {
     setPrintedAt(new Date().toLocaleString())
+
+    // Load a saved job that was sent from the Jobs page
+    try {
+      const raw = localStorage.getItem('garvin:load_job')
+      if (raw) {
+        const saved = JSON.parse(raw) as {
+          name: string
+          order_number: string
+          rows: Array<{ skuId: string; qty: string; skuLookup: string }>
+        }
+        localStorage.removeItem('garvin:load_job')
+        if (saved.rows?.length) {
+          setRows(saved.rows)
+          setJobName(saved.name ?? '')
+          setJobOrderNumber(saved.order_number ?? '')
+        }
+      }
+    } catch {
+      // ignore malformed localStorage value
+    }
   }, [])
 
   async function loadData() {
@@ -470,6 +497,56 @@ export default function PlannerPage() {
     window.print()
   }
 
+  async function handleSaveJob() {
+    if (!jobName.trim()) {
+      setJobMessage('Enter a job name.')
+      return
+    }
+    const plannerRows = rows.filter((r) => r.skuId && Number(r.qty) > 0)
+    if (plannerRows.length === 0) {
+      setJobMessage('Generate a cut list first — no SKU rows to save.')
+      return
+    }
+
+    setSavingJob(true)
+    setJobMessage('')
+
+    const { data: jobData, error: jobError } = await supabase
+      .from('jobs')
+      .insert({
+        name: jobName.trim(),
+        order_number: jobOrderNumber.trim() || null,
+        notes: jobNotes.trim() || null,
+      })
+      .select('id')
+      .single()
+
+    if (jobError || !jobData) {
+      setJobMessage(`Save failed: ${jobError?.message ?? 'Unknown error'}`)
+      setSavingJob(false)
+      return
+    }
+
+    const rowInserts = plannerRows.map((r) => ({
+      job_id: jobData.id,
+      sku_id: r.skuId,
+      qty: Number(r.qty),
+    }))
+
+    const { error: rowError } = await supabase.from('job_rows').insert(rowInserts)
+
+    if (rowError) {
+      setJobMessage(`Job created but rows failed: ${rowError.message}`)
+    } else {
+      setJobMessage(`Job "${jobName.trim()}" saved! View it on the Saved Jobs page.`)
+      setJobName('')
+      setJobOrderNumber('')
+      setJobNotes('')
+    }
+
+    setSavingJob(false)
+  }
+
   // Build shop floor stations from current cut list + operations
   const shopFloorStations = useMemo<ShopFloorStation[]>(() => {
     const allRows = [
@@ -697,6 +774,60 @@ export default function PlannerPage() {
           </div>
         </section>
       </div>
+
+      {/* ── Save Job ── */}
+      {(tubeRows.length > 0 || sheetRows.length > 0) && (
+        <section className="card no-print">
+          <div className="card-header">
+            <h2 className="card-title">Save Job</h2>
+            <div className="card-subtitle">
+              Save this build run so you can reload it or reference it later on the Saved Jobs page.
+            </div>
+          </div>
+          <div className="card-body">
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, alignItems: 'end' }}>
+              <div>
+                <label className="label">Job name <span style={{ color: 'var(--danger)' }}>*</span></label>
+                <input
+                  className="field"
+                  value={jobName}
+                  onChange={(e) => setJobName(e.target.value)}
+                  placeholder="Wind Deflector Kit run"
+                />
+              </div>
+              <div>
+                <label className="label">Order number</label>
+                <input
+                  className="field"
+                  value={jobOrderNumber}
+                  onChange={(e) => setJobOrderNumber(e.target.value)}
+                  placeholder="PO-2026-001"
+                />
+              </div>
+              <div>
+                <label className="label">Notes</label>
+                <input
+                  className="field"
+                  value={jobNotes}
+                  onChange={(e) => setJobNotes(e.target.value)}
+                  placeholder="Optional notes"
+                />
+              </div>
+            </div>
+            <div className="btn-row" style={{ marginTop: 14 }}>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={handleSaveJob}
+                disabled={savingJob}
+              >
+                {savingJob ? 'Saving…' : 'Save Job'}
+              </button>
+            </div>
+            {jobMessage && <div className="message" style={{ marginTop: 10 }}>{jobMessage}</div>}
+          </div>
+        </section>
+      )}
 
       {warnings.length > 0 && (
         <section className="warning-box">

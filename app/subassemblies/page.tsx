@@ -69,9 +69,11 @@ export default function SubassembliesPage() {
   const [partPickerOpen, setPartPickerOpen] = useState(false)
 
   async function loadSubassemblies() {
+    // Use select('*') so the query succeeds even if image_file column hasn't
+    // been added yet via migration. We normalise the result below.
     const { data, error } = await supabase
       .from('sub_assemblies')
-      .select('id, name, notes, image_file')
+      .select('*')
       .order('name', { ascending: true })
 
     if (error) {
@@ -80,7 +82,12 @@ export default function SubassembliesPage() {
       return
     }
 
-    const rows = (data ?? []) as SubAssembly[]
+    const rows: SubAssembly[] = ((data ?? []) as any[]).map((r) => ({
+      id: r.id,
+      name: r.name,
+      notes: r.notes ?? null,
+      image_file: r.image_file ?? null,
+    }))
     setItems(rows)
 
     if (!selectedSubassemblyId && rows.length > 0) {
