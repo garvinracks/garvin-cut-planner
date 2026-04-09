@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import GlobalSearch from '@/components/GlobalSearch'
 
 const links = [
   { href: '/planner', label: 'Build Planner' },
@@ -39,6 +40,10 @@ export default function Sidebar() {
           )
         })}
       </nav>
+
+      <div style={{ padding: '0 12px' }}>
+        <GlobalSearch />
+      </div>
     </aside>
   )
 }

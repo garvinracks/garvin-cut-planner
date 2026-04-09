@@ -370,6 +370,25 @@ export default function SkusPage() {
     void initialLoad()
   }, [])
 
+  // Auto-select SKU from ?id= query param after data loads
+  useEffect(() => {
+    if (loading || skus.length === 0) return
+    try {
+      const params = new URLSearchParams(window.location.search)
+      const idParam = params.get('id')
+      if (!idParam) return
+      const match = skus.find((s) => s.id === idParam)
+      if (match) {
+        startEdit(match)
+        setTimeout(() => {
+          document.getElementById(`sku-row-${match.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        }, 100)
+      }
+    } catch {
+      // ignore
+    }
+  }, [loading, skus])
+
   useEffect(() => {
     if (selectedSkuId) {
       void loadSelectedSkuRelations(selectedSkuId)
@@ -1290,6 +1309,7 @@ export default function SkusPage() {
                         <div key={sku.id} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 10 }}>
                           <button
                             type="button"
+                            id={`sku-row-${sku.id}`}
                             onClick={() => startEdit(sku)}
                             className={`sidebar-link ${selectedSkuId === sku.id ? 'active' : ''}`}
                             style={{

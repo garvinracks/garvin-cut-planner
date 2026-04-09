@@ -70,6 +70,24 @@ type ShopFloorStation = {
   }>
 }
 
+type MaterialRecord = {
+  id: string
+  name: string
+  material_type: string
+  material: string | null
+  tube_od: string | null
+  tube_wall: string | null
+}
+
+type PriceLogRecord = {
+  id: string
+  material_id: string
+  price: number
+  date_purchased: string
+  order_number: string | null
+  supplier: string | null
+}
+
 type GroupedTubeSection = {
   key: string
   material: string
@@ -181,6 +199,9 @@ export default function PlannerPage() {
   const [shopFloorOpen, setShopFloorOpen] = useState(false)
   const [stockLength, setStockLength] = useState('240')
   const [kerfWidth, setKerfWidth] = useState('0.125')
+  const [materials, setMaterials] = useState<MaterialRecord[]>([])
+  const [priceLogs, setPriceLogs] = useState<PriceLogRecord[]>([])
+  const [orderSheetOpen, setOrderSheetOpen] = useState(true)
 
   // Save-job form
   const [jobName, setJobName] = useState('')
@@ -224,6 +245,8 @@ export default function PlannerPage() {
       { data: skuSubData, error: skuSubError },
       { data: subPartData, error: subPartError },
       { data: opData },
+      { data: materialData },
+      { data: priceLogData },
     ] = await Promise.all([
       supabase.from('skus').select('id, description').order('id', { ascending: true }),
       supabase
@@ -233,6 +256,8 @@ export default function PlannerPage() {
       supabase.from('sku_sub_assemblies').select('sku_id, sub_assembly_id, qty'),
       supabase.from('sub_assembly_parts').select('sub_assembly_id, part_id, qty'),
       supabase.from('part_operations').select('part_id, step, operation, notes').order('step', { ascending: true }),
+      supabase.from('materials').select('id, name, material_type, material, tube_od, tube_wall'),
+      supabase.from('material_price_logs').select('id, material_id, price, date_purchased, order_number, supplier').order('date_purchased', { ascending: false }),
     ])
 
     if (skuError || partError || skuPartError || skuSubError || subPartError) {
@@ -254,6 +279,8 @@ export default function PlannerPage() {
     setSkuSubAssemblies((skuSubData ?? []) as SkuSubAssemblyRecord[])
     setSubAssemblyParts((subPartData ?? []) as SubAssemblyPartRecord[])
     setPartOperations((opData ?? []) as PartOperationRecord[])
+    setMaterials((materialData ?? []) as MaterialRecord[])
+    setPriceLogs((priceLogData ?? []) as PriceLogRecord[])
 
     setLoading(false)
   }
@@ -1082,6 +1109,136 @@ export default function PlannerPage() {
               })}
             </div>
           </div>
+        </section>
+      )}
+
+      {/* ── Material Order Sheet ── */}
+      {tubeRows.length > 0 && (
+        <section className="card">
+          <div className="card-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+            <div>
+              <h2 className="card-title">Material Order Sheet</h2>
+              <div className="card-subtitle">
+                Purchasing summary cross-referenced against the materials pricing log.
+              </div>
+            </div>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setOrderSheetOpen((v) => !v)}
+              style={{ flexShrink: 0 }}
+            >
+              {orderSheetOpen ? 'Collapse' : 'Expand'}
+            </button>
+          </div>
+          {orderSheetOpen && (
+            <div className="card-body">
+              {(() => {
+                const sl = parseFloat(stockLength) || 240
+                type OrderRow = {
+                  key: string
+                  spec: string
+                  totalLength: number
+                  stockLength: number
+                  barsToOrder: number
+                  lastPrice: number | null
+                  priceUnit: string
+                  estCost: number | null
+                  supplier: string | null
+                }
+                const orderRows: OrderRow[] = groupedTubeSections.map((section) => {
+                  const matchedMaterial = materials.find(
+                    (m) =>
+                      m.material_type === 'tube' &&
+                      (m.material ?? '').toLowerCase() === (section.material ?? '').toLowerCase() &&
+                      (m.tube_od ?? '') === (section.tube_od ?? '') &&
+                      (m.tube_wall ?? '') === (section.tube_wall ?? '')
+                  )
+                  const latestLog = matchedMaterial
+                    ? priceLogs.find((p) => p.material_id === matchedMaterial.id) ?? null
+                    : null
+                  const barsToOrder = Math.ceil(section.totalLength / sl)
+                  const lastPrice = latestLog?.price ?? null
+                  const estCost = lastPrice !== null ? barsToOrder * lastPrice : null
+                  return {
+                    key: section.key,
+                    spec: `${section.material || 'Unspecified'} / ${section.tube_od || '?'} × ${section.tube_wall || '?'} wall`,
+                    totalLength: section.totalLength,
+                    stockLength: sl,
+                    barsToOrder,
+                    lastPrice,
+                    priceUnit: '$/bar',
+                    estCost,
+                    supplier: latestLog?.supplier ?? null,
+                  }
+                })
+                const totalEstCost = orderRows.every((r) => r.estCost !== null)
+                  ? orderRows.reduce((s, r) => s + (r.estCost ?? 0), 0)
+                  : null
+                return (
+                  <div className="table-wrap">
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>Material / Spec</th>
+                          <th>Total Length Needed</th>
+                          <th>Stock Bar Length</th>
+                          <th>Bars to Order</th>
+                          <th>Last Price</th>
+                          <th>Est. Cost</th>
+                          <th>Supplier</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {orderRows.map((row) => (
+                          <tr key={row.key}>
+                            <td style={{ fontWeight: 600 }}>{row.spec}</td>
+                            <td>
+                              {row.totalLength}&Prime;
+                              <span style={{ color: 'var(--muted)', marginLeft: 4, fontSize: '0.85em' }}>
+                                ({(row.totalLength / 12).toFixed(2)} ft)
+                              </span>
+                            </td>
+                            <td>{row.stockLength}&Prime;</td>
+                            <td style={{ fontWeight: 700, color: 'var(--accent)' }}>{row.barsToOrder}</td>
+                            <td>
+                              {row.lastPrice !== null
+                                ? `$${row.lastPrice.toFixed(2)} ${row.priceUnit}`
+                                : <span style={{ color: 'var(--muted)' }}>—</span>}
+                            </td>
+                            <td style={{ fontWeight: 700 }}>
+                              {row.estCost !== null
+                                ? `$${row.estCost.toFixed(2)}`
+                                : <span style={{ color: 'var(--muted)' }}>—</span>}
+                            </td>
+                            <td style={{ color: 'var(--muted)' }}>{row.supplier || '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr style={{ borderTop: '2px solid var(--border)' }}>
+                          <td colSpan={5} style={{ fontWeight: 700, textAlign: 'right', paddingRight: 12 }}>
+                            Total Estimated Cost
+                          </td>
+                          <td style={{ fontWeight: 700, color: 'var(--accent)' }}>
+                            {totalEstCost !== null
+                              ? `$${totalEstCost.toFixed(2)}`
+                              : <span style={{ color: 'var(--muted)' }}>—</span>}
+                          </td>
+                          <td />
+                        </tr>
+                      </tfoot>
+                    </table>
+                    {orderRows.some((r) => r.lastPrice === null) && (
+                      <div className="message" style={{ marginTop: 10, fontSize: '0.85rem' }}>
+                        Some materials have no price data in the pricing log. Add prices on the Materials page.
+                      </div>
+                    )}
+                  </div>
+                )
+              })()}
+            </div>
+          )}
         </section>
       )}
 

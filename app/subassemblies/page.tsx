@@ -160,6 +160,25 @@ export default function SubassembliesPage() {
     initialLoad()
   }, [])
 
+  // Auto-select subassembly from ?id= query param after data loads
+  useEffect(() => {
+    if (loading || items.length === 0) return
+    try {
+      const params = new URLSearchParams(window.location.search)
+      const idParam = params.get('id')
+      if (!idParam) return
+      const match = items.find((s) => s.id === idParam)
+      if (match) {
+        setSelectedSubassemblyId(match.id)
+        setTimeout(() => {
+          document.getElementById(`sub-row-${match.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        }, 100)
+      }
+    } catch {
+      // ignore
+    }
+  }, [loading, items])
+
   useEffect(() => {
     if (selectedSubassemblyId) {
       loadSelectedSubassemblyParts(selectedSubassemblyId)
@@ -545,7 +564,7 @@ export default function SubassembliesPage() {
                   const imgUrl = getImageUrl(item.image_file)
                   const isActive = selectedSubassemblyId === item.id
                   return (
-                    <div key={item.id} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 10 }}>
+                    <div key={item.id} id={`sub-row-${item.id}`} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 10 }}>
                       <button
                         type="button"
                         onClick={() => startEdit(item)}

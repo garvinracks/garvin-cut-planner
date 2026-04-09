@@ -227,6 +227,25 @@ export default function MaterialsPage() {
     loadRows()
   }, [])
 
+  // Auto-select material from ?id= query param after data loads
+  useEffect(() => {
+    if (loading || rows.length === 0) return
+    try {
+      const params = new URLSearchParams(window.location.search)
+      const idParam = params.get('id')
+      if (!idParam) return
+      const match = rows.find((r) => r.id === idParam)
+      if (match) {
+        startEdit(match)
+        setTimeout(() => {
+          document.getElementById(`mat-row-${match.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        }, 100)
+      }
+    } catch {
+      // ignore
+    }
+  }, [loading, rows])
+
   function updateField(name: string, value: string) {
     setForm((prev) => {
       const next = { ...prev, [name]: value }
@@ -770,6 +789,7 @@ export default function MaterialsPage() {
                         {filteredSheets.map((row) => (
                           <tr
                             key={row.id}
+                            id={`mat-row-${row.id}`}
                             onClick={() => startEdit(row)}
                             style={{
                               cursor: 'pointer',
@@ -808,6 +828,7 @@ export default function MaterialsPage() {
                         {filteredTubes.map((row) => (
                           <tr
                             key={row.id}
+                            id={`mat-row-${row.id}`}
                             onClick={() => startEdit(row)}
                             style={{
                               cursor: 'pointer',

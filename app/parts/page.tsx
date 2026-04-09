@@ -152,6 +152,25 @@ export default function PartsPage() {
     void initialLoad()
   }, [])
 
+  // Auto-select part from ?id= query param after data loads
+  useEffect(() => {
+    if (loading || parts.length === 0) return
+    try {
+      const params = new URLSearchParams(window.location.search)
+      const idParam = params.get('id')
+      if (!idParam) return
+      const match = parts.find((p) => p.id === idParam)
+      if (match) {
+        startEdit(match)
+        setTimeout(() => {
+          document.getElementById(`part-row-${match.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        }, 100)
+      }
+    } catch {
+      // ignore
+    }
+  }, [loading, parts])
+
   function updateField(name: string, value: string) {
     setForm((prev) => {
       const next = { ...prev, [name]: value }
@@ -962,6 +981,7 @@ export default function PartsPage() {
                     {sheetParts.map((part) => (
                       <tr
                         key={part.id}
+                        id={`part-row-${part.id}`}
                         style={{ background: editingId === part.id ? 'var(--accent-soft)' : 'transparent' }}
                       >
                         <td style={{ paddingTop: 12, paddingBottom: 12 }}>
@@ -1043,6 +1063,7 @@ export default function PartsPage() {
                     {tubeParts.map((part) => (
                       <tr
                         key={part.id}
+                        id={`part-row-${part.id}`}
                         style={{ background: editingId === part.id ? 'var(--accent-soft)' : 'transparent' }}
                       >
                         <td onClick={() => startEdit(part)} style={{ cursor: 'pointer', fontWeight: 700 }}>
