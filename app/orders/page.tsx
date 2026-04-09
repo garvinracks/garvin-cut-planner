@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { createBrowserClient } from '@/lib/supabase'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -9,7 +10,7 @@ type StoreConfig = {
   storeId: number
   storeName: string
   marketplaceName: string
-  channel: string   // 'shopify' | 'turn5'
+  channel: string
   enabled: boolean
 }
 
@@ -42,6 +43,10 @@ type Order = {
 }
 
 type SKU = { id: string; description: string }
+type InventoryRow = { sku_id: string; qty_on_hand: number }
+type AllocStatus = 'ready' | 'partial' | 'build_needed' | 'unmatched'
+type ViewMode = 'by_order' | 'by_sku'
+type SortDir = 'asc' | 'desc'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -50,59 +55,66 @@ function formatDate(iso: string | null) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
-function isOverdue(isoDate: string | null) {
-  if (!isoDate) return false
-  return new Date(isoDate) < new Date()
+function daysSince(iso: string | null): number | null {
+  if (!iso) return null
+  const diff = Date.now() - new Date(iso).getTime()
+  return Math.floor(diff / 86_400_000)
 }
 
-const CHANNEL_LABEL: Record<string, string> = {
-  shopify: 'Shopify',
-  turn5: 'Turn5',
-}
-
-const CHANNEL_COLOR: Record<string, { bg: string; text: string }> = {
-  shopify: { bg: 'rgba(34,197,94,0.18)', text: '#4ade80' },
+const CH_STYLE: Record<string, { bg: string; text: string }> = {
+  shopify: { bg: 'rgba(34,197,94,0.18)',  text: '#4ade80' },
   turn5:   { bg: 'rgba(245,158,11,0.18)', text: '#fbbf24' },
+}
+
+const ALLOC_STYLE: Record<AllocStatus, { icon: string; label: string; color: string; bg: string }> = {
+  ready:       { icon: '🟢', label: 'Ready to Ship', color: 'var(--success)',  bg: 'rgba(34,197,94,0.12)' },
+  partial:     { icon: '🟡', label: 'Partial',        color: 'var(--warning)', bg: 'rgba(234,179,8,0.12)'  },
+  build_needed:{ icon: '🔴', label: 'Build Needed',  color: 'var(--danger)',  bg: 'rgba(239,68,68,0.12)'  },
+  unmatched:   { icon: '⚪', label: 'No SKU Match',  color: 'var(--muted)',   bg: 'transparent'            },
 }
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function OrdersPage() {
   const supabase = useMemo(() => createBrowserClient(), [])
+  const router   = useRouter()
 
-  // ── Store config state ──────────────────────────────────────────────────────
+  // Store config
   const [storeConfig, setStoreConfig] = useState<StoreConfig[]>([])
-  const [ssStores, setSsStores] = useState<SSStore[]>([])
-  const [setupOpen, setSetupOpen] = useState(false)
+  const [ssStores, setSsStores]       = useState<SSStore[]>([])
+  const [setupOpen, setSetupOpen]     = useState(false)
   const [loadingStores, setLoadingStores] = useState(false)
-  const [savingConfig, setSavingConfig] = useState(false)
+  const [savingConfig, setSavingConfig]   = useState(false)
   const [configMessage, setConfigMessage] = useState('')
 
-  // ── Orders state ─────────────────────────────────────────────────────────────
-  const [orders, setOrders] = useState<Order[]>([])
-  const [skus, setSkus] = useState<SKU[]>([])
-  const [loading, setLoading] = useState(true)
-  const [syncing, setSyncing] = useState(false)
+  // Orders + supporting data
+  const [orders, setOrders]     = useState<Order[]>([])
+  const [skus, setSkus]         = useState<SKU[]>([])
+  const [inventory, setInventory] = useState<InventoryRow[]>([])
+  const [loading, setLoading]   = useState(true)
+  const [syncing, setSyncing]   = useState(false)
   const [syncMessage, setSyncMessage] = useState('')
-  const [channelFilter, setChannelFilter] = useState<'all' | 'shopify' | 'turn5'>('all')
-  const [expandedId, setExpandedId] = useState<string | null>(null)
 
-  // ── Load config from DB ──────────────────────────────────────────────────────
+  // Table controls
+  const [channelFilter, setChannelFilter] = useState<'all' | 'shopify' | 'turn5'>('all')
+  const [viewMode, setViewMode]     = useState<ViewMode>('by_order')
+  const [sortDir, setSortDir]       = useState<SortDir>('asc')
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+
+  // Allocation
+  const [allocStatuses, setAllocStatuses] = useState<Record<string, AllocStatus>>({})
+  const [allocated, setAllocated]         = useState(false)
+
+  // ── Data loading ────────────────────────────────────────────────────────────
+
   async function loadConfig() {
     const { data } = await supabase
-      .from('app_settings')
-      .select('value')
-      .eq('key', 'shipstation_stores')
-      .single()
-
-    if (data?.value) {
-      setStoreConfig(data.value as StoreConfig[])
-    } else {
-      setSetupOpen(true)
-    }
+      .from('app_settings').select('value').eq('key', 'shipstation_stores').single()
+    if (data?.value) setStoreConfig(data.value as StoreConfig[])
+    else setSetupOpen(true)
   }
 
-  // ── Load orders from DB ──────────────────────────────────────────────────────
   async function loadOrders() {
     const { data, error } = await supabase
       .from('orders')
@@ -113,7 +125,6 @@ export default function OrdersPage() {
       `)
       .eq('status', 'open')
       .order('order_date', { ascending: true })
-
     if (!error) setOrders((data ?? []) as Order[])
   }
 
@@ -122,97 +133,189 @@ export default function OrdersPage() {
     setSkus((data ?? []) as SKU[])
   }
 
-  async function initialLoad() {
-    setLoading(true)
-    await Promise.all([loadConfig(), loadOrders(), loadSkus()])
-    setLoading(false)
+  async function loadInventory() {
+    const { data } = await supabase.from('sku_inventory').select('sku_id, qty_on_hand')
+    setInventory((data ?? []) as InventoryRow[])
   }
 
+  async function initialLoad() {
+    setLoading(true)
+    await Promise.all([loadConfig(), loadOrders(), loadSkus(), loadInventory()])
+    setLoading(false)
+  }
   useEffect(() => { void initialLoad() }, [])
 
-  // ── Load ShipStation stores for setup UI ─────────────────────────────────────
+  // ── ShipStation store setup ─────────────────────────────────────────────────
+
   async function loadSSStores() {
     setLoadingStores(true)
     setConfigMessage('')
     try {
-      const res = await fetch('/api/shipstation/stores')
+      const res  = await fetch('/api/shipstation/stores')
       const data = await res.json()
       if (!res.ok) { setConfigMessage(data.error ?? 'Failed to load stores.'); return }
-
       const stores: SSStore[] = Array.isArray(data) ? data : []
       setSsStores(stores)
-
-      // Merge with existing config
       const existing = storeConfig.reduce<Record<number, StoreConfig>>(
         (acc, s) => { acc[s.storeId] = s; return acc }, {}
       )
-
       setStoreConfig(stores.map((s) => {
-        const prev = existing[s.storeId]
+        const prev      = existing[s.storeId]
         const isShopify = s.storeName === 'Garvin Industries, LLC' ||
           s.marketplaceName?.toLowerCase().includes('shopify')
         return {
-          storeId:         s.storeId,
-          storeName:       s.storeName,
+          storeId: s.storeId, storeName: s.storeName,
           marketplaceName: s.marketplaceName ?? '',
-          channel:         prev?.channel ?? (isShopify ? 'shopify' : 'turn5'),
-          enabled:         prev?.enabled ?? isShopify,
+          channel: prev?.channel ?? (isShopify ? 'shopify' : 'turn5'),
+          enabled: prev?.enabled ?? isShopify,
         }
       }))
-    } finally {
-      setLoadingStores(false)
-    }
+    } finally { setLoadingStores(false) }
   }
 
   async function saveConfig() {
     setSavingConfig(true)
     setConfigMessage('')
-    const { error } = await supabase
-      .from('app_settings')
-      .upsert(
-        { key: 'shipstation_stores', value: storeConfig as any, updated_at: new Date().toISOString() },
-        { onConflict: 'key' }
-      )
-    if (error) {
-      setConfigMessage(`Save failed: ${error.message}`)
-    } else {
-      setConfigMessage('Configuration saved.')
-      setSetupOpen(false)
-    }
+    const { error } = await supabase.from('app_settings').upsert(
+      { key: 'shipstation_stores', value: storeConfig as any, updated_at: new Date().toISOString() },
+      { onConflict: 'key' }
+    )
+    if (error) setConfigMessage(`Save failed: ${error.message}`)
+    else { setConfigMessage('Configuration saved.'); setSetupOpen(false) }
     setSavingConfig(false)
   }
 
-  // ── Sync orders from ShipStation ─────────────────────────────────────────────
+  // ── Sync ────────────────────────────────────────────────────────────────────
+
   async function syncOrders() {
     setSyncing(true)
     setSyncMessage('')
+    setAllocated(false)
+    setAllocStatuses({})
     try {
-      const res = await fetch('/api/shipstation/sync', { method: 'POST' })
+      const res  = await fetch('/api/shipstation/sync', { method: 'POST' })
       const data = await res.json()
-      if (!res.ok) {
-        setSyncMessage(`Sync failed: ${data.error}`)
-        return
+      if (!res.ok) { setSyncMessage(`Sync failed: ${data.error}`); return }
+      setSyncMessage(`✓ Synced ${data.imported} orders`)
+      await Promise.all([loadOrders(), loadInventory()])
+    } finally { setSyncing(false) }
+  }
+
+  // ── Allocation (Ship Now logic) ─────────────────────────────────────────────
+
+  function runAllocation() {
+    // Clone on-hand stock
+    const stock: Record<string, number> = {}
+    for (const inv of inventory) stock[inv.sku_id] = inv.qty_on_hand
+
+    // Process oldest-first
+    const sorted = [...orders].sort(
+      (a, b) => new Date(a.order_date ?? 0).getTime() - new Date(b.order_date ?? 0).getTime()
+    )
+
+    const statuses: Record<string, AllocStatus> = {}
+
+    for (const order of sorted) {
+      const matchedLines = order.order_lines.filter((l) => l.sku_id)
+      if (matchedLines.length === 0) { statuses[order.id] = 'unmatched'; continue }
+
+      let readyCount = 0
+      for (const line of matchedLines) {
+        const avail = stock[line.sku_id!] ?? 0
+        if (avail >= line.qty) readyCount++
       }
-      setSyncMessage(`✓ Synced ${data.imported} orders (${data.skipped} skipped)`)
-      await loadOrders()
-    } finally {
-      setSyncing(false)
+
+      if (readyCount === matchedLines.length) {
+        statuses[order.id] = 'ready'
+        // Deduct allocated stock so later orders can't use it
+        for (const line of matchedLines) {
+          stock[line.sku_id!] = (stock[line.sku_id!] ?? 0) - line.qty
+        }
+      } else if (readyCount > 0) {
+        statuses[order.id] = 'partial'
+      } else {
+        statuses[order.id] = 'build_needed'
+      }
     }
+
+    setAllocStatuses(statuses)
+    setAllocated(true)
+  }
+
+  // ── Selection helpers ───────────────────────────────────────────────────────
+
+  function toggleSelect(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
+  function toggleAll() {
+    if (selectedIds.size === filtered.length) setSelectedIds(new Set())
+    else setSelectedIds(new Set(filtered.map((o) => o.id)))
+  }
+
+  // Auto-select all orders that share SKUs with the oldest unallocated order
+  function autoBatch() {
+    const oldest = [...orders]
+      .filter((o) => allocStatuses[o.id] !== 'ready')
+      .sort((a, b) => new Date(a.order_date ?? 0).getTime() - new Date(b.order_date ?? 0).getTime())[0]
+    if (!oldest) return
+
+    const batchSkus = new Set(
+      oldest.order_lines.filter((l) => l.sku_id).map((l) => l.sku_id!)
+    )
+    const batch = orders.filter((o) =>
+      o.order_lines.some((l) => l.sku_id && batchSkus.has(l.sku_id))
+    )
+    setSelectedIds(new Set(batch.map((o) => o.id)))
+  }
+
+  // ── Send to Build Planner ───────────────────────────────────────────────────
+
+  function sendToPlanner() {
+    const selected = orders.filter((o) => selectedIds.has(o.id))
+    const demand: Record<string, number> = {}
+    for (const order of selected) {
+      for (const line of order.order_lines) {
+        if (!line.sku_id) continue
+        demand[line.sku_id] = (demand[line.sku_id] ?? 0) + line.qty
+      }
+    }
+    const rows = Object.entries(demand).map(([skuId, qty]) => ({
+      skuId, qty: String(qty), skuLookup: skuId,
+    }))
+    sessionStorage.setItem('garvin:orders_import', JSON.stringify(rows))
+    router.push('/planner')
   }
 
   // ── Derived data ─────────────────────────────────────────────────────────────
-  const filtered = orders.filter(
-    (o) => channelFilter === 'all' || o.channel === channelFilter
+
+  const sorted = useMemo(() =>
+    [...orders].sort((a, b) => {
+      const ta = new Date(a.order_date ?? 0).getTime()
+      const tb = new Date(b.order_date ?? 0).getTime()
+      return sortDir === 'asc' ? ta - tb : tb - ta
+    }),
+    [orders, sortDir]
   )
-  const shopifyCount = orders.filter((o) => o.channel === 'shopify').length
-  const turn5Count   = orders.filter((o) => o.channel === 'turn5').length
+
+  const filtered = useMemo(() =>
+    sorted.filter((o) => channelFilter === 'all' || o.channel === channelFilter),
+    [sorted, channelFilter]
+  )
 
   const lastSynced = orders.reduce<string | null>((max, o) => {
     if (!o.synced_at) return max
     return !max || o.synced_at > max ? o.synced_at : max
   }, null)
 
-  // Aggregate demand across all open orders
+  const shopifyCount = orders.filter((o) => o.channel === 'shopify').length
+  const turn5Count   = orders.filter((o) => o.channel === 'turn5').length
+
+  // Demand aggregation across all open orders
   const demandMap: Record<string, { sku_id: string; description: string; qty: number; orderCount: number }> = {}
   for (const order of orders) {
     const seen = new Set<string>()
@@ -220,22 +323,34 @@ export default function OrdersPage() {
       if (!line.sku_id) continue
       if (!demandMap[line.sku_id]) {
         const sku = skus.find((s) => s.id === line.sku_id)
-        demandMap[line.sku_id] = {
-          sku_id:      line.sku_id,
-          description: sku?.description ?? line.description ?? '',
-          qty:         0,
-          orderCount:  0,
-        }
+        demandMap[line.sku_id] = { sku_id: line.sku_id, description: sku?.description ?? line.description ?? '', qty: 0, orderCount: 0 }
       }
       demandMap[line.sku_id].qty += line.qty
-      if (!seen.has(line.sku_id)) {
-        demandMap[line.sku_id].orderCount++
-        seen.add(line.sku_id)
-      }
+      if (!seen.has(line.sku_id)) { demandMap[line.sku_id].orderCount++; seen.add(line.sku_id) }
     }
   }
   const demandRows = Object.values(demandMap).sort((a, b) => b.qty - a.qty)
-  const unmatchedLines = orders.flatMap((o) => o.order_lines).filter((l) => !l.sku_id)
+
+  // Group-by-SKU data
+  const skuGroups: Record<string, { sku_id: string; description: string; orders: Array<{ order: Order; qty: number }> }> = {}
+  for (const order of filtered) {
+    for (const line of order.order_lines) {
+      if (!line.sku_id) continue
+      if (!skuGroups[line.sku_id]) {
+        const sku = skus.find((s) => s.id === line.sku_id)
+        skuGroups[line.sku_id] = { sku_id: line.sku_id, description: sku?.description ?? '', orders: [] }
+      }
+      skuGroups[line.sku_id].orders.push({ order, qty: line.qty })
+    }
+  }
+  const skuGroupList = Object.values(skuGroups).sort((a, b) => {
+    const qa = a.orders.reduce((s, r) => s + r.qty, 0)
+    const qb = b.orders.reduce((s, r) => s + r.qty, 0)
+    return qb - qa
+  })
+
+  const readyCount     = Object.values(allocStatuses).filter((s) => s === 'ready').length
+  const buildCount     = Object.values(allocStatuses).filter((s) => s === 'build_needed').length
 
   // ─────────────────────────────────────────────────────────────────────────────
   return (
@@ -245,12 +360,455 @@ export default function OrdersPage() {
           <div className="kicker">Garvin Internal Tool</div>
           <h1 className="page-title">Orders</h1>
           <div className="page-subtitle">
-            Open orders synced from ShipStation — drives demand in the Build Planner.
+            Open orders from ShipStation. Allocate stock, batch by SKU, and send directly to the Build Planner.
           </div>
         </div>
       </div>
 
-      {/* ── Store Setup Card ─────────────────────────────────────────────────── */}
+      {/* ── Sync + filter bar ────────────────────────────────────────────────── */}
+      <section className="card">
+        <div className="card-body">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <button className="btn btn-primary" onClick={syncOrders} disabled={syncing} style={{ minWidth: 190 }}>
+              {syncing ? 'Syncing…' : '↻ Sync from ShipStation'}
+            </button>
+
+            <button
+              className="btn btn-secondary"
+              onClick={runAllocation}
+              title="Allocate current inventory to orders oldest-first and show what can ship now"
+            >
+              🚢 Allocate Stock
+            </button>
+
+            {lastSynced && (
+              <span style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>
+                Last synced: {new Date(lastSynced).toLocaleString()}
+              </span>
+            )}
+
+            {allocated && (
+              <span style={{ fontSize: '0.82rem', color: 'var(--muted)', marginLeft: 4 }}>
+                <span style={{ color: 'var(--success)' }}>🟢 {readyCount} ready</span>
+                {' · '}
+                <span style={{ color: 'var(--danger)' }}>🔴 {buildCount} need build</span>
+              </span>
+            )}
+
+            {/* Channel filter pills */}
+            <div style={{ display: 'flex', gap: 8, marginLeft: 'auto', flexWrap: 'wrap' }}>
+              {([
+                { key: 'all',     label: 'All Open',  count: orders.length },
+                { key: 'shopify', label: 'Shopify',   count: shopifyCount },
+                { key: 'turn5',   label: 'Turn5',     count: turn5Count },
+              ] as const).map((tab) => (
+                <button
+                  key={tab.key}
+                  onClick={() => setChannelFilter(tab.key)}
+                  style={{
+                    background: channelFilter === tab.key ? 'var(--accent)' : 'var(--panel-2)',
+                    border: `1px solid ${channelFilter === tab.key ? 'var(--accent)' : 'var(--border)'}`,
+                    borderRadius: 20, padding: '4px 14px',
+                    fontSize: '0.82rem', fontWeight: 600,
+                    color: channelFilter === tab.key ? '#fff' : 'var(--text-2)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {tab.label} ({tab.count})
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {syncMessage && (
+            <div className={syncMessage.startsWith('✓') ? 'message' : 'warning-box'} style={{ marginTop: 10 }}>
+              {syncMessage}
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* ── Orders table ─────────────────────────────────────────────────────── */}
+      <section className="card">
+        <div className="card-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+          <div>
+            <h2 className="card-title">Open Orders</h2>
+            <div className="card-subtitle">
+              {filtered.length} order{filtered.length !== 1 ? 's' : ''}
+              {selectedIds.size > 0 && ` · ${selectedIds.size} selected`}
+            </div>
+          </div>
+
+          {/* View toggle */}
+          <div style={{ display: 'flex', gap: 6 }}>
+            {(['by_order', 'by_sku'] as const).map((mode) => (
+              <button
+                key={mode}
+                onClick={() => setViewMode(mode)}
+                className={viewMode === mode ? 'btn btn-primary' : 'btn btn-secondary'}
+                style={{ fontSize: '0.78rem', padding: '4px 12px', height: 30 }}
+              >
+                {mode === 'by_order' ? 'By Order' : 'By SKU'}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Action bar (shown when items selected) */}
+        {selectedIds.size > 0 && (
+          <div style={{ padding: '10px 20px', background: 'var(--accent-soft)', borderBottom: '1px solid var(--accent-border)', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--accent-text)' }}>
+              {selectedIds.size} order{selectedIds.size !== 1 ? 's' : ''} selected
+            </span>
+            <button className="btn btn-primary" style={{ height: 30, fontSize: '0.8rem' }} onClick={sendToPlanner}>
+              📋 Send to Build Planner
+            </button>
+            <button className="btn btn-secondary" style={{ height: 30, fontSize: '0.8rem' }} onClick={() => setSelectedIds(new Set())}>
+              Clear Selection
+            </button>
+          </div>
+        )}
+
+        <div className="card-body">
+          {loading ? (
+            <div className="empty">Loading…</div>
+          ) : filtered.length === 0 ? (
+            <div className="empty">
+              {orders.length === 0
+                ? 'No open orders yet. Click "Sync from ShipStation" to import.'
+                : 'No orders match this filter.'}
+            </div>
+          ) : viewMode === 'by_order' ? (
+            <>
+              {/* Auto-batch helper */}
+              <div style={{ display: 'flex', gap: 8, marginBottom: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                <button className="btn btn-secondary" style={{ height: 28, fontSize: '0.78rem' }} onClick={autoBatch}>
+                  ⚡ Auto-Batch (oldest order + shared SKUs)
+                </button>
+                <span style={{ fontSize: '0.76rem', color: 'var(--muted)' }}>
+                  Selects all orders that share SKUs with the oldest open order — fastest way to plan a build run.
+                </span>
+              </div>
+
+              <div className="table-wrap">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: 32 }}>
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.size === filtered.length && filtered.length > 0}
+                          onChange={toggleAll}
+                          style={{ cursor: 'pointer' }}
+                        />
+                      </th>
+                      <th>Order #</th>
+                      <th>Channel</th>
+                      <th>Customer</th>
+                      <th
+                        style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
+                        onClick={() => setSortDir((d) => d === 'asc' ? 'desc' : 'asc')}
+                      >
+                        Order Date {sortDir === 'asc' ? '↑' : '↓'}
+                      </th>
+                      <th>SKU(s)</th>
+                      <th style={{ textAlign: 'center' }}>Qty</th>
+                      {allocated && <th>Status</th>}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map((order) => {
+                      const isExpanded   = expandedIds.has(order.id)
+                      const isSelected   = selectedIds.has(order.id)
+                      const isMultiSku   = order.order_lines.length > 1
+                      const days         = daysSince(order.order_date)
+                      const status       = allocStatuses[order.id]
+                      const alloc        = status ? ALLOC_STYLE[status] : null
+                      const chStyle      = CH_STYLE[order.channel] ?? CH_STYLE.shopify
+                      const totalQty     = order.order_lines.reduce((s, l) => s + l.qty, 0)
+
+                      return (
+                        <>
+                          <tr
+                            key={order.id}
+                            style={{
+                              background: isSelected
+                                ? 'var(--accent-soft)'
+                                : alloc?.bg ?? 'transparent',
+                            }}
+                          >
+                            {/* Checkbox */}
+                            <td onClick={(e) => e.stopPropagation()}>
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={() => toggleSelect(order.id)}
+                                style={{ cursor: 'pointer' }}
+                              />
+                            </td>
+
+                            {/* Order # with optional expand arrow */}
+                            <td
+                              style={{ fontWeight: 700, cursor: isMultiSku ? 'pointer' : 'default', whiteSpace: 'nowrap' }}
+                              onClick={() => {
+                                if (!isMultiSku) return
+                                setExpandedIds((prev) => {
+                                  const next = new Set(prev)
+                                  next.has(order.id) ? next.delete(order.id) : next.add(order.id)
+                                  return next
+                                })
+                              }}
+                            >
+                              {isMultiSku && (
+                                <span style={{ marginRight: 4, fontSize: '0.8rem', opacity: 0.7 }}>
+                                  {isExpanded ? '▾' : '▸'}
+                                </span>
+                              )}
+                              {order.order_number}
+                            </td>
+
+                            {/* Channel */}
+                            <td>
+                              <span style={{ background: chStyle.bg, color: chStyle.text, borderRadius: 12, padding: '2px 9px', fontSize: '0.74rem', fontWeight: 700 }}>
+                                {order.channel === 'shopify' ? 'Shopify' : 'Turn5'}
+                              </span>
+                            </td>
+
+                            {/* Customer */}
+                            <td style={{ color: 'var(--text-2)' }}>{order.customer_name ?? '—'}</td>
+
+                            {/* Order Date */}
+                            <td style={{ whiteSpace: 'nowrap' }}>
+                              <span>{formatDate(order.order_date)}</span>
+                              {days !== null && (
+                                <span style={{
+                                  marginLeft: 6, fontSize: '0.72rem',
+                                  color: days > 14 ? 'var(--danger)' : days > 7 ? 'var(--warning)' : 'var(--muted)',
+                                  fontWeight: days > 7 ? 700 : 400,
+                                }}>
+                                  {days}d
+                                </span>
+                              )}
+                            </td>
+
+                            {/* SKU(s) */}
+                            <td style={{ fontFamily: 'monospace', fontSize: '0.84rem' }}>
+                              {isMultiSku ? (
+                                <span style={{ color: 'var(--muted)' }}>
+                                  {order.order_lines.length} SKUs
+                                </span>
+                              ) : (
+                                order.order_lines[0]?.ss_sku ?? '—'
+                              )}
+                            </td>
+
+                            {/* Qty */}
+                            <td style={{ textAlign: 'center', fontWeight: 700 }}>{totalQty}</td>
+
+                            {/* Alloc status */}
+                            {allocated && (
+                              <td>
+                                {alloc && (
+                                  <span style={{ fontSize: '0.78rem', color: alloc.color, fontWeight: 600, whiteSpace: 'nowrap' }}>
+                                    {alloc.icon} {alloc.label}
+                                  </span>
+                                )}
+                              </td>
+                            )}
+                          </tr>
+
+                          {/* Expanded multi-SKU lines */}
+                          {isMultiSku && isExpanded && (
+                            <tr key={`${order.id}-exp`}>
+                              <td colSpan={allocated ? 8 : 7} style={{ padding: 0, background: 'var(--panel-2)' }}>
+                                <div style={{ padding: '6px 20px 10px 52px' }}>
+                                  <table className="table" style={{ background: 'transparent' }}>
+                                    <thead>
+                                      <tr>
+                                        <th>SKU</th>
+                                        <th>Description</th>
+                                        <th style={{ textAlign: 'center' }}>Qty</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {order.order_lines.map((line) => (
+                                        <tr key={line.id}>
+                                          <td style={{ fontFamily: 'monospace', fontSize: '0.83rem', fontWeight: 600 }}>
+                                            {line.ss_sku}
+                                          </td>
+                                          <td style={{ color: 'var(--text-2)', fontSize: '0.83rem' }}>
+                                            {line.description ?? skus.find((s) => s.id === line.sku_id)?.description ?? '—'}
+                                          </td>
+                                          <td style={{ textAlign: 'center', fontWeight: 700 }}>{line.qty}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          ) : (
+            /* ── By SKU view ─────────────────────────────────────────────────── */
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+              {skuGroupList.map((group) => {
+                const totalQty = group.orders.reduce((s, r) => s + r.qty, 0)
+                const inv      = inventory.find((i) => i.sku_id === group.sku_id)
+                const onHand   = inv?.qty_on_hand ?? 0
+                return (
+                  <div key={group.sku_id} style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+                    {/* SKU group header */}
+                    <div style={{ background: 'var(--panel-2)', padding: '10px 16px', display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+                      <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '0.9rem' }}>{group.sku_id}</span>
+                      <span style={{ color: 'var(--text-2)', fontSize: '0.84rem' }}>{group.description}</span>
+                      <div style={{ marginLeft: 'auto', display: 'flex', gap: 14, fontSize: '0.8rem' }}>
+                        <span><strong style={{ color: 'var(--danger)' }}>{totalQty}</strong> <span style={{ color: 'var(--muted)' }}>needed</span></span>
+                        <span><strong style={{ color: onHand > 0 ? 'var(--success)' : 'var(--muted)' }}>{onHand}</strong> <span style={{ color: 'var(--muted)' }}>on hand</span></span>
+                        <span style={{ color: (totalQty - onHand) > 0 ? 'var(--warning)' : 'var(--success)', fontWeight: 700 }}>
+                          {Math.max(0, totalQty - onHand)} to build
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Orders needing this SKU */}
+                    <table className="table" style={{ margin: 0 }}>
+                      <thead>
+                        <tr>
+                          <th style={{ width: 32 }}>
+                            <input type="checkbox" style={{ cursor: 'pointer' }}
+                              checked={group.orders.every((r) => selectedIds.has(r.order.id))}
+                              onChange={() => {
+                                const allSelected = group.orders.every((r) => selectedIds.has(r.order.id))
+                                setSelectedIds((prev) => {
+                                  const next = new Set(prev)
+                                  group.orders.forEach((r) => allSelected ? next.delete(r.order.id) : next.add(r.order.id))
+                                  return next
+                                })
+                              }}
+                            />
+                          </th>
+                          <th>Order #</th>
+                          <th>Channel</th>
+                          <th>Customer</th>
+                          <th>Order Date</th>
+                          <th style={{ textAlign: 'center' }}>Qty</th>
+                          {allocated && <th>Status</th>}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {group.orders.map(({ order, qty }) => {
+                          const chStyle  = CH_STYLE[order.channel] ?? CH_STYLE.shopify
+                          const status   = allocStatuses[order.id]
+                          const alloc    = status ? ALLOC_STYLE[status] : null
+                          const days     = daysSince(order.order_date)
+                          return (
+                            <tr key={order.id} style={{ background: selectedIds.has(order.id) ? 'var(--accent-soft)' : 'transparent' }}>
+                              <td>
+                                <input type="checkbox" style={{ cursor: 'pointer' }}
+                                  checked={selectedIds.has(order.id)}
+                                  onChange={() => toggleSelect(order.id)} />
+                              </td>
+                              <td style={{ fontWeight: 700 }}>{order.order_number}</td>
+                              <td>
+                                <span style={{ background: chStyle.bg, color: chStyle.text, borderRadius: 12, padding: '2px 9px', fontSize: '0.74rem', fontWeight: 700 }}>
+                                  {order.channel === 'shopify' ? 'Shopify' : 'Turn5'}
+                                </span>
+                              </td>
+                              <td style={{ color: 'var(--text-2)' }}>{order.customer_name ?? '—'}</td>
+                              <td style={{ whiteSpace: 'nowrap' }}>
+                                {formatDate(order.order_date)}
+                                {days !== null && (
+                                  <span style={{ marginLeft: 6, fontSize: '0.72rem', color: days > 14 ? 'var(--danger)' : days > 7 ? 'var(--warning)' : 'var(--muted)', fontWeight: days > 7 ? 700 : 400 }}>
+                                    {days}d
+                                  </span>
+                                )}
+                              </td>
+                              <td style={{ textAlign: 'center', fontWeight: 700 }}>{qty}</td>
+                              {allocated && (
+                                <td>
+                                  {alloc && <span style={{ fontSize: '0.78rem', color: alloc.color, fontWeight: 600 }}>{alloc.icon} {alloc.label}</span>}
+                                </td>
+                              )}
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* ── Demand Summary ───────────────────────────────────────────────────── */}
+      {demandRows.length > 0 && (
+        <section className="card">
+          <div className="card-header">
+            <h2 className="card-title">Total Demand</h2>
+            <div className="card-subtitle">
+              Aggregated across all {orders.length} open orders.
+            </div>
+          </div>
+          <div className="card-body">
+            <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>SKU</th>
+                    <th>Description</th>
+                    <th style={{ textAlign: 'center' }}>Total Qty</th>
+                    <th style={{ textAlign: 'center' }}>Orders</th>
+                    <th style={{ textAlign: 'center' }}>On Hand</th>
+                    <th style={{ textAlign: 'center' }}>To Build</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {demandRows.map((row) => {
+                    const onHand  = inventory.find((i) => i.sku_id === row.sku_id)?.qty_on_hand ?? 0
+                    const toBuild = Math.max(0, row.qty - onHand)
+                    return (
+                      <tr key={row.sku_id}>
+                        <td style={{ fontWeight: 700, fontFamily: 'monospace', fontSize: '0.85rem' }}>{row.sku_id}</td>
+                        <td>{row.description}</td>
+                        <td style={{ textAlign: 'center', fontWeight: 700 }}>{row.qty}</td>
+                        <td style={{ textAlign: 'center', color: 'var(--muted)' }}>{row.orderCount}</td>
+                        <td style={{ textAlign: 'center', color: onHand > 0 ? 'var(--success)' : 'var(--muted)', fontWeight: onHand > 0 ? 700 : 400 }}>{onHand}</td>
+                        <td style={{ textAlign: 'center' }}>
+                          {toBuild > 0
+                            ? <span style={{ color: 'var(--danger)', fontWeight: 700 }}>{toBuild}</span>
+                            : <span style={{ color: 'var(--success)' }}>✓</span>}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td colSpan={2} style={{ fontWeight: 700, color: 'var(--muted)' }}>{demandRows.length} SKUs</td>
+                    <td style={{ textAlign: 'center', fontWeight: 700 }}>{demandRows.reduce((s, r) => s + r.qty, 0)}</td>
+                    <td />
+                    <td />
+                    <td style={{ textAlign: 'center', fontWeight: 700, color: 'var(--danger)' }}>
+                      {demandRows.reduce((s, r) => s + Math.max(0, r.qty - (inventory.find((i) => i.sku_id === r.sku_id)?.qty_on_hand ?? 0)), 0)}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* ── Store Setup (moved to bottom) ────────────────────────────────────── */}
       <section className="card">
         <div
           className="card-header"
@@ -265,38 +823,22 @@ export default function OrdersPage() {
                 : 'Not configured yet — click to set up'}
             </div>
           </div>
-          <span style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>
-            {setupOpen ? '▲ Hide' : '▼ Configure'}
-          </span>
+          <span style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>{setupOpen ? '▲ Hide' : '▼ Configure'}</span>
         </div>
 
         {setupOpen && (
           <div className="card-body">
-            <p style={{ fontSize: '0.85rem', color: 'var(--text-2)', marginBottom: 14, lineHeight: 1.6 }}>
-              Click <strong>Load Stores</strong> to fetch your ShipStation stores. Enable each Garvin store
-              and assign it a channel. Non-Garvin stores should be left disabled.
-            </p>
-
-            <div className="btn-row" style={{ marginBottom: 18 }}>
-              <button
-                className="btn btn-secondary"
-                onClick={loadSSStores}
-                disabled={loadingStores}
-              >
+            <div className="btn-row" style={{ marginBottom: 14 }}>
+              <button className="btn btn-secondary" onClick={loadSSStores} disabled={loadingStores}>
                 {loadingStores ? 'Loading…' : 'Load Stores from ShipStation'}
               </button>
             </div>
 
             {ssStores.length > 0 && (
-              <div className="table-wrap" style={{ marginBottom: 16 }}>
+              <div className="table-wrap" style={{ marginBottom: 14 }}>
                 <table className="table">
                   <thead>
-                    <tr>
-                      <th>Store Name</th>
-                      <th>Marketplace</th>
-                      <th>Channel</th>
-                      <th>Enable</th>
-                    </tr>
+                    <tr><th>Store Name</th><th>Marketplace</th><th>Channel</th><th>Enable</th></tr>
                   </thead>
                   <tbody>
                     {storeConfig.map((s) => (
@@ -304,36 +846,16 @@ export default function OrdersPage() {
                         <td style={{ fontWeight: 600 }}>{s.storeName}</td>
                         <td style={{ color: 'var(--muted)' }}>{s.marketplaceName}</td>
                         <td>
-                          <select
-                            className="select"
-                            value={s.channel}
-                            style={{ width: 110 }}
-                            onChange={(e) =>
-                              setStoreConfig((prev) =>
-                                prev.map((x) =>
-                                  x.storeId === s.storeId ? { ...x, channel: e.target.value } : x
-                                )
-                              )
-                            }
-                          >
+                          <select className="select" value={s.channel} style={{ width: 110 }}
+                            onChange={(e) => setStoreConfig((prev) => prev.map((x) => x.storeId === s.storeId ? { ...x, channel: e.target.value } : x))}>
                             <option value="shopify">Shopify</option>
                             <option value="turn5">Turn5</option>
                             <option value="other">Other</option>
                           </select>
                         </td>
                         <td>
-                          <input
-                            type="checkbox"
-                            checked={s.enabled}
-                            style={{ width: 18, height: 18, cursor: 'pointer' }}
-                            onChange={(e) =>
-                              setStoreConfig((prev) =>
-                                prev.map((x) =>
-                                  x.storeId === s.storeId ? { ...x, enabled: e.target.checked } : x
-                                )
-                              )
-                            }
-                          />
+                          <input type="checkbox" checked={s.enabled} style={{ width: 18, height: 18, cursor: 'pointer' }}
+                            onChange={(e) => setStoreConfig((prev) => prev.map((x) => x.storeId === s.storeId ? { ...x, enabled: e.target.checked } : x))} />
                         </td>
                       </tr>
                     ))}
@@ -343,260 +865,14 @@ export default function OrdersPage() {
             )}
 
             <div className="btn-row">
-              <button
-                className="btn btn-primary"
-                onClick={saveConfig}
-                disabled={savingConfig || storeConfig.length === 0}
-              >
+              <button className="btn btn-primary" onClick={saveConfig} disabled={savingConfig || storeConfig.length === 0}>
                 {savingConfig ? 'Saving…' : 'Save Configuration'}
               </button>
             </div>
-
-            {configMessage && (
-              <div className="message" style={{ marginTop: 10 }}>{configMessage}</div>
-            )}
+            {configMessage && <div className="message" style={{ marginTop: 10 }}>{configMessage}</div>}
           </div>
         )}
       </section>
-
-      {/* ── Sync + Stats Bar ─────────────────────────────────────────────────── */}
-      <section className="card">
-        <div className="card-body">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
-            <button
-              className="btn btn-primary"
-              onClick={syncOrders}
-              disabled={syncing}
-              style={{ minWidth: 180 }}
-            >
-              {syncing ? 'Syncing…' : '↻ Sync from ShipStation'}
-            </button>
-
-            {lastSynced && (
-              <span style={{ fontSize: '0.82rem', color: 'var(--muted)' }}>
-                Last synced: {new Date(lastSynced).toLocaleString()}
-              </span>
-            )}
-
-            {/* Stats pills */}
-            <div style={{ display: 'flex', gap: 10, marginLeft: 'auto', flexWrap: 'wrap' }}>
-              {[
-                { label: 'All Open', count: orders.length, active: channelFilter === 'all', key: 'all' as const },
-                { label: 'Shopify',  count: shopifyCount,  active: channelFilter === 'shopify', key: 'shopify' as const },
-                { label: 'Turn5',    count: turn5Count,    active: channelFilter === 'turn5', key: 'turn5' as const },
-              ].map((tab) => (
-                <button
-                  key={tab.key}
-                  onClick={() => setChannelFilter(tab.key)}
-                  style={{
-                    background: tab.active ? 'var(--accent)' : 'var(--panel-2)',
-                    border: `1px solid ${tab.active ? 'var(--accent)' : 'var(--border)'}`,
-                    borderRadius: 20,
-                    padding: '4px 14px',
-                    fontSize: '0.82rem',
-                    fontWeight: 600,
-                    color: tab.active ? '#fff' : 'var(--text-2)',
-                    cursor: 'pointer',
-                    transition: 'all 0.13s',
-                  }}
-                >
-                  {tab.label} <span style={{ opacity: 0.8 }}>({tab.count})</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {syncMessage && (
-            <div
-              className={syncMessage.startsWith('✓') ? 'message' : 'warning-box'}
-              style={{ marginTop: 12 }}
-            >
-              {syncMessage}
-            </div>
-          )}
-        </div>
-      </section>
-
-      {/* ── Orders List ──────────────────────────────────────────────────────── */}
-      <section className="card">
-        <div className="card-header">
-          <h2 className="card-title">Open Orders</h2>
-          <div className="card-subtitle">
-            {filtered.length} order{filtered.length !== 1 ? 's' : ''} — oldest first. Click a row to expand line items.
-          </div>
-        </div>
-
-        <div className="card-body">
-          {loading ? (
-            <div className="empty">Loading…</div>
-          ) : filtered.length === 0 ? (
-            <div className="empty">
-              No open orders.{' '}
-              {orders.length === 0 ? 'Click "Sync from ShipStation" to import.' : 'Try a different filter.'}
-            </div>
-          ) : (
-            <div className="table-wrap">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Order #</th>
-                    <th>Channel</th>
-                    <th>Customer</th>
-                    <th>Order Date</th>
-                    <th>Ship By</th>
-                    <th style={{ textAlign: 'center' }}>Items</th>
-                    <th style={{ textAlign: 'center' }}>Unmatched</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filtered.map((order) => {
-                    const isExpanded = expandedId === order.id
-                    const overdue    = isOverdue(order.ship_by_date)
-                    const unmatched  = order.order_lines.filter((l) => !l.sku_id).length
-                    const chStyle    = CHANNEL_COLOR[order.channel] ?? CHANNEL_COLOR.shopify
-
-                    return (
-                      <>
-                        <tr
-                          key={order.id}
-                          onClick={() => setExpandedId(isExpanded ? null : order.id)}
-                          style={{ cursor: 'pointer', background: isExpanded ? 'var(--accent-soft)' : 'transparent' }}
-                        >
-                          <td style={{ fontWeight: 700 }}>
-                            {isExpanded ? '▾ ' : '▸ '}{order.order_number}
-                          </td>
-                          <td>
-                            <span style={{
-                              background: chStyle.bg,
-                              color: chStyle.text,
-                              borderRadius: 12,
-                              padding: '2px 10px',
-                              fontSize: '0.76rem',
-                              fontWeight: 700,
-                            }}>
-                              {CHANNEL_LABEL[order.channel] ?? order.channel}
-                            </span>
-                          </td>
-                          <td>{order.customer_name ?? '—'}</td>
-                          <td>{formatDate(order.order_date)}</td>
-                          <td style={{ color: overdue ? 'var(--danger)' : 'inherit', fontWeight: overdue ? 700 : 400 }}>
-                            {formatDate(order.ship_by_date)}
-                            {overdue && ' ⚠'}
-                          </td>
-                          <td style={{ textAlign: 'center' }}>{order.order_lines.length}</td>
-                          <td style={{ textAlign: 'center' }}>
-                            {unmatched > 0 ? (
-                              <span style={{ color: 'var(--warning)', fontWeight: 700 }}>{unmatched}</span>
-                            ) : (
-                              <span style={{ color: 'var(--success)' }}>✓</span>
-                            )}
-                          </td>
-                        </tr>
-
-                        {isExpanded && (
-                          <tr key={`${order.id}-lines`}>
-                            <td colSpan={7} style={{ padding: 0, background: 'var(--panel-2)' }}>
-                              <div style={{ padding: '10px 20px 14px' }}>
-                                <table className="table" style={{ background: 'transparent' }}>
-                                  <thead>
-                                    <tr>
-                                      <th>SKU</th>
-                                      <th>Description</th>
-                                      <th>Qty</th>
-                                      <th>Unit Price</th>
-                                      <th>Match</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {order.order_lines.map((line) => (
-                                      <tr key={line.id}>
-                                        <td style={{ fontWeight: 600, fontFamily: 'monospace', fontSize: '0.85rem' }}>
-                                          {line.ss_sku}
-                                        </td>
-                                        <td>{line.description ?? '—'}</td>
-                                        <td style={{ fontWeight: 700 }}>{line.qty}</td>
-                                        <td>{line.unit_price != null ? `$${line.unit_price.toFixed(2)}` : '—'}</td>
-                                        <td>
-                                          {line.sku_id ? (
-                                            <span style={{ color: 'var(--success)', fontWeight: 700 }}>✓ Matched</span>
-                                          ) : (
-                                            <span style={{ color: 'var(--warning)', fontWeight: 700 }}>⚠ No match</span>
-                                          )}
-                                        </td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                            </td>
-                          </tr>
-                        )}
-                      </>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      </section>
-
-      {/* ── Demand Summary ───────────────────────────────────────────────────── */}
-      {demandRows.length > 0 && (
-        <section className="card">
-          <div className="card-header">
-            <h2 className="card-title">Open Order Demand</h2>
-            <div className="card-subtitle">
-              Total qty needed across all {orders.length} open orders — use this to drive the Build Planner.
-            </div>
-          </div>
-
-          <div className="card-body">
-            {unmatchedLines.length > 0 && (
-              <div className="warning-box" style={{ marginBottom: 16, fontSize: '0.84rem' }}>
-                ⚠ {unmatchedLines.length} line item{unmatchedLines.length !== 1 ? 's' : ''} did not match a SKU in
-                your library:{' '}
-                {[...new Set(unmatchedLines.map((l) => l.ss_sku))].join(', ')}
-                . Add those SKUs to the SKUs page so they appear here.
-              </div>
-            )}
-
-            <div className="table-wrap">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>SKU</th>
-                    <th>Description</th>
-                    <th style={{ textAlign: 'center' }}>Total Qty Needed</th>
-                    <th style={{ textAlign: 'center' }}>Across # Orders</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {demandRows.map((row) => (
-                    <tr key={row.sku_id}>
-                      <td style={{ fontWeight: 700, fontFamily: 'monospace' }}>{row.sku_id}</td>
-                      <td>{row.description}</td>
-                      <td style={{ textAlign: 'center', fontWeight: 700, fontSize: '1.05rem' }}>{row.qty}</td>
-                      <td style={{ textAlign: 'center', color: 'var(--muted)' }}>{row.orderCount}</td>
-                    </tr>
-                  ))}
-                </tbody>
-                <tfoot>
-                  <tr>
-                    <td colSpan={2} style={{ fontWeight: 700, color: 'var(--muted)' }}>
-                      {demandRows.length} SKU{demandRows.length !== 1 ? 's' : ''} needed
-                    </td>
-                    <td style={{ textAlign: 'center', fontWeight: 700 }}>
-                      {demandRows.reduce((s, r) => s + r.qty, 0)}
-                    </td>
-                    <td />
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
-          </div>
-        </section>
-      )}
     </div>
   )
 }

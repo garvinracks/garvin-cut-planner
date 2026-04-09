@@ -241,6 +241,23 @@ export default function PlannerPage() {
     } catch {
       // ignore malformed localStorage value
     }
+
+    // Load demand sent from the Orders page ("Send to Build Planner" button)
+    try {
+      const raw = sessionStorage.getItem('garvin:orders_import')
+      if (raw) {
+        sessionStorage.removeItem('garvin:orders_import')
+        const imported = JSON.parse(raw) as Array<{ skuId: string; qty: string; skuLookup: string }>
+        if (imported?.length) {
+          const padded = [...imported]
+          while (padded.length < 3) padded.push({ skuId: '', qty: '', skuLookup: '' })
+          setRows(padded)
+          setMessage(`Loaded demand for ${imported.length} SKU${imported.length !== 1 ? 's' : ''} from selected orders.`)
+        }
+      }
+    } catch {
+      // ignore malformed sessionStorage value
+    }
   }, [])
 
   async function loadData() {
