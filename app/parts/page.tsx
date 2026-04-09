@@ -399,6 +399,7 @@ export default function PartsPage() {
       part_type: part.part_type,
       material_id: findMatchingMaterialId(part),
       cut_length: part.cut_length == null ? '' : String(part.cut_length),
+      weight_lbs: part.weight_lbs == null ? '' : String(part.weight_lbs),
       dxf_file: part.dxf_file || '',
       notes: part.notes || '',
     })
@@ -1120,148 +1121,149 @@ export default function PartsPage() {
         </div>
 
         <div className="card-body section-stack" style={{ gap: 28 }}>
-          <div>
-            <div className="group-title" style={{ marginBottom: 12 }}>
-              Sheet Parts
-            </div>
+          {(['sheet', 'tube'] as const).map((ptype) => {
+            const group = ptype === 'sheet' ? sheetParts : tubeParts
+            const typeColor = ptype === 'sheet'
+              ? { bg: 'rgba(100,160,220,0.15)', text: '#7ab4e8', border: 'rgba(100,160,220,0.25)' }
+              : { bg: 'rgba(220,150,80,0.15)', text: '#e0a050', border: 'rgba(220,150,80,0.25)' }
 
-            {loading ? (
-              <div className="empty">Loading...</div>
-            ) : sheetParts.length === 0 ? (
-              <div className="empty">No matching sheet parts.</div>
-            ) : (
-              <div className="table-wrap">
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th style={{ width: 180 }}>Preview</th>
-                      <th>Part #</th>
-                      <th>Description</th>
-                      <th>Thickness</th>
-                      <th>Material</th>
-                      <th>DXF</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sheetParts.map((part) => (
-                      <tr
-                        key={part.id}
-                        id={`part-row-${part.id}`}
-                        style={{ background: editingId === part.id ? 'var(--accent-soft)' : 'transparent' }}
-                      >
-                        <td style={{ paddingTop: 12, paddingBottom: 12 }}>
-                          <button
-                            type="button"
-                            onClick={() => setPreviewPart(part)}
-                            style={{ background: 'transparent', border: 0, padding: 0, cursor: 'pointer' }}
+            return (
+              <div key={ptype}>
+                <div className="group-title" style={{ marginBottom: 12 }}>
+                  {ptype === 'sheet' ? 'Sheet Parts' : 'Tube Parts'}
+                  {group.length > 0 && (
+                    <span style={{
+                      marginLeft: 8, fontSize: '0.68rem', background: 'var(--panel-2)',
+                      border: '1px solid var(--border)', borderRadius: 4, padding: '1px 7px',
+                      color: 'var(--muted)', fontWeight: 600, textTransform: 'none', letterSpacing: 0,
+                    }}>{group.length}</span>
+                  )}
+                </div>
+                {loading ? (
+                  <div className="empty">Loading…</div>
+                ) : group.length === 0 ? (
+                  <div className="empty">No matching {ptype} parts.</div>
+                ) : (
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fill, minmax(195px, 1fr))',
+                    gap: 10,
+                    alignItems: 'start',
+                  }}>
+                    {group.map((part) => {
+                      const isActive  = editingId === part.id
+                      const isSquare  = (part.tube_od ?? '').toLowerCase().includes('x')
+                      const dims      = ptype === 'sheet'
+                        ? [part.thickness, part.material].filter(Boolean).join(' · ')
+                        : [part.tube_od, part.tube_wall, part.material].filter(Boolean).join(' · ')
+
+                      return (
+                        <div
+                          key={part.id}
+                          id={`part-row-${part.id}`}
+                          style={{
+                            background: isActive ? 'var(--accent-soft)' : 'var(--panel-2)',
+                            border: `1px solid ${isActive ? 'var(--accent)' : 'var(--border)'}`,
+                            borderRadius: 8,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            overflow: 'hidden',
+                            transition: 'border-color 0.13s',
+                          }}
+                          onMouseEnter={(e) => { if (!isActive) (e.currentTarget as HTMLElement).style.borderColor = 'var(--border-2)' }}
+                          onMouseLeave={(e) => { if (!isActive) (e.currentTarget as HTMLElement).style.borderColor = 'var(--border)' }}
+                        >
+                          {/* ── Preview ── */}
+                          <div
+                            style={{
+                              height: 110, flexShrink: 0, background: 'var(--panel)',
+                              borderBottom: '1px solid var(--border)', cursor: 'pointer',
+                            }}
+                            onClick={() => startEdit(part)}
                           >
                             <DxfPartPreview
                               dxfFile={part.dxf_file}
                               partNumber={part.part_number}
-                              size="small"
+                              size="fill"
+                              isTube={ptype === 'tube'}
+                              tubeFallback={true}
+                              tubeOd={part.tube_od}
+                              tubeWall={part.tube_wall}
+                              tubeShape={isSquare ? 'square' : 'round'}
+                              cutLength={part.cut_length}
                             />
-                          </button>
-                        </td>
-                        <td onClick={() => startEdit(part)} style={{ cursor: 'pointer', fontWeight: 700 }}>
-                          {part.part_number}
-                        </td>
-                        <td onClick={() => startEdit(part)} style={{ cursor: 'pointer' }}>
-                          {part.description}
-                        </td>
-                        <td onClick={() => startEdit(part)} style={{ cursor: 'pointer' }}>
-                          {part.thickness || ''}
-                        </td>
-                        <td onClick={() => startEdit(part)} style={{ cursor: 'pointer' }}>
-                          {part.material || ''}
-                        </td>
-                        <td
-                          onClick={() => startEdit(part)}
-                          style={{
-                            cursor: 'pointer',
-                            color: 'var(--muted)',
-                            fontSize: '0.88rem',
-                            maxWidth: 180,
-                            whiteSpace: 'nowrap',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                          }}
-                        >
-                          {part.dxf_file || ''}
-                        </td>
-                        <td>
-                          <button type="button" className="btn btn-secondary" onClick={() => duplicatePart(part)}>
-                            Duplicate
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
+                          </div>
 
-          <div>
-            <div className="group-title" style={{ marginBottom: 12 }}>
-              Tube Parts
-            </div>
+                          {/* ── Info ── */}
+                          <div
+                            style={{ padding: '9px 11px 6px', flex: 1, cursor: 'pointer' }}
+                            onClick={() => startEdit(part)}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                              <span style={{
+                                fontSize: '0.6rem', fontWeight: 700, textTransform: 'uppercase',
+                                letterSpacing: '0.07em', background: typeColor.bg, color: typeColor.text,
+                                border: `1px solid ${typeColor.border}`, borderRadius: 4,
+                                padding: '2px 5px', flexShrink: 0, lineHeight: 1.4,
+                              }}>
+                                {ptype}
+                              </span>
+                              <span style={{ fontWeight: 700, fontSize: '0.82rem', color: 'var(--text)', wordBreak: 'break-word', lineHeight: 1.2 }}>
+                                {part.part_number}
+                              </span>
+                            </div>
+                            {part.description && (
+                              <div style={{
+                                fontSize: '0.74rem', color: 'var(--muted)', lineHeight: 1.4, marginTop: 4,
+                                display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+                              }}>
+                                {part.description}
+                              </div>
+                            )}
+                            {dims && (
+                              <div style={{ fontSize: '0.7rem', color: typeColor.text, fontWeight: 600, marginTop: 3 }}>
+                                {dims}
+                              </div>
+                            )}
+                            {ptype === 'tube' && part.cut_length != null && (
+                              <div style={{ fontSize: '0.68rem', color: 'var(--muted)', marginTop: 2 }}>
+                                Cut: {part.cut_length}&Prime; ({(part.cut_length / 12).toFixed(2)} ft)
+                              </div>
+                            )}
+                            {part.weight_lbs != null && (
+                              <div style={{ fontSize: '0.68rem', color: 'var(--muted)', marginTop: 1 }}>
+                                {part.weight_lbs} lbs
+                              </div>
+                            )}
+                          </div>
 
-            {loading ? (
-              <div className="empty">Loading...</div>
-            ) : tubeParts.length === 0 ? (
-              <div className="empty">No matching tube parts.</div>
-            ) : (
-              <div className="table-wrap">
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th>Part #</th>
-                      <th>Description</th>
-                      <th>OD</th>
-                      <th>Wall</th>
-                      <th>Cut Length</th>
-                      <th>Material</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {tubeParts.map((part) => (
-                      <tr
-                        key={part.id}
-                        id={`part-row-${part.id}`}
-                        style={{ background: editingId === part.id ? 'var(--accent-soft)' : 'transparent' }}
-                      >
-                        <td onClick={() => startEdit(part)} style={{ cursor: 'pointer', fontWeight: 700 }}>
-                          {part.part_number}
-                        </td>
-                        <td onClick={() => startEdit(part)} style={{ cursor: 'pointer' }}>
-                          {part.description}
-                        </td>
-                        <td onClick={() => startEdit(part)} style={{ cursor: 'pointer' }}>
-                          {part.tube_od || ''}
-                        </td>
-                        <td onClick={() => startEdit(part)} style={{ cursor: 'pointer' }}>
-                          {part.tube_wall || ''}
-                        </td>
-                        <td onClick={() => startEdit(part)} style={{ cursor: 'pointer' }}>
-                          {part.cut_length ?? ''}
-                        </td>
-                        <td onClick={() => startEdit(part)} style={{ cursor: 'pointer' }}>
-                          {part.material || ''}
-                        </td>
-                        <td>
-                          <button type="button" className="btn btn-secondary" onClick={() => duplicatePart(part)}>
-                            Duplicate
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                          {/* ── Actions ── */}
+                          <div style={{ padding: '4px 8px 8px', display: 'flex', gap: 6 }}>
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              style={{ flex: 1, fontSize: '0.74rem', height: 28 }}
+                              onClick={() => startEdit(part)}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              style={{ fontSize: '0.74rem', height: 28, padding: '0 9px' }}
+                              onClick={(e) => { e.stopPropagation(); duplicatePart(part) }}
+                            >
+                              Dup
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+            )
+          })}
         </div>
       </section>
 

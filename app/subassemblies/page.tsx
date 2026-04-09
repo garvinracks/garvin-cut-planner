@@ -649,57 +649,91 @@ export default function SubassembliesPage() {
 
           <div className="card-body">
             {loading ? (
-              <div className="empty">Loading...</div>
+              <div className="empty">Loading…</div>
             ) : filteredItems.length === 0 ? (
               <div className="empty">No matching subassemblies.</div>
             ) : (
-              <div className="section-stack" style={{ gap: 10 }}>
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))',
+                gap: 10,
+                alignItems: 'start',
+              }}>
                 {filteredItems.map((item) => {
-                  const imgUrl = getImageUrl(item.image_file)
+                  const imgUrl   = getImageUrl(item.image_file)
                   const isActive = selectedSubassemblyId === item.id
                   return (
-                    <div key={item.id} id={`sub-row-${item.id}`} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 10 }}>
-                      <button
-                        type="button"
+                    <div
+                      key={item.id}
+                      id={`sub-row-${item.id}`}
+                      style={{
+                        background: isActive ? 'var(--accent-soft)' : 'var(--panel-2)',
+                        border: `1px solid ${isActive ? 'var(--accent)' : 'var(--border)'}`,
+                        borderRadius: 8,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        overflow: 'hidden',
+                        transition: 'border-color 0.13s',
+                      }}
+                      onMouseEnter={(e) => { if (!isActive) (e.currentTarget as HTMLElement).style.borderColor = 'var(--border-2)' }}
+                      onMouseLeave={(e) => { if (!isActive) (e.currentTarget as HTMLElement).style.borderColor = 'var(--border)' }}
+                    >
+                      {/* ── Photo ── */}
+                      <div
+                        style={{ height: 100, flexShrink: 0, cursor: 'pointer', position: 'relative' }}
                         onClick={() => startEdit(item)}
-                        className={`sidebar-link ${isActive ? 'active' : ''}`}
-                        style={{
-                          width: '100%',
-                          textAlign: 'left',
-                          background: isActive ? 'var(--accent-soft)' : 'var(--panel-2)',
-                          borderColor: isActive ? 'rgba(216, 87, 22, 0.38)' : 'var(--border)',
-                          color: isActive ? '#ffd7c4' : 'var(--text)',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 10,
-                          padding: '8px 12px',
-                        }}
                       >
                         {imgUrl ? (
                           // eslint-disable-next-line @next/next/no-img-element
                           <img
                             src={imgUrl}
                             alt={item.id}
-                            style={{ width: 44, height: 44, objectFit: 'cover', borderRadius: 6, flexShrink: 0, border: '1px solid var(--border)' }}
+                            style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
                           />
                         ) : (
                           <div style={{
-                            width: 44, height: 44, borderRadius: 6, border: '1px dashed var(--border)',
-                            flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            fontSize: '1.1rem', color: 'var(--border-2)',
-                          }}>🔩</div>
-                        )}
-                        <div>
-                          <div style={{ fontWeight: 700 }}>{item.id}</div>
-                          <div style={{ fontSize: '0.85rem', color: isActive ? '#ffd7c4' : 'var(--muted)' }}>
-                            {item.name}
+                            width: '100%', height: '100%', background: 'var(--panel)',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            fontSize: '2rem', color: 'var(--border-2)',
+                            borderBottom: '1px solid var(--border)',
+                          }}>
+                            🔩
                           </div>
-                        </div>
-                      </button>
+                        )}
+                      </div>
 
-                      <button className="btn btn-secondary" onClick={() => duplicateSubassembly(item)}>
-                        Duplicate
-                      </button>
+                      {/* ── Info ── */}
+                      <div
+                        style={{ padding: '9px 11px 6px', flex: 1, cursor: 'pointer' }}
+                        onClick={() => startEdit(item)}
+                      >
+                        <div style={{ fontWeight: 700, fontSize: '0.84rem', color: isActive ? 'var(--accent-text)' : 'var(--text)', lineHeight: 1.2 }}>
+                          {item.id}
+                        </div>
+                        <div style={{ fontSize: '0.74rem', color: 'var(--muted)', marginTop: 3, lineHeight: 1.4, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                          {item.name}
+                        </div>
+                      </div>
+
+                      {/* ── Actions ── */}
+                      <div style={{ padding: '4px 8px 8px', display: 'flex', gap: 6 }}>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          style={{ flex: 1, fontSize: '0.74rem', height: 28 }}
+                          onClick={() => startEdit(item)}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          style={{ fontSize: '0.74rem', height: 28, padding: '0 9px' }}
+                          onClick={(e) => { e.stopPropagation(); duplicateSubassembly(item) }}
+                        >
+                          Dup
+                        </button>
+                      </div>
                     </div>
                   )
                 })}
