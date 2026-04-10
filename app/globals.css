@@ -648,14 +648,295 @@ a { color: inherit; text-decoration: none; }
 }
 
 /* ============================================================
+   MOBILE TOPBAR  (hidden on desktop, shown via media query)
+   ============================================================ */
+
+.mobile-topbar {
+  display: none;
+}
+
+.hamburger-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 0;
+  padding: 0;
+  font-family: inherit;
+  transition: background 0.1s, border-color 0.1s;
+}
+.hamburger-btn:hover {
+  background: var(--panel);
+  border-color: var(--border-2);
+}
+.hamburger-btn svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.mobile-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Close button inside the sidebar on mobile */
+.sidebar-close-btn {
+  display: none; /* shown via media query */
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  cursor: pointer;
+  margin-left: auto;
+  padding: 0;
+  font-family: inherit;
+  font-size: 0;
+  transition: background 0.1s;
+}
+.sidebar-close-btn:hover {
+  background: var(--border);
+}
+.sidebar-close-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Overlay behind the mobile drawer */
+.sidebar-overlay {
+  display: none;
+}
+
+/* ============================================================
+   RESPONSIVE — tablet + phone (≤ 768 px)
+   ============================================================ */
+
+@media (max-width: 768px) {
+
+  /* App shell: stack vertically so mobile topbar sits above content */
+  .app-shell {
+    flex-direction: column;
+  }
+
+  /* ── Mobile topbar ─────────────────────────────────────────── */
+  .mobile-topbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    flex-shrink: 0;
+  }
+
+  /* ── Sidebar as slide-in drawer ──────────────────────────────── */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100dvh; /* dynamic viewport height — handles mobile chrome */
+    z-index: 300;
+    transform: translateX(-100%);
+    transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 6px 0 32px rgba(0, 0, 0, 0.5);
+  }
+
+  .sidebar.sidebar-open {
+    transform: translateX(0);
+  }
+
+  /* Close button visible on mobile */
+  .sidebar-close-btn {
+    display: flex;
+  }
+
+  /* Dim overlay behind the drawer */
+  .sidebar-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 200;
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+    cursor: pointer;
+  }
+
+  /* ── Main content ─────────────────────────────────────────────── */
+  .main-content {
+    padding: 0 16px 56px;
+    min-width: 0;
+  }
+
+  .section-stack {
+    gap: 14px;
+  }
+
+  /* ── Page header ─────────────────────────────────────────────── */
+  .page-header {
+    padding: 14px 0 12px;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .page-title {
+    font-size: 1.3rem;
+  }
+
+  .page-subtitle {
+    font-size: 0.78rem;
+  }
+
+  /* ── Cards ───────────────────────────────────────────────────── */
+  .card-header {
+    padding: 11px 14px;
+  }
+
+  .card-body {
+    padding: 14px;
+  }
+
+  /* ── Grid helpers ────────────────────────────────────────────── */
+  .grid-2 {
+    grid-template-columns: 1fr;
+  }
+
+  /* Inline-style grids: repeat(4) and repeat(3) → 2 columns */
+  [style*="repeat(4, 1fr)"] {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+  [style*="repeat(3, 1fr)"] {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+
+  /* Field grid (material add rows, etc.) */
+  .field-grid {
+    grid-template-columns: 1fr;
+  }
+
+  /* ── Buttons ─────────────────────────────────────────────────── */
+  .btn {
+    height: 40px;
+    padding: 0 14px;
+    font-size: 0.82rem;
+  }
+
+  /* ── Forms ───────────────────────────────────────────────────── */
+  /* font-size 16px prevents iOS auto-zoom on input focus */
+  .field,
+  .textarea,
+  input[type="text"],
+  input[type="number"],
+  input[type="email"],
+  input[type="date"],
+  input[type="search"],
+  select {
+    font-size: 16px !important;
+  }
+
+  /* Override select wrapper separately */
+  .select select {
+    font-size: 16px !important;
+  }
+
+  /* ── Sidebar nav ─────────────────────────────────────────────── */
+  .sidebar-link {
+    padding: 11px 14px;
+    font-size: 0.88rem;
+    gap: 11px;
+    min-height: 42px; /* comfortable touch target */
+  }
+
+  .sidebar-link svg {
+    width: 17px;
+    height: 17px;
+  }
+
+  /* ── Tables ──────────────────────────────────────────────────── */
+  /* .table-wrap already has overflow-x: auto — this just fine-tunes */
+  .table td,
+  .table th {
+    padding: 9px 10px;
+  }
+
+  .table {
+    font-size: 0.8rem;
+  }
+
+  /* ── Pills ───────────────────────────────────────────────────── */
+  .pill {
+    font-size: 0.71rem;
+    padding: 3px 8px;
+  }
+
+  /* ── Inline padding overrides from page-level containers ──────── */
+  /* Many pages use style={{ padding: '24px 32px' }} — shrink on mobile */
+  [style*="padding: 24px 32px"],
+  [style*="padding: \"24px 32px\""] {
+    padding: 16px !important;
+  }
+}
+
+/* ── Small phones (≤ 480 px) ─────────────────────────────────────── */
+@media (max-width: 480px) {
+
+  .main-content {
+    padding: 0 12px 56px;
+  }
+
+  .page-title {
+    font-size: 1.15rem;
+  }
+
+  /* Stat grids → single column */
+  [style*="repeat(4, 1fr)"],
+  [style*="repeat(3, 1fr)"] {
+    grid-template-columns: 1fr !important;
+  }
+
+  .section-stack {
+    gap: 12px;
+  }
+
+  .card-body {
+    padding: 12px;
+  }
+
+  /* Btn row wraps tightly */
+  .btn-row {
+    gap: 6px;
+  }
+}
+
+/* ============================================================
    PRINT
    ============================================================ */
 
 @media print {
-  .no-print  { display: none !important; }
-  .sidebar   { display: none !important; }
-  .main-content { padding: 0; }
-  .card      { box-shadow: none; border: 1px solid #ccc; }
+  .no-print        { display: none !important; }
+  .mobile-topbar   { display: none !important; }
+  .sidebar-overlay { display: none !important; }
+  .sidebar         { display: none !important; }
+  .main-content    { padding: 0; }
+  .card            { box-shadow: none; border: 1px solid #ccc; }
 }
 
 .print-only { display: none; }

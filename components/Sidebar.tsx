@@ -5,6 +5,15 @@ import { usePathname } from 'next/navigation'
 import GlobalSearch from '@/components/GlobalSearch'
 import ThemeToggle from '@/components/ThemeToggle'
 
+// Close (×) icon for the mobile drawer
+function IconClose() {
+  return (
+    <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <path d="M2 2l10 10M12 2L2 12" />
+    </svg>
+  )
+}
+
 // ── Minimal inline SVG icons ──────────────────────────────────────────────────
 
 function IconPlanner() {
@@ -148,18 +157,31 @@ const LINKS = [
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export default function Sidebar() {
+type SidebarProps = {
+  isOpen?: boolean
+  onClose?: () => void
+}
+
+export default function Sidebar({ isOpen = false, onClose }: SidebarProps) {
   const pathname = usePathname()
 
   return (
-    <aside className="sidebar">
-      {/* Brand */}
+    <aside className={`sidebar${isOpen ? ' sidebar-open' : ''}`}>
+      {/* Brand + mobile close button */}
       <div className="sidebar-top">
         <div className="brand-mark">GI</div>
         <div>
           <div className="brand-title">Garvin</div>
           <div className="brand-subtitle">Cut Planner</div>
         </div>
+        {/* Close button only visible on mobile (via CSS) */}
+        <button
+          className="sidebar-close-btn"
+          onClick={onClose}
+          aria-label="Close navigation"
+        >
+          <IconClose />
+        </button>
       </div>
 
       {/* Nav */}
