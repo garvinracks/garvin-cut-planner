@@ -72,14 +72,16 @@ const emptyForm = {
   qty_on_hand: '',
 }
 
-const emptyReceiptForm = {
-  qty_received: '',
-  price_per_unit: '',
-  date_received: new Date().toISOString().split('T')[0],
-  length_per_bar_in: '',
-  order_number: '',
-  supplier: '',
-  notes: '',
+// Multi-line delivery receipt types
+type DeliveryLine = {
+  material_id: string
+  qty_received: string
+  price_per_unit: string
+  length_per_bar_in: string   // tubes only
+}
+
+function emptyDeliveryLine(): DeliveryLine {
+  return { material_id: '', qty_received: '', price_per_unit: '', length_per_bar_in: '' }
 }
 
 const emptyPriceForm = {
@@ -172,11 +174,15 @@ export default function MaterialsPage() {
   const [priceMessage, setPriceMessage]     = useState('')
   const [loadingPriceLogs, setLoadingPriceLogs] = useState(false)
 
-  // Receive delivery modal
-  const [receiptOpen, setReceiptOpen]       = useState(false)
-  const [receiptForm, setReceiptForm]       = useState(emptyReceiptForm)
-  const [savingReceipt, setSavingReceipt]   = useState(false)
-  const [receiptMessage, setReceiptMessage] = useState('')
+  // Multi-line delivery modal (top-level, covers whole order at once)
+  const [deliveryOpen, setDeliveryOpen]         = useState(false)
+  const [deliveryDate, setDeliveryDate]         = useState(new Date().toISOString().split('T')[0])
+  const [deliveryPO, setDeliveryPO]             = useState('')
+  const [deliverySupplier, setDeliverySupplier] = useState('')
+  const [deliveryNotes, setDeliveryNotes]       = useState('')
+  const [deliveryLines, setDeliveryLines]       = useState<DeliveryLine[]>([emptyDeliveryLine()])
+  const [savingDelivery, setSavingDelivery]     = useState(false)
+  const [deliveryMessage, setDeliveryMessage]   = useState('')
 
   // Batch allocation data
   const [activeBatches, setActiveBatches]   = useState<ActiveBatch[]>([])
@@ -323,7 +329,14 @@ export default function MaterialsPage() {
   function startNew() {
     setEditingId(null); setForm(emptyForm); setMessage('')
     setPriceLogs([]); setPriceForm(emptyPriceForm); setPriceMessage('')
-    setReceiptOpen(false); setReceiptMessage('')
+  }
+
+  function openDeliveryModal() {
+    setDeliveryDate(new Date().toISOString().split('T')[0])
+    setDeliveryPO(''); setDeliverySupplier(''); setDeliveryNotes('')
+    setDeliveryLines([emptyDeliveryLine()])
+    setDeliveryMessage('')
+    setDeliveryOpen(true)
   }
 
   function startEdit(row: MaterialRow) {
@@ -343,8 +356,7 @@ export default function MaterialsPage() {
       stock_length_in: row.stock_length_in != null ? String(row.stock_length_in) : '',
       qty_on_hand: row.qty_on_hand != null ? String(row.qty_on_hand) : '',
     })
-    setMessage(''); setPriceMessage(''); setReceiptMessage('')
-    setReceiptForm({ ...emptyReceiptForm, length_per_bar_in: row.stock_length_in ? String(row.stock_length_in) : '' })
+    setMessage(''); setPriceMessage('')
     void loadPriceLogs(row.id)
   }
 
@@ -386,61 +398,77 @@ export default function MaterialsPage() {
     else { setMessage('Material deleted.'); startNew(); await loadRows() }
   }
 
-  // ── Receive delivery ──────────────────────────────────────────────────────────
+  // ── Receive delivery (multi-line) ────────────────────────────────────────────
+
+  function updateDeliveryLine(idx: number, field: keyof DeliveryLine, value: string) {
+    setDeliveryLines((prev) => prev.map((l, i) => i === idx ? { ...l, [field]: value } : l))
+  }
 
   async function handleReceiveDelivery(e: React.FormEvent) {
     e.preventDefault()
-    if (!editingId) return
-    setSavingReceipt(true); setReceiptMessage('')
+    setSavingDelivery(true); setDeliveryMessage('')
 
-    const qtyReceived = parseFloat(receiptForm.qty_received)
-    const pricePerUnit = parseFloat(receiptForm.price_per_unit)
+    const filledLines = deliveryLines.filter((l) => l.material_id && l.qty_received && l.price_per_unit)
+    if (filledLines.length === 0) {
+      setDeliveryMessage('Add at least one material line with qty and price.')
+      setSavingDelivery(false); return
+    }
+    if (!deliveryDate) { setDeliveryMessage('Date is required.'); setSavingDelivery(false); return }
 
-    if (isNaN(qtyReceived) || qtyReceived <= 0) { setReceiptMessage('Qty received must be > 0.'); setSavingReceipt(false); return }
-    if (isNaN(pricePerUnit) || pricePerUnit <= 0) { setReceiptMessage('Price per unit must be > 0.'); setSavingReceipt(false); return }
-    if (!receiptForm.date_received) { setReceiptMessage('Date is required.'); setSavingReceipt(false); return }
+    const errors: string[] = []
 
-    const mat = rows.find((r) => r.id === editingId)
-    const isTube = mat?.material_type === 'tube'
-    const lengthPerBar = isTube && receiptForm.length_per_bar_in.trim()
-      ? parseFloat(receiptForm.length_per_bar_in) : null
+    for (const line of filledLines) {
+      const mat = rows.find((r) => r.id === line.material_id)
+      if (!mat) { errors.push(`Unknown material: ${line.material_id}`); continue }
 
-    // Log the receipt as a price entry
-    const { error: logError } = await supabase.from('material_price_logs').insert({
-      material_id: editingId,
-      price: pricePerUnit,
-      date_purchased: receiptForm.date_received,
-      order_number: receiptForm.order_number.trim() || null,
-      supplier: receiptForm.supplier.trim() || null,
-      notes: receiptForm.notes.trim() || null,
-      qty_received: qtyReceived,
-      length_per_bar_in: lengthPerBar,
-    })
+      const qty = parseFloat(line.qty_received)
+      const price = parseFloat(line.price_per_unit)
+      if (isNaN(qty) || qty <= 0) { errors.push(`${mat.name}: invalid qty`); continue }
+      if (isNaN(price) || price <= 0) { errors.push(`${mat.name}: invalid price`); continue }
 
-    if (logError) { setReceiptMessage(`Save failed: ${logError.message}`); setSavingReceipt(false); return }
+      const isTube = mat.material_type === 'tube'
+      const lengthPerBar = isTube && line.length_per_bar_in.trim()
+        ? parseFloat(line.length_per_bar_in) : null
 
-    // Increment qty_on_hand
-    const currentOnHand = mat?.qty_on_hand ?? 0
-    const newQtyOnHand = currentOnHand + qtyReceived
-    const updatePayload: Record<string, unknown> = { qty_on_hand: newQtyOnHand }
+      // Log price entry
+      const { error: logErr } = await supabase.from('material_price_logs').insert({
+        material_id: mat.id,
+        price,
+        date_purchased: deliveryDate,
+        order_number: deliveryPO.trim() || null,
+        supplier: deliverySupplier.trim() || null,
+        notes: deliveryNotes.trim() || null,
+        qty_received: qty,
+        length_per_bar_in: lengthPerBar,
+      })
+      if (logErr) { errors.push(`${mat.name}: ${logErr.message}`); continue }
 
-    // If bar length differs from default, update stock_length_in
-    if (isTube && lengthPerBar && lengthPerBar !== mat?.stock_length_in) {
-      updatePayload.stock_length_in = lengthPerBar
+      // Increment qty_on_hand
+      const newQty = (mat.qty_on_hand ?? 0) + qty
+      const updatePayload: Record<string, unknown> = { qty_on_hand: newQty }
+      if (isTube && lengthPerBar && lengthPerBar !== mat.stock_length_in) {
+        updatePayload.stock_length_in = lengthPerBar
+      }
+      await supabase.from('materials').update(updatePayload).eq('id', mat.id)
     }
 
-    await supabase.from('materials').update(updatePayload).eq('id', editingId)
-
-    // Refresh
     await loadRows()
-    await loadPriceLogs(editingId)
 
-    // Update form to reflect new qty
-    setForm((prev) => ({ ...prev, qty_on_hand: String(newQtyOnHand) }))
-    setReceiptOpen(false)
-    setReceiptForm({ ...emptyReceiptForm, length_per_bar_in: String(lengthPerBar ?? mat?.stock_length_in ?? '') })
-    setSavingReceipt(false)
-    setReceiptMessage(`✓ ${qtyReceived} ${isTube ? 'bar' : 'sheet'}${qtyReceived !== 1 ? 's' : ''} received — stock updated to ${newQtyOnHand}.`)
+    // Reload price logs if we just touched the currently-editing material
+    if (editingId && filledLines.some((l) => l.material_id === editingId)) {
+      await loadPriceLogs(editingId)
+      const fresh = rows.find((r) => r.id === editingId)
+      if (fresh) setForm((prev) => ({ ...prev, qty_on_hand: String((fresh.qty_on_hand ?? 0) + filledLines.filter(l => l.material_id === editingId).reduce((s, l) => s + parseFloat(l.qty_received), 0)) }))
+    }
+
+    setSavingDelivery(false)
+    if (errors.length > 0) {
+      setDeliveryMessage(`⚠ Some lines failed: ${errors.join('; ')}`)
+    } else {
+      setDeliveryMessage('')
+      setDeliveryOpen(false)
+      setMessage(`✓ Delivery logged — ${filledLines.length} material${filledLines.length !== 1 ? 's' : ''} received.`)
+    }
   }
 
   // ── Log price (manual, no qty change) ────────────────────────────────────────
@@ -499,7 +527,186 @@ export default function MaterialsPage() {
           <h1 className="page-title">Materials</h1>
           <div className="page-subtitle">Track tube and sheet materials — stock levels, batch allocation, and purchase history.</div>
         </div>
+        <button
+          type="button"
+          className="btn btn-primary"
+          style={{ background: 'var(--success)', borderColor: 'var(--success)', fontSize: '0.95rem', padding: '8px 20px', whiteSpace: 'nowrap' }}
+          onClick={openDeliveryModal}
+        >
+          📦 Receive Delivery
+        </button>
       </div>
+
+      {/* ── Delivery Modal ── */}
+      {deliveryOpen && (
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(3px)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}
+          onClick={() => setDeliveryOpen(false)}
+        >
+          <div
+            style={{ background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: 28, width: '100%', maxWidth: 720, position: 'relative' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 style={{ margin: '0 0 4px', fontSize: '1.15rem', fontWeight: 800 }}>📦 Receive Material Delivery</h2>
+            <p style={{ margin: '0 0 20px', fontSize: '0.83rem', color: 'var(--muted)' }}>Log multiple sizes from one delivery at once. Stock levels update automatically.</p>
+
+            <form onSubmit={(e) => void handleReceiveDelivery(e)}>
+              {/* Shared header fields */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 20 }}>
+                <div>
+                  <label className="label">Date Received *</label>
+                  <input className="field" type="date" value={deliveryDate} onChange={(e) => setDeliveryDate(e.target.value)} />
+                </div>
+                <div>
+                  <label className="label">PO / Order Number</label>
+                  <input className="field" value={deliveryPO} onChange={(e) => setDeliveryPO(e.target.value)} placeholder="PO-12345" />
+                </div>
+                <div>
+                  <label className="label">Supplier</label>
+                  <input className="field" value={deliverySupplier} onChange={(e) => setDeliverySupplier(e.target.value)} placeholder="Metal supplier name" />
+                </div>
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <label className="label">Notes</label>
+                  <input className="field" value={deliveryNotes} onChange={(e) => setDeliveryNotes(e.target.value)} placeholder="Optional delivery notes" />
+                </div>
+              </div>
+
+              {/* Line items */}
+              <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16, marginBottom: 14 }}>
+                <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10 }}>
+                  Materials Received
+                </div>
+
+                {/* Column headers */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px 110px 110px 36px', gap: 8, marginBottom: 6, padding: '0 4px' }}>
+                  {['Material', 'Qty', 'Price / unit', 'Bar length', ''].map((h) => (
+                    <div key={h} style={{ fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase' }}>{h}</div>
+                  ))}
+                </div>
+
+                {deliveryLines.map((line, idx) => {
+                  const mat = rows.find((r) => r.id === line.material_id)
+                  const isTube = mat?.material_type === 'tube'
+                  return (
+                    <div key={idx} style={{ display: 'grid', gridTemplateColumns: '1fr 90px 110px 110px 36px', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+                      {/* Material picker */}
+                      <select
+                        className="select"
+                        value={line.material_id}
+                        onChange={(e) => {
+                          const m = rows.find((r) => r.id === e.target.value)
+                          updateDeliveryLine(idx, 'material_id', e.target.value)
+                          // Pre-fill bar length from material default
+                          if (m?.material_type === 'tube' && m.stock_length_in) {
+                            updateDeliveryLine(idx, 'length_per_bar_in', String(m.stock_length_in))
+                          } else {
+                            updateDeliveryLine(idx, 'length_per_bar_in', '')
+                          }
+                        }}
+                      >
+                        <option value="">— select material —</option>
+                        {['tube', 'sheet'].map((type) => {
+                          const typeRows = rows.filter((r) => r.material_type === type)
+                          if (typeRows.length === 0) return null
+                          return (
+                            <optgroup key={type} label={type === 'tube' ? 'Tube' : 'Sheet'}>
+                              {typeRows.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                            </optgroup>
+                          )
+                        })}
+                      </select>
+
+                      {/* Qty */}
+                      <input
+                        className="field"
+                        type="number" step="1" min="1"
+                        value={line.qty_received}
+                        onChange={(e) => updateDeliveryLine(idx, 'qty_received', e.target.value)}
+                        placeholder="0"
+                      />
+
+                      {/* Price per unit */}
+                      <div style={{ position: 'relative' }}>
+                        <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--muted)', pointerEvents: 'none', fontSize: '0.85rem' }}>$</span>
+                        <input
+                          className="field"
+                          type="number" step="0.01" min="0"
+                          value={line.price_per_unit}
+                          onChange={(e) => updateDeliveryLine(idx, 'price_per_unit', e.target.value)}
+                          placeholder="0.00"
+                          style={{ paddingLeft: 22 }}
+                        />
+                      </div>
+
+                      {/* Bar length (tubes only) */}
+                      {isTube ? (
+                        <div style={{ position: 'relative' }}>
+                          <input
+                            className="field"
+                            type="number" step="1" min="1"
+                            value={line.length_per_bar_in}
+                            onChange={(e) => updateDeliveryLine(idx, 'length_per_bar_in', e.target.value)}
+                            placeholder={String(mat?.stock_length_in ?? 240)}
+                            title="Bar length in inches (20ft = 240, 24ft = 288)"
+                          />
+                          {line.length_per_bar_in && mat?.stock_length_in && parseFloat(line.length_per_bar_in) !== mat.stock_length_in && (
+                            <span title={`Default is ${mat.stock_length_in}″`} style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', fontSize: '0.75rem', color: '#fbbf24' }}>⚠</span>
+                          )}
+                        </div>
+                      ) : (
+                        <div style={{ color: 'var(--muted)', fontSize: '0.75rem', textAlign: 'center' }}>—</div>
+                      )}
+
+                      {/* Remove row */}
+                      <button
+                        type="button"
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: '1rem', padding: 0, lineHeight: 1 }}
+                        onClick={() => setDeliveryLines((prev) => prev.filter((_, i) => i !== idx))}
+                        disabled={deliveryLines.length === 1}
+                        title="Remove row"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  )
+                })}
+
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ fontSize: '0.8rem', marginTop: 4 }}
+                  onClick={() => setDeliveryLines((prev) => [...prev, emptyDeliveryLine()])}
+                >
+                  + Add Row
+                </button>
+              </div>
+
+              {/* Cost summary */}
+              {deliveryLines.some((l) => l.qty_received && l.price_per_unit) && (
+                <div style={{ padding: '8px 14px', background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.2)', borderRadius: 6, fontSize: '0.83rem', color: 'var(--success)', marginBottom: 14 }}>
+                  Total delivery cost: <strong>
+                    ${deliveryLines.reduce((sum, l) => {
+                      const q = parseFloat(l.qty_received); const p = parseFloat(l.price_per_unit)
+                      return sum + (isNaN(q) || isNaN(p) ? 0 : q * p)
+                    }, 0).toFixed(2)}
+                  </strong>
+                </div>
+              )}
+
+              {deliveryMessage && (
+                <div className="warning-box" style={{ marginBottom: 14 }}>{deliveryMessage}</div>
+              )}
+
+              <div className="btn-row">
+                <button type="submit" disabled={savingDelivery} className="btn btn-primary" style={{ background: 'var(--success)', borderColor: 'var(--success)' }}>
+                  {savingDelivery ? 'Saving...' : '✓ Log Delivery & Update Stock'}
+                </button>
+                <button type="button" className="btn btn-secondary" onClick={() => setDeliveryOpen(false)}>Cancel</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {message && <div className="message">{message}</div>}
 
@@ -640,23 +847,13 @@ export default function MaterialsPage() {
             return (
               <div className="card" style={{ marginBottom: 14 }}>
                 <div className="card-body">
-                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-                    <div>
-                      <div className="group-title" style={{ marginBottom: 4 }}>{editingRow.name}</div>
-                      <div style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>
-                        {isTubeEdit
-                          ? `${editingRow.tube_od} × ${editingRow.tube_wall} · ${editingRow.stock_length_in ?? '?'}″ default bar length`
-                          : `${editingRow.thickness ?? '?'} thick · ${editingRow.unit_weight_lbs ?? '?'} lbs/sheet`}
-                      </div>
+                  <div>
+                    <div className="group-title" style={{ marginBottom: 4 }}>{editingRow.name}</div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>
+                      {isTubeEdit
+                        ? `${editingRow.tube_od} × ${editingRow.tube_wall} · ${editingRow.stock_length_in ?? '?'}″ default bar length`
+                        : `${editingRow.thickness ?? '?'} thick · ${editingRow.unit_weight_lbs ?? '?'} lbs/sheet`}
                     </div>
-                    <button
-                      type="button"
-                      className="btn btn-primary"
-                      style={{ background: 'var(--success)', borderColor: 'var(--success)', whiteSpace: 'nowrap' }}
-                      onClick={() => { setReceiptOpen(true); setReceiptMessage('') }}
-                    >
-                      📦 Receive Delivery
-                    </button>
                   </div>
 
                   {/* Stock summary */}
@@ -697,151 +894,10 @@ export default function MaterialsPage() {
                     </div>
                   )}
 
-                  {receiptMessage && (
-                    <div className={receiptMessage.startsWith('✓') ? 'message' : 'warning-box'} style={{ marginTop: 12 }}>
-                      {receiptMessage}
-                    </div>
-                  )}
                 </div>
               </div>
             )
           })()}
-
-          {/* ── Receive Delivery form (inline, below stock card) ── */}
-          {receiptOpen && editingRow && (
-            <div className="card" style={{ marginBottom: 14, border: '1px solid rgba(34,197,94,0.35)' }}>
-              <div className="card-header" style={{ background: 'rgba(34,197,94,0.06)' }}>
-                <h3 className="card-title">📦 Receive Delivery — {editingRow.name}</h3>
-                <button type="button" className="btn btn-secondary" style={{ fontSize: '0.78rem', padding: '3px 10px' }} onClick={() => setReceiptOpen(false)}>Cancel</button>
-              </div>
-              <div className="card-body">
-                <form onSubmit={(e) => void handleReceiveDelivery(e)}>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
-                    <div>
-                      <label className="label">Qty Received *</label>
-                      <input
-                        className="field"
-                        type="number" step="1" min="1"
-                        value={receiptForm.qty_received}
-                        onChange={(e) => setReceiptForm((p) => ({ ...p, qty_received: e.target.value }))}
-                        placeholder={isTubeEdit ? '# of bars' : '# of sheets'}
-                        autoFocus
-                      />
-                    </div>
-
-                    <div>
-                      <label className="label">Price per {isTubeEdit ? 'Bar' : 'Sheet'} ($) *</label>
-                      <input
-                        className="field"
-                        type="number" step="0.01" min="0"
-                        value={receiptForm.price_per_unit}
-                        onChange={(e) => setReceiptForm((p) => ({ ...p, price_per_unit: e.target.value }))}
-                        placeholder="0.00"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="label">Date Received *</label>
-                      <input
-                        className="field"
-                        type="date"
-                        value={receiptForm.date_received}
-                        onChange={(e) => setReceiptForm((p) => ({ ...p, date_received: e.target.value }))}
-                      />
-                    </div>
-
-                    {isTubeEdit && (
-                      <div>
-                        <label className="label">
-                          Bar Length (inches)
-                          <span style={{ color: 'var(--muted)', fontWeight: 400, marginLeft: 6, fontSize: '0.75rem' }}>— 20ft = 240, 24ft = 288</span>
-                        </label>
-                        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                          <input
-                            className="field"
-                            type="number" step="1" min="1"
-                            value={receiptForm.length_per_bar_in}
-                            onChange={(e) => setReceiptForm((p) => ({ ...p, length_per_bar_in: e.target.value }))}
-                            placeholder={String(editingRow.stock_length_in ?? 240)}
-                          />
-                          <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-                            {[['20ft', '240'], ['24ft', '288']].map(([label, val]) => (
-                              <button
-                                key={val} type="button" className="btn btn-secondary"
-                                style={{
-                                  height: 32, fontSize: '0.72rem', padding: '0 8px', whiteSpace: 'nowrap',
-                                  background: receiptForm.length_per_bar_in === val ? 'var(--accent)' : undefined,
-                                  color: receiptForm.length_per_bar_in === val ? '#fff' : undefined,
-                                }}
-                                onClick={() => setReceiptForm((p) => ({ ...p, length_per_bar_in: val }))}
-                              >
-                                {label}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                        {receiptForm.length_per_bar_in && editingRow.stock_length_in && parseFloat(receiptForm.length_per_bar_in) !== editingRow.stock_length_in && (
-                          <div style={{ fontSize: '0.75rem', color: '#fbbf24', marginTop: 4 }}>
-                            ⚠ Differs from default ({editingRow.stock_length_in}″) — material default will be updated.
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    <div>
-                      <label className="label">PO / Order Number</label>
-                      <input
-                        className="field"
-                        value={receiptForm.order_number}
-                        onChange={(e) => setReceiptForm((p) => ({ ...p, order_number: e.target.value }))}
-                        placeholder="PO-12345"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="label">Supplier</label>
-                      <input
-                        className="field"
-                        value={receiptForm.supplier}
-                        onChange={(e) => setReceiptForm((p) => ({ ...p, supplier: e.target.value }))}
-                        placeholder="Metal supplier name"
-                      />
-                    </div>
-
-                    <div style={{ gridColumn: '1 / -1' }}>
-                      <label className="label">Notes</label>
-                      <input
-                        className="field"
-                        value={receiptForm.notes}
-                        onChange={(e) => setReceiptForm((p) => ({ ...p, notes: e.target.value }))}
-                        placeholder="Optional notes"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Cost preview */}
-                  {receiptForm.qty_received && receiptForm.price_per_unit && (
-                    <div style={{ marginTop: 12, padding: '8px 14px', background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.2)', borderRadius: 6, fontSize: '0.85rem', color: 'var(--success)' }}>
-                      Total delivery cost: <strong>${(parseFloat(receiptForm.qty_received) * parseFloat(receiptForm.price_per_unit)).toFixed(2)}</strong>
-                      {' · '}
-                      New on-hand after receipt: <strong>{(editingRow.qty_on_hand ?? 0) + parseFloat(receiptForm.qty_received)} {isTubeEdit ? 'bars' : 'sheets'}</strong>
-                    </div>
-                  )}
-
-                  {receiptMessage && !receiptMessage.startsWith('✓') && (
-                    <div className="warning-box" style={{ marginTop: 10 }}>{receiptMessage}</div>
-                  )}
-
-                  <div className="btn-row" style={{ marginTop: 14 }}>
-                    <button type="submit" disabled={savingReceipt} className="btn btn-primary" style={{ background: 'var(--success)', borderColor: 'var(--success)' }}>
-                      {savingReceipt ? 'Saving...' : '✓ Log Delivery & Update Stock'}
-                    </button>
-                    <button type="button" className="btn btn-secondary" onClick={() => setReceiptOpen(false)}>Cancel</button>
-                  </div>
-                </form>
-              </div>
-            </div>
-          )}
 
           {/* ── Edit / Add Material form ── */}
           <section className="card">
