@@ -5,6 +5,8 @@ import { createBrowserClient } from '@/lib/supabase'
 import DxfPartPreview from '@/components/DxfPartPreview'
 
 // Manufacturing stage keys and display labels
+// NOTE: Powder coat is NOT listed here — it's outsourced and applies to every part,
+// so it's tracked at the batch level (Powder page), not per-part.
 export const STAGE_KEYS = [
   'requires_laser',
   'requires_sheet_bend',
@@ -12,7 +14,6 @@ export const STAGE_KEYS = [
   'requires_saw',
   'requires_drill',
   'requires_weld',
-  'requires_powder',
 ] as const
 export type StageKey = typeof STAGE_KEYS[number]
 
@@ -23,7 +24,6 @@ export const STAGE_LABELS: Record<StageKey, string> = {
   requires_saw:        'Saw',
   requires_drill:      'Drill Press',
   requires_weld:       'Weld',
-  requires_powder:     'Powder Coat',
 }
 
 type Part = {

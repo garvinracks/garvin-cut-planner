@@ -6,13 +6,22 @@ import { createBrowserClient } from '@/lib/supabase'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+type BatchStatus = 'planned' | 'in_progress' | 'at_powder' | 'complete'
+
 type BuildBatch = {
   id: string
   name: string
-  status: 'planned' | 'in_progress' | 'complete'
+  status: BatchStatus
   notes: string | null
   created_at: string
   completed_at: string | null
+  stage_laser: boolean
+  stage_sheet_bend: boolean
+  stage_tube_bend: boolean
+  stage_saw: boolean
+  stage_drill: boolean
+  stage_weld: boolean
+  powder_batch_id: string | null
 }
 
 type BuildBatchLine = {
@@ -23,11 +32,7 @@ type BuildBatchLine = {
   mat_cost_snapshot: number | null
 }
 
-type SKU = {
-  id: string
-  description: string
-  category: string | null
-}
+type SKU = { id: string; description: string }
 
 type Part = {
   id: string
@@ -35,8 +40,8 @@ type Part = {
   description: string
   part_type: 'tube' | 'sheet'
   material: string | null
-  tube_od: number | null
-  tube_wall: number | null
+  tube_od: string | null
+  tube_wall: string | null
   cut_length: number | null
   weight_lbs: number | null
   requires_laser: boolean
@@ -45,1042 +50,701 @@ type Part = {
   requires_saw: boolean
   requires_drill: boolean
   requires_weld: boolean
-  requires_powder: boolean
 }
 
-type SkuPart = {
-  sku_id: string
-  part_id: string
-  qty: number
-}
+type SkuPart = { sku_id: string; part_id: string; qty: number }
+type SkuSubAssembly = { sku_id: string; sub_assembly_id: string; qty: number }
+type SubAssemblyPart = { sub_assembly_id: string; part_id: string; qty: number }
 
-type SubAssembly = {
+type MaterialRecord = {
   id: string
-  name: string
-}
-
-type SkuSubAssembly = {
-  sku_id: string
-  sub_assembly_id: string
-  qty: number
-}
-
-type SubAssemblyPart = {
-  sub_assembly_id: string
-  part_id: string
-  qty: number
-}
-
-type Material = {
-  id: string
-  name: string
   material_type: string
-  material: string | null
-  tube_od: number | null
-  tube_wall: number | null
+  tube_od: string | null
+  tube_wall: string | null
+  thickness: string | null
   unit_weight_lbs: number | null
   stock_length_in: number | null
-  scrap_rate: number | null
   qty_on_hand: number | null
 }
 
-type MaterialPriceLog = {
-  id: string
-  material_id: string
-  price: number
-  date_purchased: string
-}
-
-type BatchImportRow = {
-  skuId: string
-  qty: number
-  skuLookup?: string
-}
-
-type SkuRow = {
-  skuId: string
-  qty: number
-  search: string
-  results: SKU[]
-}
+type PriceLog = { material_id: string; price: number }
 
 type View = 'list' | 'create' | 'detail' | 'traveler'
 
-type Stage = {
-  key: keyof Part
-  label: string
-}
+// ── Stage config ──────────────────────────────────────────────────────────────
 
-const STAGES: Stage[] = [
-  { key: 'requires_laser',      label: 'Laser Cut' },
-  { key: 'requires_sheet_bend', label: 'Sheet Bend' },
-  { key: 'requires_tube_bend',  label: 'Tube Bend' },
-  { key: 'requires_saw',        label: 'Saw' },
-  { key: 'requires_drill',      label: 'Drill Press' },
-  { key: 'requires_weld',       label: 'Weld' },
-  { key: 'requires_powder',     label: 'Powder Coat' },
-]
+const STAGES = [
+  { key: 'stage_laser',      partKey: 'requires_laser',      label: 'Laser' },
+  { key: 'stage_sheet_bend', partKey: 'requires_sheet_bend', label: 'Sheet Bend' },
+  { key: 'stage_tube_bend',  partKey: 'requires_tube_bend',  label: 'Tube Bend' },
+  { key: 'stage_saw',        partKey: 'requires_saw',        label: 'Saw' },
+  { key: 'stage_drill',      partKey: 'requires_drill',      label: 'Drill Press' },
+  { key: 'stage_weld',       partKey: 'requires_weld',       label: 'Weld' },
+] as const
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function formatDate(iso: string | null) {
+function fmtDate(iso: string | null) {
   if (!iso) return '—'
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
-function formatCurrency(n: number | null) {
+function fmtCost(n: number | null) {
   if (n == null) return '—'
   return '$' + n.toFixed(2)
 }
 
-const STATUS_STYLE: Record<string, { bg: string; text: string; label: string }> = {
-  planned:     { bg: 'rgba(148,163,184,0.18)', text: 'var(--muted)',   label: 'Planned' },
-  in_progress: { bg: 'rgba(234,179,8,0.18)',   text: 'var(--warning)', label: 'In Progress' },
-  complete:    { bg: 'rgba(34,197,94,0.18)',    text: 'var(--success)', label: 'Complete' },
+const STATUS_STYLE: Record<BatchStatus, { label: string; bg: string; color: string }> = {
+  planned:     { label: 'Planned',         bg: 'rgba(100,116,139,0.18)', color: '#94a3b8' },
+  in_progress: { label: 'In Progress',     bg: 'rgba(234,179,8,0.18)',   color: '#facc15' },
+  at_powder:   { label: 'At Powder Coater', bg: 'rgba(167,139,250,0.2)', color: '#a78bfa' },
+  complete:    { label: 'Complete',         bg: 'rgba(34,197,94,0.18)',  color: '#4ade80' },
 }
 
-function StatusChip({ status }: { status: string }) {
-  const s = STATUS_STYLE[status] ?? STATUS_STYLE.planned
-  return (
-    <span style={{
-      display: 'inline-block',
-      padding: '2px 10px',
-      borderRadius: 99,
-      fontSize: 12,
-      fontWeight: 600,
-      background: s.bg,
-      color: s.text,
-    }}>
-      {s.label}
-    </span>
-  )
-}
-
-// ── Page ──────────────────────────────────────────────────────────────────────
+// ── Component ─────────────────────────────────────────────────────────────────
 
 export default function BatchesPage() {
   const supabase = useMemo(() => createBrowserClient(), [])
   const router   = useRouter()
 
-  // Core data
-  const [batches, setBatches]         = useState<BuildBatch[]>([])
-  const [skus, setSkus]               = useState<SKU[]>([])
-  const [parts, setParts]             = useState<Part[]>([])
-  const [skuParts, setSkuParts]       = useState<SkuPart[]>([])
-  const [skuSubAssemblies, setSkuSubAssemblies] = useState<SkuSubAssembly[]>([])
-  const [subAssemblyParts, setSubAssemblyParts] = useState<SubAssemblyPart[]>([])
-  const [materials, setMaterials]     = useState<Material[]>([])
-  const [priceLogs, setPriceLogs]     = useState<MaterialPriceLog[]>([])
-  const [loading, setLoading]         = useState(true)
+  const [view, setView]             = useState<View>('list')
+  const [batches, setBatches]       = useState<BuildBatch[]>([])
+  const [lines, setLines]           = useState<BuildBatchLine[]>([])
+  const [skus, setSkus]             = useState<SKU[]>([])
+  const [parts, setParts]           = useState<Part[]>([])
+  const [skuParts, setSkuParts]     = useState<SkuPart[]>([])
+  const [skuSubs, setSkuSubs]       = useState<SkuSubAssembly[]>([])
+  const [subParts, setSubParts]     = useState<SubAssemblyPart[]>([])
+  const [materials, setMaterials]   = useState<MaterialRecord[]>([])
+  const [priceLogs, setPriceLogs]   = useState<PriceLog[]>([])
 
-  // View state
-  const [view, setView]               = useState<View>('list')
-  const [selectedBatch, setSelectedBatch] = useState<BuildBatch | null>(null)
-  const [batchLines, setBatchLines]   = useState<BuildBatchLine[]>([])
-  const [loadingDetail, setLoadingDetail] = useState(false)
+  const [loading, setLoading]       = useState(true)
+  const [message, setMessage]       = useState('')
+  const [activeBatch, setActiveBatch] = useState<BuildBatch | null>(null)
 
   // Create form
   const [createName, setCreateName]   = useState('')
   const [createNotes, setCreateNotes] = useState('')
-  const [skuRows, setSkuRows]         = useState<SkuRow[]>([{ skuId: '', qty: 1, search: '', results: [] }])
+  const [createRows, setCreateRows]   = useState([{ skuId: '', qty: '1', skuLookup: '' }])
+  const [createDropdown, setCreateDropdown] = useState<number | null>(null)
   const [saving, setSaving]           = useState(false)
-  const [createError, setCreateError] = useState('')
 
-  // Detail actions
-  const [transitioning, setTransitioning] = useState(false)
-  const [deducting, setDeducting]         = useState(false)
-  const [deductSummary, setDeductSummary] = useState<string[]>([])
-  const [actionMessage, setActionMessage] = useState('')
+  // ── Load ─────────────────────────────────────────────────────────────────────
 
-  // ── Load ──────────────────────────────────────────────────────────────────
-
-  useEffect(() => { void load() }, [])
-
-  async function load() {
+  async function loadAll() {
     setLoading(true)
     const [
       { data: batchData },
+      { data: lineData },
       { data: skuData },
-    ] = await Promise.all([
-      supabase.from('build_batches').select('*').order('created_at', { ascending: false }),
-      supabase.from('skus').select('id, description, category').order('id'),
-    ])
-    setBatches((batchData as BuildBatch[]) ?? [])
-    setSkus((skuData as SKU[]) ?? [])
-    setLoading(false)
-  }
-
-  async function loadDetailData() {
-    const [
-      { data: partsData },
+      { data: partData },
       { data: spData },
-      { data: ssaData },
+      { data: ssData },
       { data: sapData },
       { data: matData },
       { data: plData },
     ] = await Promise.all([
-      supabase.from('parts').select('*'),
-      supabase.from('sku_parts').select('*'),
-      supabase.from('sku_sub_assemblies').select('*'),
-      supabase.from('sub_assembly_parts').select('*'),
-      supabase.from('materials').select('*'),
-      supabase.from('material_price_logs').select('*').order('date_purchased', { ascending: false }),
+      supabase.from('build_batches').select('*').order('created_at', { ascending: false }),
+      supabase.from('build_batch_lines').select('*'),
+      supabase.from('skus').select('id, description').order('id'),
+      supabase.from('parts').select('id, part_number, description, part_type, material, tube_od, tube_wall, cut_length, weight_lbs, requires_laser, requires_sheet_bend, requires_tube_bend, requires_saw, requires_drill, requires_weld'),
+      supabase.from('sku_parts').select('sku_id, part_id, qty'),
+      supabase.from('sku_sub_assemblies').select('sku_id, sub_assembly_id, qty'),
+      supabase.from('sub_assembly_parts').select('sub_assembly_id, part_id, qty'),
+      supabase.from('materials').select('id, material_type, tube_od, tube_wall, thickness, unit_weight_lbs, stock_length_in, qty_on_hand'),
+      supabase.from('material_price_logs').select('material_id, price').order('date_purchased', { ascending: false }),
     ])
-    setParts((partsData as Part[]) ?? [])
-    setSkuParts((spData as SkuPart[]) ?? [])
-    setSkuSubAssemblies((ssaData as SkuSubAssembly[]) ?? [])
-    setSubAssemblyParts((sapData as SubAssemblyPart[]) ?? [])
-    setMaterials((matData as Material[]) ?? [])
-    setPriceLogs((plData as MaterialPriceLog[]) ?? [])
+    setBatches((batchData ?? []) as BuildBatch[])
+    setLines((lineData ?? []) as BuildBatchLine[])
+    setSkus((skuData ?? []) as SKU[])
+    setParts((partData ?? []) as Part[])
+    setSkuParts((spData ?? []) as SkuPart[])
+    setSkuSubs((ssData ?? []) as SkuSubAssembly[])
+    setSubParts((sapData ?? []) as SubAssemblyPart[])
+    setMaterials((matData ?? []) as MaterialRecord[])
+    setPriceLogs((plData ?? []) as PriceLog[])
+    setLoading(false)
   }
-
-  // ── Session import ────────────────────────────────────────────────────────
 
   useEffect(() => {
+    // Check for sessionStorage import from planner
     try {
       const raw = sessionStorage.getItem('garvin:batch_import')
-      if (!raw) return
-      const imported = JSON.parse(raw) as BatchImportRow[]
-      sessionStorage.removeItem('garvin:batch_import')
-      if (Array.isArray(imported) && imported.length > 0) {
-        setSkuRows(imported.map((r) => ({
-          skuId: r.skuId ?? '',
-          qty: r.qty ?? 1,
-          search: r.skuLookup ?? r.skuId ?? '',
-          results: [],
-        })))
-        setView('create')
+      if (raw) {
+        sessionStorage.removeItem('garvin:batch_import')
+        const imported = JSON.parse(raw) as Array<{ skuId: string; qty: string; skuLookup: string }>
+        if (imported?.length) {
+          setCreateRows(imported.map((r) => ({ skuId: r.skuId, qty: r.qty, skuLookup: r.skuLookup })))
+          setView('create')
+        }
       }
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
+    void loadAll()
   }, [])
 
-  // ── SKU search ────────────────────────────────────────────────────────────
+  // ── Derived helpers ───────────────────────────────────────────────────────────
 
-  function searchSkus(query: string): SKU[] {
-    if (!query) return []
-    const q = query.toLowerCase()
-    return skus.filter(
-      (s) => s.id.toLowerCase().includes(q) || (s.description ?? '').toLowerCase().includes(q)
-    ).slice(0, 10)
-  }
-
-  function updateSkuRow(idx: number, patch: Partial<SkuRow>) {
-    setSkuRows((prev) => prev.map((r, i) => {
-      if (i !== idx) return r
-      const next = { ...r, ...patch }
-      if ('search' in patch) {
-        next.results = searchSkus(patch.search ?? '')
-      }
-      return next
-    }))
-  }
-
-  function selectSkuInRow(idx: number, sku: SKU) {
-    setSkuRows((prev) => prev.map((r, i) =>
-      i === idx ? { ...r, skuId: sku.id, search: sku.id + ' — ' + sku.description, results: [] } : r
-    ))
-  }
-
-  function addSkuRow() {
-    setSkuRows((prev) => [...prev, { skuId: '', qty: 1, search: '', results: [] }])
-  }
-
-  function removeSkuRow(idx: number) {
-    setSkuRows((prev) => prev.filter((_, i) => i !== idx))
-  }
-
-  // ── Create batch ──────────────────────────────────────────────────────────
-
-  async function saveBatch() {
-    setCreateError('')
-    if (!createName.trim()) { setCreateError('Batch name is required.'); return }
-    const validRows = skuRows.filter((r) => r.skuId)
-    if (validRows.length === 0) { setCreateError('Add at least one SKU.'); return }
-
-    setSaving(true)
-    const { data: batch, error: batchErr } = await supabase
-      .from('build_batches')
-      .insert({ name: createName.trim(), status: 'planned', notes: createNotes.trim() || null })
-      .select()
-      .single()
-
-    if (batchErr || !batch) {
-      setCreateError('Failed to create batch: ' + (batchErr?.message ?? 'unknown error'))
-      setSaving(false)
-      return
+  // Get all part IDs (and their qtys) for a given SKU
+  function getSkuPartEntries(skuId: string): Array<{ partId: string; qty: number }> {
+    const result: Array<{ partId: string; qty: number }> = []
+    for (const sp of skuParts) {
+      if (sp.sku_id === skuId) result.push({ partId: sp.part_id, qty: sp.qty })
     }
-
-    const lines = validRows.map((r) => ({ batch_id: batch.id, sku_id: r.skuId, qty: r.qty }))
-    const { error: lineErr } = await supabase.from('build_batch_lines').insert(lines)
-
-    if (lineErr) {
-      setCreateError('Batch created but failed to save lines: ' + lineErr.message)
-      setSaving(false)
-      return
-    }
-
-    setSaving(false)
-    setCreateName('')
-    setCreateNotes('')
-    setSkuRows([{ skuId: '', qty: 1, search: '', results: [] }])
-    await load()
-    await openBatch(batch as BuildBatch)
-  }
-
-  // ── Open detail ───────────────────────────────────────────────────────────
-
-  async function openBatch(batch: BuildBatch) {
-    setSelectedBatch(batch)
-    setLoadingDetail(true)
-    setActionMessage('')
-    setDeductSummary([])
-    setView('detail')
-
-    const [{ data: lines }] = await Promise.all([
-      supabase.from('build_batch_lines').select('*').eq('batch_id', batch.id),
-    ])
-    setBatchLines((lines as BuildBatchLine[]) ?? [])
-    setLoadingDetail(false)
-  }
-
-  // ── Get all parts for a SKU (direct + via sub-assemblies), with qty multiplier ──
-
-  function getExpandedParts(skuId: string): { part: Part; qty: number }[] {
-    const result: Map<string, { part: Part; qty: number }> = new Map()
-
-    const addPart = (partId: string, qty: number) => {
-      const part = parts.find((p) => p.id === partId)
-      if (!part) return
-      const existing = result.get(partId)
-      if (existing) existing.qty += qty
-      else result.set(partId, { part, qty })
-    }
-
-    // Direct sku_parts
-    for (const sp of skuParts.filter((sp) => sp.sku_id === skuId)) {
-      addPart(sp.part_id, sp.qty)
-    }
-
-    // Sub-assemblies
-    for (const ssa of skuSubAssemblies.filter((ssa) => ssa.sku_id === skuId)) {
-      for (const sap of subAssemblyParts.filter((sap) => sap.sub_assembly_id === ssa.sub_assembly_id)) {
-        addPart(sap.part_id, sap.qty * ssa.qty)
+    for (const ss of skuSubs) {
+      if (ss.sku_id !== skuId) continue
+      for (const sap of subParts) {
+        if (sap.sub_assembly_id !== ss.sub_assembly_id) continue
+        result.push({ partId: sap.part_id, qty: sap.qty * ss.qty })
       }
     }
-
-    return Array.from(result.values())
+    return result
   }
 
-  // ── Material cost calculation ─────────────────────────────────────────────
-
-  function getLatestPrice(materialId: string): number | null {
-    const logs = priceLogs.filter((l) => l.material_id === materialId)
-    if (logs.length === 0) return null
-    return logs[0].price // already sorted desc by date
+  // Determine which stages are required for a set of batch lines
+  function getRequiredStages(batchLines: BuildBatchLine[]) {
+    const required = new Set<string>()
+    for (const line of batchLines) {
+      const entries = getSkuPartEntries(line.sku_id)
+      for (const { partId } of entries) {
+        const part = parts.find((p) => p.id === partId)
+        if (!part) continue
+        if (part.requires_laser)      required.add('stage_laser')
+        if (part.requires_sheet_bend) required.add('stage_sheet_bend')
+        if (part.requires_tube_bend)  required.add('stage_tube_bend')
+        if (part.requires_saw)        required.add('stage_saw')
+        if (part.requires_drill)      required.add('stage_drill')
+        if (part.requires_weld)       required.add('stage_weld')
+      }
+    }
+    return required
   }
 
-  function calcSkuMatCost(skuId: string): number | null {
-    const expanded = getExpandedParts(skuId)
+  // Calculate material cost for a single SKU × qty
+  function calcMatCost(skuId: string, batchQty: number): number {
+    const entries = getSkuPartEntries(skuId)
     let total = 0
-    let hasAny = false
-
-    for (const { part, qty } of expanded) {
-      if (!part.weight_lbs) continue
-      // find material by matching on material field (part.material references material name or id)
-      const mat = materials.find(
-        (m) => m.id === part.material || m.name === part.material
+    for (const { partId, qty: partQty } of entries) {
+      const part = parts.find((p) => p.id === partId)
+      if (!part?.weight_lbs) continue
+      const mat = materials.find((m) =>
+        m.material_type === part.part_type &&
+        (part.part_type === 'tube'
+          ? m.tube_od === part.tube_od && m.tube_wall === part.tube_wall
+          : m.thickness === part.material)
       )
-      if (!mat || !mat.unit_weight_lbs) continue
-      const latestPrice = getLatestPrice(mat.id)
-      if (latestPrice == null) continue
-      const costPerLb = latestPrice / mat.unit_weight_lbs
-      total += part.weight_lbs * costPerLb * qty
-      hasAny = true
+      if (!mat?.unit_weight_lbs) continue
+      const log = priceLogs.find((pl) => pl.material_id === mat.id)
+      if (!log) continue
+      const costPerLb = log.price / mat.unit_weight_lbs
+      total += part.weight_lbs * costPerLb * partQty
     }
-
-    return hasAny ? total : null
+    return total * batchQty
   }
 
-  // ── Transitions ───────────────────────────────────────────────────────────
+  // ── Actions ───────────────────────────────────────────────────────────────────
 
-  async function startBuild() {
-    if (!selectedBatch) return
-    setTransitioning(true)
-    const { error } = await supabase
+  async function createBatch() {
+    if (!createName.trim()) { setMessage('Name is required.'); return }
+    const filledRows = createRows.filter((r) => r.skuId.trim() && r.qty.trim())
+    if (!filledRows.length) { setMessage('Add at least one SKU.'); return }
+    setSaving(true); setMessage('')
+    const { data: batch, error } = await supabase
       .from('build_batches')
-      .update({ status: 'in_progress' })
-      .eq('id', selectedBatch.id)
-    if (error) { setActionMessage('Error: ' + error.message); setTransitioning(false); return }
-    const updated = { ...selectedBatch, status: 'in_progress' as const }
-    setSelectedBatch(updated)
-    setBatches((prev) => prev.map((b) => b.id === updated.id ? updated : b))
-    setTransitioning(false)
-    setActionMessage('Build started.')
+      .insert({ name: createName.trim(), notes: createNotes.trim() || null, status: 'planned' })
+      .select('*').single()
+    if (error || !batch) { setMessage('Save failed: ' + (error?.message ?? 'unknown')); setSaving(false); return }
+    await supabase.from('build_batch_lines').insert(
+      filledRows.map((r) => ({ batch_id: batch.id, sku_id: r.skuId.trim(), qty: parseInt(r.qty) || 1 }))
+    )
+    setCreateName(''); setCreateNotes(''); setCreateRows([{ skuId: '', qty: '1', skuLookup: '' }])
+    await loadAll()
+    const fresh = (await supabase.from('build_batches').select('*').eq('id', batch.id).single()).data
+    setActiveBatch(fresh as BuildBatch)
+    setView('detail')
+    setSaving(false)
   }
 
-  async function markComplete() {
-    if (!selectedBatch) return
-    setTransitioning(true)
-    setActionMessage('Calculating material costs…')
+  async function updateStatus(batch: BuildBatch, status: BatchStatus) {
+    const updates: Partial<BuildBatch> & { completed_at?: string } = { status }
+    if (status === 'complete') updates.completed_at = new Date().toISOString()
+    await supabase.from('build_batches').update(updates).eq('id', batch.id)
+    const updated = { ...batch, ...updates }
+    setBatches((prev) => prev.map((b) => b.id === batch.id ? updated as BuildBatch : b))
+    setActiveBatch(updated as BuildBatch)
+  }
 
-    // Load detail data if not already loaded
-    if (parts.length === 0) await loadDetailData()
+  async function toggleStage(batch: BuildBatch, stageKey: string, value: boolean) {
+    await supabase.from('build_batches').update({ [stageKey]: value }).eq('id', batch.id)
+    const updated = { ...batch, [stageKey]: value }
+    setBatches((prev) => prev.map((b) => b.id === batch.id ? updated as BuildBatch : b))
+    setActiveBatch(updated as BuildBatch)
+  }
 
-    const updates: { id: string; mat_cost_snapshot: number | null }[] = []
+  async function sendToPowder(batch: BuildBatch) {
+    await supabase.from('build_batches').update({ status: 'at_powder' }).eq('id', batch.id)
+    router.push('/powder')
+  }
+
+  async function markCompleteWithCost(batch: BuildBatch) {
+    const batchLines = lines.filter((l) => l.batch_id === batch.id)
+    // Snapshot mat cost per line
+    for (const line of batchLines) {
+      const cost = calcMatCost(line.sku_id, line.qty)
+      await supabase.from('build_batch_lines').update({ mat_cost_snapshot: cost }).eq('id', line.id)
+    }
+    await supabase.from('build_batches').update({ status: 'complete', completed_at: new Date().toISOString() }).eq('id', batch.id)
+    await loadAll()
+    const fresh = (await supabase.from('build_batches').select('*').eq('id', batch.id).single()).data
+    setActiveBatch(fresh as BuildBatch)
+  }
+
+  async function deductMaterials(batch: BuildBatch) {
+    const batchLines = lines.filter((l) => l.batch_id === batch.id)
+    const deductions: Record<string, number> = {} // materialId → bars deducted
 
     for (const line of batchLines) {
-      const cost = calcSkuMatCost(line.sku_id)
-      const totalCost = cost != null ? cost * line.qty : null
-      updates.push({ id: line.id, mat_cost_snapshot: totalCost })
-    }
-
-    // Update each line
-    for (const u of updates) {
-      await supabase
-        .from('build_batch_lines')
-        .update({ mat_cost_snapshot: u.mat_cost_snapshot })
-        .eq('id', u.id)
-    }
-
-    const completedAt = new Date().toISOString()
-    const { error } = await supabase
-      .from('build_batches')
-      .update({ status: 'complete', completed_at: completedAt })
-      .eq('id', selectedBatch.id)
-
-    if (error) { setActionMessage('Error: ' + error.message); setTransitioning(false); return }
-
-    const updated = { ...selectedBatch, status: 'complete' as const, completed_at: completedAt }
-    setSelectedBatch(updated)
-    setBatches((prev) => prev.map((b) => b.id === updated.id ? updated : b))
-
-    // Refresh lines
-    const { data: freshLines } = await supabase
-      .from('build_batch_lines')
-      .select('*')
-      .eq('batch_id', selectedBatch.id)
-    setBatchLines((freshLines as BuildBatchLine[]) ?? [])
-
-    setTransitioning(false)
-    setActionMessage('Batch marked complete. Material costs recorded.')
-  }
-
-  // ── Material deduction ────────────────────────────────────────────────────
-
-  async function deductMaterials() {
-    if (!selectedBatch) return
-    if (parts.length === 0) await loadDetailData()
-
-    setDeducting(true)
-    setActionMessage('')
-
-    const summary: string[] = []
-    const matUpdates: Map<string, number> = new Map()
-
-    for (const line of batchLines) {
-      const expanded = getExpandedParts(line.sku_id)
-      for (const { part, qty: qtyPerSku } of expanded) {
-        if (part.part_type !== 'tube') continue
-        if (!part.cut_length || !part.tube_od || !part.tube_wall) continue
-
-        const totalLengthIn = part.cut_length * qtyPerSku * line.qty
-        const mat = materials.find(
-          (m) =>
-            m.material_type === 'tube' &&
-            m.tube_od === part.tube_od &&
-            m.tube_wall === part.tube_wall
+      const entries = getSkuPartEntries(line.sku_id)
+      for (const { partId, qty: partQty } of entries) {
+        const part = parts.find((p) => p.id === partId)
+        if (!part || part.part_type !== 'tube' || !part.cut_length) continue
+        const mat = materials.find((m) =>
+          m.material_type === 'tube' && m.tube_od === part.tube_od && m.tube_wall === part.tube_wall
         )
-        if (!mat || !mat.stock_length_in) continue
-
-        const barsUsed = Math.ceil(totalLengthIn / mat.stock_length_in)
-        matUpdates.set(mat.id, (matUpdates.get(mat.id) ?? 0) + barsUsed)
+        if (!mat?.stock_length_in) continue
+        const totalLength = part.cut_length * partQty * line.qty
+        const barsNeeded = Math.ceil(totalLength / mat.stock_length_in)
+        deductions[mat.id] = (deductions[mat.id] ?? 0) + barsNeeded
       }
     }
 
-    for (const [matId, barsUsed] of matUpdates) {
+    for (const [matId, bars] of Object.entries(deductions)) {
       const mat = materials.find((m) => m.id === matId)
-      if (!mat) continue
-      const newQty = (mat.qty_on_hand ?? 0) - barsUsed
-      const { error } = await supabase
-        .from('materials')
-        .update({ qty_on_hand: newQty })
-        .eq('id', matId)
-      if (!error) {
-        setMaterials((prev) => prev.map((m) => m.id === matId ? { ...m, qty_on_hand: newQty } : m))
-        summary.push(`${mat.name}: −${barsUsed} bar${barsUsed !== 1 ? 's' : ''} (now ${newQty})`)
-      } else {
-        summary.push(`${mat.name}: ERROR — ${error.message}`)
-      }
+      const current = mat?.qty_on_hand ?? 0
+      await supabase.from('materials').update({ qty_on_hand: Math.max(0, current - bars) }).eq('id', matId)
     }
 
-    if (summary.length === 0) {
-      summary.push('No tube materials found to deduct.')
-    }
-    summary.push('Note: Sheet material deduction is not automated (no area data).')
-
-    setDeductSummary(summary)
-    setDeducting(false)
-    setActionMessage('')
+    const summary = Object.entries(deductions)
+      .map(([id, bars]) => `${materials.find((m) => m.id === id)?.tube_od ?? id}: −${bars} bars`)
+      .join(', ')
+    setMessage(summary ? `Deducted: ${summary}` : 'No tube materials to deduct.')
+    await loadAll()
   }
 
-  // ── Traveler ──────────────────────────────────────────────────────────────
+  // ── SKU autocomplete ──────────────────────────────────────────────────────────
 
-  async function openTraveler() {
-    if (parts.length === 0) {
-      setActionMessage('Loading traveler data…')
-      await loadDetailData()
-      setActionMessage('')
-    }
-    setView('traveler')
+  function skuSuggestions(query: string) {
+    if (!query.trim()) return []
+    const q = query.toLowerCase()
+    return skus.filter((s) => s.id.toLowerCase().includes(q) || s.description.toLowerCase().includes(q)).slice(0, 10)
   }
 
-  function getTravelerStages(): { stage: Stage; rows: { part: Part; totalQty: number }[] }[] {
-    // Aggregate part totals across all batch lines
-    const totals: Map<string, { part: Part; totalQty: number }> = new Map()
+  function updateCreateRow(idx: number, field: 'skuId' | 'qty' | 'skuLookup', val: string) {
+    setCreateRows((prev) => prev.map((r, i) => i === idx ? { ...r, [field]: val } : r))
+  }
 
+  // ── Render ────────────────────────────────────────────────────────────────────
+
+  if (loading) return <div className="section-stack"><div className="empty">Loading…</div></div>
+
+  // ── TRAVELER VIEW ─────────────────────────────────────────────────────────────
+  if (view === 'traveler' && activeBatch) {
+    const batchLines = lines.filter((l) => l.batch_id === activeBatch.id)
+
+    // Build part qty map: partId → total qty across all SKU lines
+    const partQtyMap: Record<string, { part: Part; totalQty: number }> = {}
     for (const line of batchLines) {
-      const expanded = getExpandedParts(line.sku_id)
-      for (const { part, qty } of expanded) {
-        const existing = totals.get(part.id)
-        if (existing) existing.totalQty += qty * line.qty
-        else totals.set(part.id, { part, totalQty: qty * line.qty })
+      const entries = getSkuPartEntries(line.sku_id)
+      for (const { partId, qty } of entries) {
+        const part = parts.find((p) => p.id === partId)
+        if (!part) continue
+        if (!partQtyMap[partId]) partQtyMap[partId] = { part, totalQty: 0 }
+        partQtyMap[partId].totalQty += qty * line.qty
       }
     }
+    const allParts = Object.values(partQtyMap)
+    const totalParts = allParts.reduce((s, p) => s + p.totalQty, 0)
 
-    const allParts = Array.from(totals.values())
-
-    return STAGES.map((stage) => ({
-      stage,
-      rows: allParts
-        .filter((r) => r.part[stage.key] === true)
-        .sort((a, b) => (a.part.part_number ?? '').localeCompare(b.part.part_number ?? '')),
-    })).filter((s) => s.rows.length > 0)
-  }
-
-  // ── Render helpers ────────────────────────────────────────────────────────
-
-  function renderList() {
     return (
       <div className="section-stack">
-        <div className="page-header no-print">
-          <div>
-            <div className="kicker">Production</div>
-            <h1 className="page-title">Build Batches</h1>
-            <p className="page-subtitle">Track build runs, generate production travelers, and record material costs.</p>
-          </div>
-          <div className="btn-row">
-            <button
-              className="btn btn-primary"
-              onClick={() => { setView('create') }}
-            >
-              + New Batch
-            </button>
-          </div>
+        <style>{`@media print { .no-print { display: none !important } }`}</style>
+
+        <div className="no-print" style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 0' }}>
+          <button className="btn btn-secondary" onClick={() => setView('detail')}>← Back to Batch</button>
+          <button className="btn btn-primary" onClick={() => window.print()}>🖨 Print Traveler</button>
         </div>
 
-        <section className="card no-print">
-          <div className="card-header">
-            <span className="card-title">All Batches</span>
+        <div style={{ background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 10, padding: '20px 28px' }}>
+          <div style={{ marginBottom: 18 }}>
+            <div style={{ fontSize: '0.75rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Production Traveler</div>
+            <h1 style={{ margin: '4px 0', fontSize: '1.5rem', fontWeight: 800 }}>{activeBatch.name}</h1>
+            <div style={{ color: 'var(--text-2)', fontSize: '0.85rem' }}>
+              Created {fmtDate(activeBatch.created_at)} · {batchLines.length} SKU{batchLines.length !== 1 ? 's' : ''} · {totalParts} total parts
+            </div>
           </div>
-          <div className="card-body">
-            {loading ? (
-              <p className="message">Loading…</p>
-            ) : batches.length === 0 ? (
-              <p className="empty">No batches yet. Create your first batch to get started.</p>
-            ) : (
-              <div className="table-wrap">
+
+          {STAGES.map(({ key: stageKey, partKey, label }) => {
+            const stageParts = allParts.filter(({ part }) => part[partKey as keyof Part])
+            if (stageParts.length === 0) return null
+            return (
+              <div key={stageKey} style={{ marginBottom: 28, pageBreakInside: 'avoid' }}>
+                <div style={{
+                  fontWeight: 800, fontSize: '1rem', marginBottom: 8,
+                  padding: '6px 12px', background: 'var(--panel-2)',
+                  borderLeft: '4px solid var(--accent)', borderRadius: '0 6px 6px 0',
+                }}>
+                  {label}
+                </div>
                 <table className="table">
                   <thead>
                     <tr>
-                      <th>Batch Name</th>
-                      <th>Status</th>
-                      <th>SKUs</th>
-                      <th>Created</th>
-                      <th>Completed</th>
-                      <th></th>
+                      <th>Part #</th>
+                      <th>Description</th>
+                      <th style={{ textAlign: 'center' }}>Qty</th>
+                      <th style={{ textAlign: 'center' }}>☐</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {batches.map((b) => (
-                      <tr
-                        key={b.id}
-                        style={{ cursor: 'pointer' }}
-                        onClick={() => { void openBatch(b) }}
-                      >
-                        <td style={{ fontWeight: 600 }}>{b.name}</td>
-                        <td><StatusChip status={b.status} /></td>
-                        <td style={{ color: 'var(--text-2)' }}>—</td>
-                        <td style={{ color: 'var(--text-2)' }}>{formatDate(b.created_at)}</td>
-                        <td style={{ color: 'var(--text-2)' }}>{formatDate(b.completed_at)}</td>
-                        <td>
-                          <button
-                            className="btn btn-secondary"
-                            style={{ fontSize: 12, padding: '3px 12px' }}
-                            onClick={(e) => { e.stopPropagation(); void openBatch(b) }}
-                          >
-                            Open
-                          </button>
-                        </td>
+                    {stageParts.map(({ part, totalQty }) => (
+                      <tr key={part.id}>
+                        <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>{part.part_number}</td>
+                        <td>{part.description}</td>
+                        <td style={{ textAlign: 'center', fontWeight: 700 }}>{totalQty}</td>
+                        <td style={{ textAlign: 'center', fontSize: '1.1rem' }}>☐</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-            )}
+            )
+          })}
+
+          <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid var(--border)', color: 'var(--muted)', fontSize: '0.8rem' }}>
+            Powder coat is performed by outside vendor after all stages above are complete.
           </div>
-        </section>
+        </div>
       </div>
     )
   }
 
-  function renderCreate() {
+  // ── DETAIL VIEW ───────────────────────────────────────────────────────────────
+  if (view === 'detail' && activeBatch) {
+    const batchLines   = lines.filter((l) => l.batch_id === activeBatch.id)
+    const requiredStages = getRequiredStages(batchLines)
+    const doneStages   = STAGES.filter((s) => requiredStages.has(s.key) && activeBatch[s.key as keyof BuildBatch])
+    const totalRequired = requiredStages.size
+    const totalDone    = doneStages.length
+    const allDone      = totalRequired > 0 && totalDone === totalRequired
+    const pct          = totalRequired > 0 ? Math.round((totalDone / totalRequired) * 100) : 0
+    const ss           = STATUS_STYLE[activeBatch.status]
+    const totalMatCost = batchLines.reduce((s, l) => s + (l.mat_cost_snapshot ?? 0), 0)
+    const hasSnapshots = batchLines.some((l) => l.mat_cost_snapshot != null)
+
     return (
-      <div className="section-stack no-print">
-        <div className="page-header">
+      <div className="section-stack">
+        <div className="page-header no-print">
           <div>
-            <div className="kicker">Production</div>
-            <h1 className="page-title">New Build Batch</h1>
+            <div className="kicker">Garvin Internal Tool</div>
+            <h1 className="page-title">{activeBatch.name}</h1>
+            <div className="page-subtitle">Build batch detail</div>
           </div>
-          <div className="btn-row">
-            <button className="btn btn-secondary" onClick={() => setView('list')}>
-              ← Back
-            </button>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <button className="btn btn-secondary" onClick={() => { setActiveBatch(null); setView('list') }}>← All Batches</button>
+            <button className="btn btn-secondary" onClick={() => setView('traveler')}>🖨 View Traveler</button>
           </div>
         </div>
 
+        {message && (
+          <div className="message" style={{ marginBottom: 0 }}>{message}</div>
+        )}
+
+        {/* Status + actions card */}
         <section className="card">
-          <div className="card-header">
-            <span className="card-title">Batch Details</span>
-          </div>
           <div className="card-body">
-            <div className="grid-2">
-              <div className="field">
-                <label className="label">Batch Name *</label>
-                <input
-                  className="select"
-                  style={{ width: '100%' }}
-                  value={createName}
-                  onChange={(e) => setCreateName(e.target.value)}
-                  placeholder="e.g. Week 14 Build Run"
-                />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+              <span style={{ background: ss.bg, color: ss.color, borderRadius: 20, padding: '4px 14px', fontWeight: 700, fontSize: '0.82rem' }}>
+                {ss.label}
+              </span>
+              <span style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>Created {fmtDate(activeBatch.created_at)}</span>
+              {activeBatch.completed_at && (
+                <span style={{ color: 'var(--success)', fontSize: '0.82rem' }}>Completed {fmtDate(activeBatch.completed_at)}</span>
+              )}
+              <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {activeBatch.status === 'planned' && (
+                  <button className="btn btn-primary" onClick={() => updateStatus(activeBatch, 'in_progress')}>
+                    ▶ Start Build
+                  </button>
+                )}
+                {activeBatch.status === 'at_powder' && (
+                  <button className="btn btn-secondary" style={{ fontSize: '0.8rem' }} onClick={() => markCompleteWithCost(activeBatch)}>
+                    Mark Complete Manually
+                  </button>
+                )}
+                {(activeBatch.status === 'at_powder' || activeBatch.status === 'complete') && (
+                  <button className="btn btn-secondary" style={{ fontSize: '0.8rem' }} onClick={() => deductMaterials(activeBatch)}>
+                    Deduct Materials
+                  </button>
+                )}
               </div>
             </div>
-            <div className="field" style={{ marginTop: 12 }}>
-              <label className="label">Notes</label>
-              <textarea
-                className="select"
-                style={{ width: '100%', minHeight: 72, resize: 'vertical' }}
-                value={createNotes}
-                onChange={(e) => setCreateNotes(e.target.value)}
-                placeholder="Optional notes…"
-              />
-            </div>
+            {activeBatch.notes && (
+              <div style={{ marginTop: 10, color: 'var(--text-2)', fontSize: '0.85rem' }}>{activeBatch.notes}</div>
+            )}
           </div>
         </section>
 
-        <section className="card">
-          <div className="card-header">
-            <span className="card-title">SKUs</span>
-            <button className="btn btn-secondary" style={{ fontSize: 12, padding: '4px 12px' }} onClick={addSkuRow}>
-              + Add Row
-            </button>
+        {/* at_powder banner */}
+        {activeBatch.status === 'at_powder' && (
+          <div style={{ background: 'rgba(167,139,250,0.12)', border: '1px solid rgba(167,139,250,0.35)', borderRadius: 8, padding: '14px 20px', color: '#a78bfa', fontWeight: 600 }}>
+            🎨 At Powder Coater — waiting for parts to return. Go to the{' '}
+            <button onClick={() => router.push('/powder')} style={{ background: 'none', border: 'none', color: '#a78bfa', textDecoration: 'underline', cursor: 'pointer', fontWeight: 700, padding: 0 }}>
+              Powder Coat page
+            </button>{' '}to manage this run.
           </div>
-          <div className="card-body">
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {skuRows.map((row, idx) => (
-                <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', position: 'relative' }}>
-                  <div style={{ flex: 1, position: 'relative' }}>
-                    <input
-                      className="select"
-                      style={{ width: '100%' }}
-                      value={row.search}
-                      placeholder="Search SKU ID or description…"
-                      onChange={(e) => updateSkuRow(idx, { search: e.target.value, skuId: '' })}
-                    />
-                    {row.results.length > 0 && (
-                      <div style={{
-                        position: 'absolute',
-                        top: '100%',
-                        left: 0,
-                        right: 0,
-                        zIndex: 50,
-                        background: 'var(--panel)',
-                        border: '1px solid var(--border)',
-                        borderRadius: 6,
-                        boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
-                        maxHeight: 220,
-                        overflowY: 'auto',
+        )}
+
+        {/* Stage progress (in_progress only) */}
+        {activeBatch.status === 'in_progress' && totalRequired > 0 && (
+          <section className="card">
+            <div className="card-header">
+              <h2 className="card-title">Manufacturing Progress</h2>
+              <div className="card-subtitle">{totalDone} of {totalRequired} stages complete</div>
+            </div>
+            <div className="card-body">
+              {/* Progress bar */}
+              <div style={{ height: 10, background: 'var(--panel-2)', borderRadius: 6, marginBottom: 18, overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${pct}%`, background: allDone ? 'var(--success)' : 'var(--accent)', borderRadius: 6, transition: 'width 0.3s' }} />
+              </div>
+
+              {/* Stage checkboxes */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {STAGES.filter((s) => requiredStages.has(s.key)).map((stage) => {
+                  const done = !!activeBatch[stage.key as keyof BuildBatch]
+                  return (
+                    <label key={stage.key} style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={done}
+                        onChange={(e) => toggleStage(activeBatch, stage.key, e.target.checked)}
+                        style={{ width: 18, height: 18, cursor: 'pointer', accentColor: 'var(--accent)' }}
+                      />
+                      <span style={{
+                        fontSize: '0.9rem', fontWeight: 600,
+                        color: done ? 'var(--success)' : 'var(--text)',
+                        textDecoration: done ? 'line-through' : 'none',
                       }}>
-                        {row.results.map((sku) => (
-                          <div
-                            key={sku.id}
-                            style={{
-                              padding: '8px 12px',
-                              cursor: 'pointer',
-                              borderBottom: '1px solid var(--border)',
-                              fontSize: 13,
-                            }}
-                            onMouseDown={() => selectSkuInRow(idx, sku)}
-                          >
-                            <strong>{sku.id}</strong>
-                            <span style={{ color: 'var(--text-2)', marginLeft: 8 }}>{sku.description}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
+                        {stage.label}
+                      </span>
+                      {done && <span style={{ fontSize: '0.78rem', color: 'var(--success)' }}>✓</span>}
+                    </label>
+                  )
+                })}
+              </div>
+
+              {allDone && (
+                <div style={{ marginTop: 20, padding: '14px 18px', background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.3)', borderRadius: 8 }}>
+                  <div style={{ color: 'var(--success)', fontWeight: 700, marginBottom: 10 }}>
+                    ✓ All manufacturing stages complete!
                   </div>
-                  <input
-                    type="number"
-                    className="select"
-                    style={{ width: 80 }}
-                    min={1}
-                    value={row.qty}
-                    onChange={(e) => updateSkuRow(idx, { qty: Math.max(1, parseInt(e.target.value) || 1) })}
-                  />
                   <button
-                    className="btn btn-secondary"
-                    style={{ color: 'var(--danger)', padding: '6px 12px' }}
-                    onClick={() => removeSkuRow(idx)}
-                    disabled={skuRows.length === 1}
+                    className="btn btn-primary"
+                    style={{ background: '#a78bfa', borderColor: '#a78bfa' }}
+                    onClick={() => sendToPowder(activeBatch)}
                   >
-                    ✕
+                    🎨 Send to Powder Coater →
                   </button>
                 </div>
-              ))}
-            </div>
-
-            {createError && (
-              <div className="warning-box" style={{ marginTop: 12 }}>
-                {createError}
-              </div>
-            )}
-
-            <div className="btn-row" style={{ marginTop: 16 }}>
-              <button className="btn btn-secondary" onClick={() => setView('list')}>
-                Cancel
-              </button>
-              <button className="btn btn-primary" disabled={saving} onClick={() => { void saveBatch() }}>
-                {saving ? 'Saving…' : 'Save Batch'}
-              </button>
-            </div>
-          </div>
-        </section>
-      </div>
-    )
-  }
-
-  function renderDetail() {
-    if (!selectedBatch) return null
-    const sku = (skuId: string) => skus.find((s) => s.id === skuId)
-    const totalMatCost = batchLines.reduce((sum, l) => sum + (l.mat_cost_snapshot ?? 0), 0)
-    const anyMatCost = batchLines.some((l) => l.mat_cost_snapshot != null)
-
-    return (
-      <div className="section-stack no-print">
-        <div className="page-header">
-          <div>
-            <div className="kicker">Build Batch</div>
-            <h1 className="page-title">{selectedBatch.name}</h1>
-            <p className="page-subtitle">
-              Created {formatDate(selectedBatch.created_at)}
-              {selectedBatch.completed_at ? ` · Completed ${formatDate(selectedBatch.completed_at)}` : ''}
-            </p>
-          </div>
-          <div className="btn-row">
-            <button className="btn btn-secondary" onClick={() => setView('list')}>
-              ← All Batches
-            </button>
-            <button className="btn btn-secondary" onClick={() => { void openTraveler() }}>
-              View Traveler
-            </button>
-          </div>
-        </div>
-
-        {/* Status + notes */}
-        <section className="card">
-          <div className="card-header">
-            <span className="card-title">Status</span>
-            <StatusChip status={selectedBatch.status} />
-          </div>
-          <div className="card-body">
-            <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
-              <div>
-                <div className="label">Status</div>
-                <div><StatusChip status={selectedBatch.status} /></div>
-              </div>
-              {selectedBatch.completed_at && (
-                <div>
-                  <div className="label">Completed</div>
-                  <div style={{ color: 'var(--success)' }}>{formatDate(selectedBatch.completed_at)}</div>
-                </div>
-              )}
-              {selectedBatch.notes && (
-                <div>
-                  <div className="label">Notes</div>
-                  <div style={{ color: 'var(--text-2)', maxWidth: 480 }}>{selectedBatch.notes}</div>
-                </div>
               )}
             </div>
-
-            {/* Action buttons */}
-            <div className="btn-row" style={{ marginTop: 16 }}>
-              {selectedBatch.status === 'planned' && (
-                <button
-                  className="btn btn-primary"
-                  disabled={transitioning}
-                  onClick={() => { void startBuild() }}
-                >
-                  {transitioning ? 'Starting…' : '▶ Start Build'}
-                </button>
-              )}
-              {selectedBatch.status === 'in_progress' && (
-                <button
-                  className="btn btn-primary"
-                  disabled={transitioning}
-                  style={{ background: 'var(--success)' }}
-                  onClick={() => { void markComplete() }}
-                >
-                  {transitioning ? 'Completing…' : '✓ Mark Complete'}
-                </button>
-              )}
-              {selectedBatch.status === 'complete' && (
-                <button
-                  className="btn btn-secondary"
-                  disabled={deducting}
-                  onClick={() => { void deductMaterials() }}
-                >
-                  {deducting ? 'Deducting…' : '⊖ Deduct Materials'}
-                </button>
-              )}
-            </div>
-
-            {actionMessage && (
-              <p className="message" style={{ marginTop: 8 }}>{actionMessage}</p>
-            )}
-
-            {deductSummary.length > 0 && (
-              <div style={{
-                marginTop: 12,
-                padding: '12px 16px',
-                background: 'var(--panel-2)',
-                border: '1px solid var(--border)',
-                borderRadius: 6,
-              }}>
-                <div className="label" style={{ marginBottom: 6 }}>Deduction Summary</div>
-                {deductSummary.map((line, i) => (
-                  <div key={i} style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.6 }}>{line}</div>
-                ))}
-              </div>
-            )}
-          </div>
-        </section>
+          </section>
+        )}
 
         {/* SKU lines table */}
         <section className="card">
           <div className="card-header">
-            <span className="card-title">SKU Lines</span>
-            {anyMatCost && (
-              <span style={{ fontSize: 13, color: 'var(--text-2)' }}>
-                Total mat cost: <strong style={{ color: 'var(--text)' }}>{formatCurrency(totalMatCost)}</strong>
-              </span>
-            )}
+            <h2 className="card-title">SKU Lines</h2>
+            <div className="card-subtitle">{batchLines.length} SKU{batchLines.length !== 1 ? 's' : ''}</div>
           </div>
           <div className="card-body">
-            {loadingDetail ? (
-              <p className="message">Loading lines…</p>
-            ) : batchLines.length === 0 ? (
-              <p className="empty">No lines in this batch.</p>
-            ) : (
-              <div className="table-wrap">
-                <table className="table">
-                  <thead>
+            <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>SKU</th>
+                    <th>Description</th>
+                    <th style={{ textAlign: 'center' }}>Qty</th>
+                    {hasSnapshots && <th style={{ textAlign: 'right' }}>Mat Cost / Unit</th>}
+                    {hasSnapshots && <th style={{ textAlign: 'right' }}>Total Mat Cost</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {batchLines.map((line) => {
+                    const sku = skus.find((s) => s.id === line.sku_id)
+                    const costPerUnit = line.mat_cost_snapshot != null ? line.mat_cost_snapshot / line.qty : null
+                    return (
+                      <tr key={line.id}>
+                        <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>{line.sku_id}</td>
+                        <td>{sku?.description ?? '—'}</td>
+                        <td style={{ textAlign: 'center', fontWeight: 700 }}>{line.qty}</td>
+                        {hasSnapshots && <td style={{ textAlign: 'right' }}>{fmtCost(costPerUnit)}</td>}
+                        {hasSnapshots && <td style={{ textAlign: 'right', fontWeight: 700 }}>{fmtCost(line.mat_cost_snapshot)}</td>}
+                      </tr>
+                    )
+                  })}
+                </tbody>
+                {hasSnapshots && (
+                  <tfoot>
                     <tr>
-                      <th>SKU ID</th>
-                      <th>Description</th>
-                      <th>Qty</th>
-                      {anyMatCost && <th>Mat Cost / Unit</th>}
-                      {anyMatCost && <th>Total Mat Cost</th>}
+                      <td colSpan={3} style={{ fontWeight: 700, color: 'var(--muted)' }}>Total</td>
+                      <td />
+                      <td style={{ textAlign: 'right', fontWeight: 800, color: 'var(--accent)' }}>{fmtCost(totalMatCost)}</td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {batchLines.map((line) => {
-                      const s = sku(line.sku_id)
-                      const perUnit = line.mat_cost_snapshot != null ? line.mat_cost_snapshot / line.qty : null
-                      return (
-                        <tr key={line.id}>
-                          <td style={{ fontWeight: 600 }}>{line.sku_id}</td>
-                          <td style={{ color: 'var(--text-2)' }}>{s?.description ?? '—'}</td>
-                          <td>{line.qty}</td>
-                          {anyMatCost && <td>{formatCurrency(perUnit)}</td>}
-                          {anyMatCost && <td>{formatCurrency(line.mat_cost_snapshot)}</td>}
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                  </tfoot>
+                )}
+              </table>
+            </div>
           </div>
         </section>
       </div>
     )
   }
 
-  function renderTraveler() {
-    if (!selectedBatch) return null
-    const stages = getTravelerStages()
-    const totalParts = stages.reduce((sum, s) => sum + s.rows.reduce((q, r) => q + r.totalQty, 0), 0)
-
+  // ── CREATE VIEW ───────────────────────────────────────────────────────────────
+  if (view === 'create') {
     return (
-      <>
-        {/* Screen nav bar */}
-        <div className="no-print" style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 12,
-          padding: '12px 20px',
-          background: 'var(--panel)',
-          borderBottom: '1px solid var(--border)',
-          marginBottom: 24,
-        }}>
-          <button className="btn btn-secondary" onClick={() => setView('detail')}>
-            ← Back to Batch
-          </button>
-          <span style={{ color: 'var(--text-2)', fontSize: 14 }}>
-            Production Traveler — <strong style={{ color: 'var(--text)' }}>{selectedBatch.name}</strong>
-          </span>
-          <div style={{ marginLeft: 'auto' }}>
-            <button className="btn btn-primary" onClick={() => window.print()}>
-              🖨 Print Traveler
-            </button>
+      <div className="section-stack">
+        <div className="page-header">
+          <div>
+            <div className="kicker">Garvin Internal Tool</div>
+            <h1 className="page-title">New Build Batch</h1>
           </div>
+          <button className="btn btn-secondary" onClick={() => setView('list')}>← Cancel</button>
         </div>
 
-        {/* Traveler content (prints) */}
-        <div className="print-block" style={{ maxWidth: 900, margin: '0 auto', padding: '0 20px 40px' }}>
-          {/* Print header */}
-          <div style={{ marginBottom: 24, paddingBottom: 16, borderBottom: '2px solid var(--border)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-              <div>
-                <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--muted)', marginBottom: 4 }}>
-                  Production Traveler
-                </div>
-                <h1 style={{ fontSize: 24, fontWeight: 700, margin: 0 }}>{selectedBatch.name}</h1>
+        {message && <div className="warning-box">{message}</div>}
+
+        <section className="card">
+          <div className="card-header"><h2 className="card-title">Batch Details</h2></div>
+          <div className="card-body">
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+              <div style={{ gridColumn: '1 / -1' }}>
+                <label className="label">Batch Name *</label>
+                <input className="field" value={createName} onChange={(e) => setCreateName(e.target.value)} placeholder="e.g. Week 15 Run" />
               </div>
-              <div style={{ textAlign: 'right', color: 'var(--text-2)', fontSize: 13 }}>
-                <div>{formatDate(new Date().toISOString())}</div>
-                <div style={{ marginTop: 4 }}>
-                  <StatusChip status={selectedBatch.status} />
-                </div>
+              <div style={{ gridColumn: '1 / -1' }}>
+                <label className="label">Notes</label>
+                <textarea className="field" rows={2} value={createNotes} onChange={(e) => setCreateNotes(e.target.value)} placeholder="Optional" style={{ resize: 'vertical' }} />
               </div>
             </div>
-            <div style={{ marginTop: 12, display: 'flex', gap: 24, fontSize: 13, color: 'var(--text-2)' }}>
-              {batchLines.map((line) => {
-                const s = skus.find((sk) => sk.id === line.sku_id)
+
+            <label className="label" style={{ marginBottom: 8, display: 'block' }}>SKUs to Build</label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+              {createRows.map((row, idx) => {
+                const suggestions = createDropdown === idx ? skuSuggestions(row.skuLookup || row.skuId) : []
                 return (
-                  <span key={line.id}>
-                    <strong style={{ color: 'var(--text)' }}>{line.sku_id}</strong> × {line.qty}
-                    {s ? ` — ${s.description}` : ''}
-                  </span>
+                  <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', position: 'relative' }}>
+                    <div style={{ flex: 1, position: 'relative' }}>
+                      <input
+                        className="field"
+                        placeholder="SKU ID or search…"
+                        value={row.skuLookup || row.skuId}
+                        onChange={(e) => { updateCreateRow(idx, 'skuLookup', e.target.value); updateCreateRow(idx, 'skuId', e.target.value); setCreateDropdown(idx) }}
+                        onFocus={() => setCreateDropdown(idx)}
+                        onBlur={() => setTimeout(() => setCreateDropdown(null), 150)}
+                      />
+                      {suggestions.length > 0 && (
+                        <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 100, background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 6, boxShadow: '0 4px 16px rgba(0,0,0,0.3)', maxHeight: 220, overflowY: 'auto' }}>
+                          {suggestions.map((s) => (
+                            <div key={s.id}
+                              style={{ padding: '7px 12px', cursor: 'pointer', borderBottom: '1px solid var(--border)', fontSize: '0.84rem' }}
+                              onMouseDown={() => { updateCreateRow(idx, 'skuId', s.id); updateCreateRow(idx, 'skuLookup', s.id); setCreateDropdown(null) }}
+                            >
+                              <span style={{ fontWeight: 700, fontFamily: 'monospace' }}>{s.id}</span>
+                              <span style={{ color: 'var(--text-2)', marginLeft: 8 }}>{s.description}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <input
+                      className="field"
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={row.qty}
+                      onChange={(e) => updateCreateRow(idx, 'qty', e.target.value)}
+                      style={{ width: 80 }}
+                      placeholder="Qty"
+                    />
+                    <button className="btn btn-secondary" style={{ height: 36, padding: '0 10px', flexShrink: 0 }}
+                      onClick={() => setCreateRows((prev) => prev.filter((_, i) => i !== idx))}>✕</button>
+                  </div>
                 )
               })}
             </div>
-          </div>
 
-          {stages.length === 0 ? (
-            <p className="empty">No part stage data available. Ensure parts are loaded and have stage flags set.</p>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
-              {stages.map(({ stage, rows }) => (
-                <div key={stage.key as string} style={{ pageBreakInside: 'avoid' }}>
-                  <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 10,
-                    marginBottom: 10,
-                  }}>
-                    <span style={{
-                      fontWeight: 700,
-                      fontSize: 15,
-                      textTransform: 'uppercase',
-                      letterSpacing: 0.5,
-                      color: 'var(--accent-text)',
-                    }}>
-                      {stage.label}
-                    </span>
-                    <span style={{ color: 'var(--muted)', fontSize: 12 }}>
-                      {rows.length} part{rows.length !== 1 ? 's' : ''}
-                    </span>
-                  </div>
-                  <table className="table" style={{ width: '100%' }}>
-                    <thead>
-                      <tr>
-                        <th>Part #</th>
-                        <th>Description</th>
-                        <th style={{ textAlign: 'right' }}>Qty</th>
-                        <th style={{ textAlign: 'center', width: 80 }}>Complete</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rows.map(({ part, totalQty }) => (
-                        <tr key={part.id}>
-                          <td style={{ fontWeight: 600 }}>{part.part_number}</td>
-                          <td style={{ color: 'var(--text-2)' }}>{part.description}</td>
-                          <td style={{ textAlign: 'right' }}>{totalQty}</td>
-                          <td style={{ textAlign: 'center' }}>
-                            <span style={{
-                              display: 'inline-block',
-                              width: 18,
-                              height: 18,
-                              border: '1.5px solid var(--border)',
-                              borderRadius: 3,
-                            }} />
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ))}
+            <div className="btn-row">
+              <button className="btn btn-secondary" onClick={() => setCreateRows((prev) => [...prev, { skuId: '', qty: '1', skuLookup: '' }])}>+ Add Row</button>
+              <button className="btn btn-primary" disabled={saving} onClick={createBatch}>{saving ? 'Saving…' : 'Create Batch'}</button>
             </div>
-          )}
-
-          {/* Footer */}
-          <div style={{
-            marginTop: 40,
-            paddingTop: 16,
-            borderTop: '1px solid var(--border)',
-            display: 'flex',
-            justifyContent: 'space-between',
-            fontSize: 12,
-            color: 'var(--muted)',
-          }}>
-            <span>Total parts across all stages: <strong>{totalParts}</strong></span>
-            <span>Printed {new Date().toLocaleString()}</span>
           </div>
-        </div>
-
-        {/* Print styles injected inline */}
-        <style>{`
-          @media print {
-            .no-print { display: none !important; }
-            .print-block { display: block !important; }
-            body { background: #fff !important; color: #000 !important; }
-          }
-          @media screen {
-            .print-block { display: block; }
-          }
-        `}</style>
-      </>
+        </section>
+      </div>
     )
   }
 
-  // ── Root render ───────────────────────────────────────────────────────────
+  // ── LIST VIEW ─────────────────────────────────────────────────────────────────
+  return (
+    <div className="section-stack">
+      <div className="page-header">
+        <div>
+          <div className="kicker">Garvin Internal Tool</div>
+          <h1 className="page-title">Build Batches</h1>
+          <div className="page-subtitle">Track build runs from planning through manufacturing and powder coat.</div>
+        </div>
+        <button className="btn btn-primary" onClick={() => setView('create')}>+ New Batch</button>
+      </div>
 
-  if (view === 'traveler') return renderTraveler()
-  if (view === 'create')   return renderCreate()
-  if (view === 'detail')   return renderDetail()
-  return renderList()
+      <section className="card">
+        <div className="card-body">
+          {batches.length === 0 ? (
+            <div className="empty">No batches yet. Click "New Batch" to create your first build run.</div>
+          ) : (
+            <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Status</th>
+                    <th>SKUs</th>
+                    <th>Created</th>
+                    <th>Completed</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {batches.map((batch) => {
+                    const ss   = STATUS_STYLE[batch.status]
+                    const skuCount = lines.filter((l) => l.batch_id === batch.id).length
+                    return (
+                      <tr key={batch.id} style={{ cursor: 'pointer' }}
+                        onClick={() => { setActiveBatch(batch); setView('detail') }}>
+                        <td style={{ fontWeight: 700 }}>{batch.name}</td>
+                        <td>
+                          <span style={{ background: ss.bg, color: ss.color, borderRadius: 20, padding: '2px 10px', fontSize: '0.76rem', fontWeight: 700 }}>
+                            {ss.label}
+                          </span>
+                        </td>
+                        <td>{skuCount}</td>
+                        <td>{fmtDate(batch.created_at)}</td>
+                        <td>{fmtDate(batch.completed_at)}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  )
 }
