@@ -40,6 +40,8 @@ type Order = {
   ss_status: string | null
   synced_at: string | null
   notes: string | null
+  shipped_at: string | null
+  shipping_cost: number | null
   order_lines: OrderLine[]
 }
 
@@ -134,6 +136,10 @@ export default function OrdersPage() {
 
   // Category grouping
   const [groupByCategory, setGroupByCategory] = useState(false)
+
+  // Ship modal
+  const [shippingOrderId, setShippingOrderId] = useState<string | null>(null)
+  const [shippingCost, setShippingCost]       = useState('')
 
   // ── Data loading ────────────────────────────────────────────────────────────
 
@@ -326,6 +332,30 @@ export default function OrdersPage() {
     const val = text.trim() || null
     await supabase.from('orders').update({ notes: val }).eq('id', orderId)
     setOrders((prev) => prev.map((o) => o.id === orderId ? { ...o, notes: val } : o))
+  }
+
+  // ── Mark Shipped ───────────────────────────────────────────────────────────
+
+  async function markShipped(orderId: string) {
+    const cost = shippingCost.trim() ? parseFloat(shippingCost) : null
+    await supabase.from('orders').update({
+      status: 'shipped',
+      shipped_at: new Date().toISOString(),
+      shipping_cost: cost,
+    }).eq('id', orderId)
+    // Deduct from sku_inventory for each matched line
+    const order = orders.find((o) => o.id === orderId)
+    if (order) {
+      for (const line of order.order_lines) {
+        if (!line.sku_id) continue
+        const inv = inventory.find((i) => i.sku_id === line.sku_id)
+        const current = inv?.qty_on_hand ?? 0
+        await supabase.from('sku_inventory').update({ qty_on_hand: Math.max(0, current - line.qty) }).eq('sku_id', line.sku_id)
+      }
+    }
+    setShippingOrderId(null)
+    setShippingCost('')
+    await Promise.all([loadOrders(), loadInventory()])
   }
 
   // ── Derived data ─────────────────────────────────────────────────────────────
@@ -536,6 +566,45 @@ export default function OrdersPage() {
                 </span>
               </div>
 
+              {/* ── Ship modal ─────────────────────────────────────────────── */}
+              {shippingOrderId && (() => {
+                const order = orders.find((o) => o.id === shippingOrderId)
+                return (
+                  <div style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.5)' }}
+                    onClick={() => setShippingOrderId(null)}>
+                    <div style={{ background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 10, padding: 24, width: 340, boxShadow: '0 8px 32px rgba(0,0,0,0.4)' }}
+                      onClick={(e) => e.stopPropagation()}>
+                      <div style={{ fontWeight: 800, fontSize: '1rem', marginBottom: 4 }}>Mark as Shipped</div>
+                      <div style={{ color: 'var(--text-2)', fontSize: '0.85rem', marginBottom: 16 }}>
+                        Order {order?.order_number} · {order?.customer_name ?? 'Unknown'}
+                      </div>
+                      <label className="label">Shipping Cost ($)</label>
+                      <input
+                        className="field"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={shippingCost}
+                        onChange={(e) => setShippingCost(e.target.value)}
+                        placeholder="0.00"
+                        autoFocus
+                        style={{ marginBottom: 16 }}
+                      />
+                      <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: 16 }}>
+                        This will mark the order as shipped and deduct SKU quantities from inventory.
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                        <button className="btn btn-secondary" style={{ height: 32 }} onClick={() => setShippingOrderId(null)}>Cancel</button>
+                        <button className="btn btn-primary" style={{ height: 32, background: 'var(--success)', borderColor: 'var(--success)' }}
+                          onClick={() => markShipped(shippingOrderId)}>
+                          ✓ Confirm Ship
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })()}
+
               <div className="table-wrap">
                 <table className="table">
                   <thead>
@@ -718,14 +787,25 @@ export default function OrdersPage() {
                               {/* Customer */}
                               <td style={{ color: 'var(--text-2)' }}>{order.customer_name ?? '—'}</td>
 
-                              {/* Alloc status */}
+                              {/* Alloc status + ship button */}
                               {allocated && (
                                 <td>
-                                  {alloc && (
-                                    <span style={{ fontSize: '0.78rem', color: alloc.color, fontWeight: 600, whiteSpace: 'nowrap' }}>
-                                      {alloc.icon} {alloc.label}
-                                    </span>
-                                  )}
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    {alloc && (
+                                      <span style={{ fontSize: '0.78rem', color: alloc.color, fontWeight: 600, whiteSpace: 'nowrap' }}>
+                                        {alloc.icon} {alloc.label}
+                                      </span>
+                                    )}
+                                    {status === 'ready' && (
+                                      <button
+                                        className="btn btn-primary"
+                                        style={{ height: 24, fontSize: '0.72rem', padding: '0 8px', flexShrink: 0 }}
+                                        onClick={(e) => { e.stopPropagation(); setShippingOrderId(order.id); setShippingCost('') }}
+                                      >
+                                        Ship →
+                                      </button>
+                                    )}
+                                  </div>
                                 </td>
                               )}
 

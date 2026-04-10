@@ -13,6 +13,9 @@ type SKU = {
   category: string | null
   notes: string | null
   active: boolean
+  bolt_kit_cost: number | null
+  packaging_cost: number | null
+  labor_cost_per_unit: number | null
 }
 
 const SUB_IMAGE_BUCKET = 'subassembly-images'
@@ -143,6 +146,9 @@ const emptySkuForm = {
   description: '',
   category: 'Racks',
   notes: '',
+  bolt_kit_cost: '',
+  packaging_cost: '',
+  labor_cost_per_unit: '',
 }
 
 const emptyPartForm = {
@@ -458,6 +464,9 @@ export default function SkusPage() {
       description: sku.description,
       category: (CATEGORY_OPTIONS.includes((sku.category || '') as SkuCategory) ? sku.category : 'Racks') || 'Racks',
       notes: sku.notes || '',
+      bolt_kit_cost: sku.bolt_kit_cost != null ? String(sku.bolt_kit_cost) : '',
+      packaging_cost: sku.packaging_cost != null ? String(sku.packaging_cost) : '',
+      labor_cost_per_unit: sku.labor_cost_per_unit != null ? String(sku.labor_cost_per_unit) : '',
     })
     setMessage('')
   }
@@ -529,6 +538,9 @@ export default function SkusPage() {
       category: form.category.trim() || 'Racks',
       notes: form.notes.trim() || null,
       active: true,
+      bolt_kit_cost: form.bolt_kit_cost.trim() ? parseFloat(form.bolt_kit_cost) : null,
+      packaging_cost: form.packaging_cost.trim() ? parseFloat(form.packaging_cost) : null,
+      labor_cost_per_unit: form.labor_cost_per_unit.trim() ? parseFloat(form.labor_cost_per_unit) : null,
     }
 
     if (!payload.id || !payload.description) {
@@ -1251,6 +1263,54 @@ export default function SkusPage() {
                     </option>
                   ))}
                 </select>
+              </div>
+
+              {/* ── Per-unit costs ──────────────────────────────────────────── */}
+              <div style={{ gridColumn: '1 / -1' }}>
+                <label className="label" style={{ marginBottom: 6, display: 'block' }}>
+                  Per-Unit Costs
+                  <span style={{ color: 'var(--muted)', fontWeight: 400, marginLeft: 8, fontSize: '0.8rem' }}>
+                    Used in order cost breakdown and margin calculations
+                  </span>
+                </label>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+                  <div>
+                    <label className="label" style={{ fontSize: '0.78rem' }}>Bolt Kit ($)</label>
+                    <input
+                      className="field"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={form.bolt_kit_cost}
+                      onChange={(e) => updateField('bolt_kit_cost', e.target.value)}
+                      placeholder="0.00"
+                    />
+                  </div>
+                  <div>
+                    <label className="label" style={{ fontSize: '0.78rem' }}>Packaging ($)</label>
+                    <input
+                      className="field"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={form.packaging_cost}
+                      onChange={(e) => updateField('packaging_cost', e.target.value)}
+                      placeholder="0.00"
+                    />
+                  </div>
+                  <div>
+                    <label className="label" style={{ fontSize: '0.78rem' }}>Labor ($)</label>
+                    <input
+                      className="field"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={form.labor_cost_per_unit}
+                      onChange={(e) => updateField('labor_cost_per_unit', e.target.value)}
+                      placeholder="0.00"
+                    />
+                  </div>
+                </div>
               </div>
 
               <div style={{ gridColumn: '1 / -1' }}>
