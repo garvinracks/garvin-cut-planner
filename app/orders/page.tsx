@@ -548,7 +548,33 @@ export default function OrdersPage() {
                           style={{ cursor: 'pointer' }}
                         />
                       </th>
-                      <th>Order #</th>
+                      <th style={{ whiteSpace: 'nowrap' }}>
+                        {/* Expand-all toggle for multi-SKU orders */}
+                        {(() => {
+                          const multiSkuOrders = filtered.filter((o) => o.order_lines.length > 1)
+                          const allExpanded = multiSkuOrders.length > 0 && multiSkuOrders.every((o) => expandedIds.has(o.id))
+                          if (multiSkuOrders.length === 0) return 'Order #'
+                          return (
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (allExpanded) {
+                                    setExpandedIds(new Set())
+                                  } else {
+                                    setExpandedIds(new Set(multiSkuOrders.map((o) => o.id)))
+                                  }
+                                }}
+                                title={allExpanded ? 'Collapse all' : 'Expand all multi-SKU orders'}
+                                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '0 2px', fontSize: '1rem', color: 'var(--accent)', lineHeight: 1 }}
+                              >
+                                {allExpanded ? '▼' : '▶'}
+                              </button>
+                              Order #
+                            </span>
+                          )
+                        })()}
+                      </th>
                       <th
                         style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
                         onClick={() => setSortDir((d) => d === 'asc' ? 'desc' : 'asc')}
@@ -637,14 +663,14 @@ export default function OrdersPage() {
                                 <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                                   {isMultiSku && (
                                     <span
-                                      style={{ fontSize: '0.8rem', opacity: 0.7, cursor: 'pointer', flexShrink: 0 }}
+                                      style={{ fontSize: '1.1rem', cursor: 'pointer', flexShrink: 0, color: 'var(--accent)', lineHeight: 1 }}
                                       onClick={() => setExpandedIds((prev) => {
                                         const next = new Set(prev)
                                         next.has(order.id) ? next.delete(order.id) : next.add(order.id)
                                         return next
                                       })}
                                     >
-                                      {isExpanded ? '▾' : '▸'}
+                                      {isExpanded ? '▼' : '▶'}
                                     </span>
                                   )}
                                   <span>{order.order_number}</span>
@@ -679,7 +705,7 @@ export default function OrdersPage() {
                                       return next
                                     })}
                                   >
-                                    {order.order_lines.length} SKUs ▸
+                                    {order.order_lines.length} SKUs {isExpanded ? '▼' : '▶'}
                                   </span>
                                 ) : (
                                   order.order_lines[0]?.ss_sku ?? '—'
