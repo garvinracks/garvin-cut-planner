@@ -67,6 +67,7 @@ type MaterialRow = {
   unit_weight_lbs: number | null
   stock_length_in: number | null
   scrap_rate: number | null
+  qty_on_hand: number | null
 }
 
 type SkuSubAssemblyRow = {
@@ -84,6 +85,9 @@ type SkuPartRow = {
   part_id: string
   part_number: string
   part_description: string
+  part_type: 'tube' | 'sheet' | null
+  dxf_file: string | null
+  weight_lbs: number | null
 }
 
 type SubAssemblyPartRow = {
@@ -92,6 +96,9 @@ type SubAssemblyPartRow = {
   part_id: string
   part_number: string
   part_description: string
+  part_type: 'tube' | 'sheet' | null
+  dxf_file: string | null
+  weight_lbs: number | null
 }
 
 type ExplodedPreviewRow = {
@@ -99,6 +106,9 @@ type ExplodedPreviewRow = {
   part_number: string
   description: string
   qty: number
+  part_type: 'tube' | 'sheet' | null
+  dxf_file: string | null
+  weight_lbs: number | null
 }
 
 type JoinedSubassemblyRow = {
@@ -112,7 +122,13 @@ type JoinedSkuPartRow = {
   id: string | number
   qty: number | string
   part_id: string | number
-  part?: { part_number?: string | null; description?: string | null } | null
+  part?: {
+    part_number?: string | null
+    description?: string | null
+    part_type?: string | null
+    dxf_file?: string | null
+    weight_lbs?: number | null
+  } | null
 }
 
 type SourceRelationRow = {
@@ -157,13 +173,14 @@ const CATEGORY_STYLES: Record<string, { bg: string; border: string; text: string
   },
 }
 
+// Note: 'weld' is intentionally excluded — welding is tracked at the sub-assembly
+// level (sub_assemblies.requires_weld), not on individual parts.
 const STAGE_FIELDS = [
   { key: 'requires_laser',      label: 'Laser Cut' },
   { key: 'requires_sheet_bend', label: 'Sheet Bend' },
   { key: 'requires_tube_bend',  label: 'Tube Bend' },
   { key: 'requires_saw',        label: 'Saw' },
   { key: 'requires_drill',      label: 'Drill' },
-  { key: 'requires_weld',       label: 'Weld' },
 ] as const
 
 const emptySkuForm = {
@@ -267,6 +284,8 @@ export default function SkusPage() {
   const [message, setMessage] = useState('')
   const [search, setSearch] = useState('')
   const [duplicateBusyId, setDuplicateBusyId] = useState('')
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set())
+  const [buildQty, setBuildQty] = useState('1')
   const [addingRelation, setAddingRelation] = useState(false)
   const [relationMessage, setRelationMessage] = useState('')
   const [builderMessage, setBuilderMessage] = useState('')
@@ -358,7 +377,7 @@ export default function SkusPage() {
   async function loadMaterials() {
     const { data, error } = await supabase
       .from('materials')
-      .select('id, name, material_type, material, thickness, tube_od, tube_wall, unit_weight_lbs, stock_length_in, scrap_rate')
+      .select('id, name, material_type, material, thickness, tube_od, tube_wall, unit_weight_lbs, stock_length_in, scrap_rate, qty_on_hand')
       .order('name', { ascending: true })
 
     if (!error) {
@@ -391,7 +410,10 @@ export default function SkusPage() {
         part:parts (
           id,
           part_number,
-          description
+          description,
+          part_type,
+          dxf_file,
+          weight_lbs
         )
       `)
       .eq('sub_assembly_id', subassemblyId)
@@ -408,6 +430,9 @@ export default function SkusPage() {
       part_id: String(row.part_id),
       part_number: row.part?.part_number ?? String(row.part_id),
       part_description: row.part?.description ?? '',
+      part_type: (row.part?.part_type as 'tube' | 'sheet' | null) ?? null,
+      dxf_file: row.part?.dxf_file ?? null,
+      weight_lbs: row.part?.weight_lbs ?? null,
     }))
 
     setSubassemblyPartMap((prev) => ({ ...prev, [subassemblyId]: rows }))
@@ -446,7 +471,10 @@ export default function SkusPage() {
           part:parts (
             id,
             part_number,
-            description
+            description,
+            part_type,
+            dxf_file,
+            weight_lbs
           )
         `)
         .eq('sku_id', skuId),
@@ -475,6 +503,9 @@ export default function SkusPage() {
         part_id: String(row.part_id),
         part_number: row.part?.part_number ?? String(row.part_id),
         part_description: row.part?.description ?? '',
+        part_type: (row.part?.part_type as 'tube' | 'sheet' | null) ?? null,
+        dxf_file: row.part?.dxf_file ?? null,
+        weight_lbs: row.part?.weight_lbs ?? null,
       }))
       setSelectedSkuParts(mappedPartRows)
     }
@@ -1333,6 +1364,9 @@ export default function SkusPage() {
           part_number: row.part_number,
           description: row.part_description,
           qty: Number(row.qty),
+          part_type: row.part_type,
+          dxf_file: row.dxf_file,
+          weight_lbs: row.weight_lbs,
         })
       }
     }
@@ -1350,6 +1384,9 @@ export default function SkusPage() {
             part_number: subPart.part_number,
             description: subPart.part_description,
             qty: multipliedQty,
+            part_type: subPart.part_type,
+            dxf_file: subPart.dxf_file,
+            weight_lbs: subPart.weight_lbs,
           })
         }
       }
@@ -1483,10 +1520,13 @@ export default function SkusPage() {
                   {Object.entries(groupedFilteredSkus).map(([category, categorySkus]) => {
                     if (categorySkus.length === 0) return null
                     const style = getCategoryStyle(category)
+                    const isCollapsed = collapsedCategories.has(category)
                     return (
                       <div key={category}>
-                        <div
+                        <button
+                          type="button"
                           style={{
+                            width: '100%',
                             padding: '6px 12px',
                             fontSize: '0.72rem',
                             fontWeight: 800,
@@ -1494,13 +1534,26 @@ export default function SkusPage() {
                             letterSpacing: '0.08em',
                             color: style.text,
                             background: style.bg,
+                            border: 'none',
                             borderBottom: `1px solid ${style.border}`,
                             display: 'flex',
                             justifyContent: 'space-between',
                             alignItems: 'center',
+                            cursor: 'pointer',
+                          }}
+                          onClick={() => {
+                            setCollapsedCategories((prev) => {
+                              const next = new Set(prev)
+                              if (next.has(category)) next.delete(category)
+                              else next.add(category)
+                              return next
+                            })
                           }}
                         >
-                          <span>{category}</span>
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span style={{ fontSize: '0.65rem', opacity: 0.8 }}>{isCollapsed ? '▸' : '▾'}</span>
+                            {category}
+                          </span>
                           <span
                             style={{
                               background: style.pill,
@@ -1512,8 +1565,8 @@ export default function SkusPage() {
                           >
                             {categorySkus.length}
                           </span>
-                        </div>
-                        {categorySkus.map((sku) => {
+                        </button>
+                        {!isCollapsed && categorySkus.map((sku) => {
                           const isSelected = selectedSkuId === sku.id
                           return (
                             <div
@@ -1609,29 +1662,6 @@ export default function SkusPage() {
                           >
                             {selectedSku.category || 'Uncategorized'}
                           </span>
-
-                          {/* Cost summary inline */}
-                          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: '0.78rem', color: 'var(--muted)' }}>
-                            {matEstCost != null && (
-                              <span>
-                                Mat: <strong style={{ color: 'var(--success)' }}>${matEstCost.toFixed(2)}</strong>
-                              </span>
-                            )}
-                            {selectedSku.bolt_kit_cost != null && (
-                              <span>Bolt kit: <strong>${selectedSku.bolt_kit_cost.toFixed(2)}</strong></span>
-                            )}
-                            {selectedSku.packaging_cost != null && (
-                              <span>Pkg: <strong>${selectedSku.packaging_cost.toFixed(2)}</strong></span>
-                            )}
-                            {selectedSku.labor_cost_per_unit != null && (
-                              <span>Labor: <strong>${selectedSku.labor_cost_per_unit.toFixed(2)}</strong></span>
-                            )}
-                            {totalUnitCost != null && (
-                              <span style={{ fontWeight: 800, color: 'var(--accent)' }}>
-                                Total: ${totalUnitCost.toFixed(2)}
-                              </span>
-                            )}
-                          </div>
                         </div>
                       </div>
 
@@ -1769,6 +1799,23 @@ export default function SkusPage() {
                                   {isExpanded ? '▾' : '▸'}
                                 </button>
 
+                                {/* Sub-assembly thumbnail if available */}
+                                {row.image_file && (
+                                  <img
+                                    src={supabase.storage.from(SUB_IMAGE_BUCKET).getPublicUrl(row.image_file).data.publicUrl}
+                                    alt={row.sub_assembly_name}
+                                    style={{
+                                      width: 40,
+                                      height: 40,
+                                      objectFit: 'cover',
+                                      borderRadius: 6,
+                                      border: '1px solid var(--border)',
+                                      flexShrink: 0,
+                                    }}
+                                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                                  />
+                                )}
+
                                 <div style={{ flex: 1, minWidth: 0 }}>
                                   <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>
                                     {row.sub_assembly_name || row.sub_assembly_id}
@@ -1903,6 +1950,7 @@ export default function SkusPage() {
                                       <table className="table">
                                         <thead>
                                           <tr>
+                                            <th></th>
                                             <th>Part #</th>
                                             <th>Description</th>
                                             <th>Qty</th>
@@ -1915,6 +1963,15 @@ export default function SkusPage() {
                                             const fullPart = parts.find((p) => p.id === subRow.part_id)
                                             return (
                                               <tr key={subRow.id}>
+                                                <td style={{ width: 36, padding: '4px 6px' }}>
+                                                  <DxfPartPreview
+                                                    dxfFile={subRow.dxf_file}
+                                                    partNumber={subRow.part_number}
+                                                    size="tiny"
+                                                    isTube={subRow.part_type === 'tube'}
+                                                    tubeFallback={false}
+                                                  />
+                                                </td>
                                                 <td style={{ fontWeight: 700, fontFamily: 'monospace', fontSize: '0.83rem' }}>
                                                   {subRow.part_number}
                                                 </td>
@@ -2123,42 +2180,242 @@ export default function SkusPage() {
                   <section className="card">
                     <div className="card-header">
                       <h3 className="card-title">BOM Explosion</h3>
-                      <div className="card-subtitle">Fully exploded total parts for this SKU.</div>
+                      <div className="card-subtitle">Fully exploded total parts for this SKU — includes cost summary.</div>
                     </div>
                     <div className="card-body">
                       <div className="table-wrap">
                         <table className="table">
                           <thead>
                             <tr>
-                              <th>Preview</th>
+                              <th></th>
                               <th>Part #</th>
                               <th>Description</th>
-                              <th>Total Qty</th>
+                              <th style={{ textAlign: 'center' }}>Total Qty</th>
+                              <th style={{ textAlign: 'right' }}>Weight (lbs)</th>
+                              <th style={{ textAlign: 'right' }}>Mat Cost</th>
                             </tr>
                           </thead>
                           <tbody>
                             {fullExplosion.map((row) => {
-                              const fullPart = parts.find((p) => p.id === row.part_id)
+                              const lineCost = calcPartLineCost(row.part_id, row.qty)
+                              const totalWeight = row.weight_lbs != null ? row.weight_lbs * row.qty : null
                               return (
                                 <tr key={row.part_id}>
-                                  <td>
+                                  <td style={{ width: 36, padding: '4px 6px' }}>
                                     <DxfPartPreview
-                                      dxfFile={fullPart?.dxf_file || null}
+                                      dxfFile={row.dxf_file}
                                       partNumber={row.part_number}
                                       size="tiny"
-                                      isTube={fullPart?.part_type === 'tube'}
+                                      isTube={row.part_type === 'tube'}
                                       tubeFallback={false}
                                     />
                                   </td>
                                   <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>{row.part_number}</td>
                                   <td>{row.description}</td>
-                                  <td style={{ fontWeight: 700 }}>{row.qty}</td>
+                                  <td style={{ fontWeight: 700, textAlign: 'center' }}>{row.qty}</td>
+                                  <td style={{ textAlign: 'right', fontSize: '0.83rem', color: 'var(--text-2)' }}>
+                                    {totalWeight != null ? totalWeight.toFixed(3) : <span style={{ color: 'var(--muted)' }}>—</span>}
+                                  </td>
+                                  <td style={{ textAlign: 'right', fontSize: '0.83rem' }}>
+                                    {lineCost != null
+                                      ? <span style={{ color: 'var(--success)', fontWeight: 600 }}>${lineCost.toFixed(2)}</span>
+                                      : <span style={{ color: 'var(--muted)' }}>—</span>
+                                    }
+                                  </td>
                                 </tr>
                               )
                             })}
                           </tbody>
+                          {/* Totals row */}
+                          <tfoot>
+                            <tr style={{ borderTop: '2px solid var(--border)' }}>
+                              <td colSpan={3} style={{ fontWeight: 700, fontSize: '0.83rem', paddingTop: 8 }}>
+                                Material subtotal
+                              </td>
+                              <td />
+                              <td style={{ textAlign: 'right', fontWeight: 700, fontSize: '0.83rem', paddingTop: 8 }}>
+                                {(() => {
+                                  const totalW = fullExplosion.reduce((sum, r) =>
+                                    r.weight_lbs != null ? sum + r.weight_lbs * r.qty : sum, 0)
+                                  return totalW > 0 ? totalW.toFixed(3) : '—'
+                                })()}
+                              </td>
+                              <td style={{ textAlign: 'right', fontWeight: 700, fontSize: '0.83rem', paddingTop: 8, color: 'var(--success)' }}>
+                                {matEstCost != null ? `$${matEstCost.toFixed(2)}` : '—'}
+                              </td>
+                            </tr>
+                            {selectedSku.bolt_kit_cost != null && (
+                              <tr>
+                                <td colSpan={5} style={{ fontSize: '0.8rem', color: 'var(--muted)', paddingTop: 4 }}>Bolt kit</td>
+                                <td style={{ textAlign: 'right', fontSize: '0.8rem', paddingTop: 4 }}>
+                                  ${selectedSku.bolt_kit_cost.toFixed(2)}
+                                </td>
+                              </tr>
+                            )}
+                            {selectedSku.packaging_cost != null && (
+                              <tr>
+                                <td colSpan={5} style={{ fontSize: '0.8rem', color: 'var(--muted)', paddingTop: 4 }}>Packaging</td>
+                                <td style={{ textAlign: 'right', fontSize: '0.8rem', paddingTop: 4 }}>
+                                  ${selectedSku.packaging_cost.toFixed(2)}
+                                </td>
+                              </tr>
+                            )}
+                            {selectedSku.labor_cost_per_unit != null && (
+                              <tr>
+                                <td colSpan={5} style={{ fontSize: '0.8rem', color: 'var(--muted)', paddingTop: 4 }}>Labor</td>
+                                <td style={{ textAlign: 'right', fontSize: '0.8rem', paddingTop: 4 }}>
+                                  ${selectedSku.labor_cost_per_unit.toFixed(2)}
+                                </td>
+                              </tr>
+                            )}
+                            {totalUnitCost != null && (
+                              <tr style={{ borderTop: '1px solid var(--border)' }}>
+                                <td colSpan={5} style={{ fontWeight: 800, fontSize: '0.88rem', paddingTop: 6 }}>
+                                  Grand Total (per unit)
+                                </td>
+                                <td style={{ textAlign: 'right', fontWeight: 800, fontSize: '0.95rem', paddingTop: 6, color: 'var(--accent)' }}>
+                                  ${totalUnitCost.toFixed(2)}
+                                </td>
+                              </tr>
+                            )}
+                          </tfoot>
                         </table>
                       </div>
+                    </div>
+                  </section>
+                )}
+
+                {/* ── Sheet Material Estimate ── */}
+                {fullExplosion.some((r) => r.part_type === 'sheet') && (
+                  <section className="card">
+                    <div className="card-header">
+                      <h3 className="card-title">Sheet Material Estimate</h3>
+                      <div className="card-subtitle">
+                        Estimate how many sheets to order based on part weights and material utilization.
+                      </div>
+                    </div>
+                    <div className="card-body">
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18 }}>
+                        <label className="label" style={{ margin: 0, whiteSpace: 'nowrap' }}>Build quantity:</label>
+                        <input
+                          className="field"
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={buildQty}
+                          onChange={(e) => setBuildQty(e.target.value)}
+                          style={{ width: 80 }}
+                        />
+                        <span style={{ fontSize: '0.82rem', color: 'var(--muted)' }}>units</span>
+                      </div>
+
+                      {(() => {
+                        const qty = Math.max(1, Number(buildQty) || 1)
+
+                        // Group sheet parts by material
+                        type SheetGroup = {
+                          materialId: string
+                          materialName: string
+                          thickness: string | null
+                          unitWeightLbs: number
+                          stockQtyOnHand: number | null
+                          scrapRate: number
+                          totalPartsWeight: number
+                        }
+                        const groups = new Map<string, SheetGroup>()
+
+                        for (const row of fullExplosion) {
+                          if (row.part_type !== 'sheet' || !row.weight_lbs) continue
+                          const partFull = parts.find((p) => p.id === row.part_id)
+                          if (!partFull) continue
+                          const mat = findMaterialForPart(partFull)
+                          if (!mat || !mat.unit_weight_lbs) continue
+
+                          const existing = groups.get(mat.id)
+                          const partWeight = row.weight_lbs * row.qty * qty
+                          if (existing) {
+                            existing.totalPartsWeight += partWeight
+                          } else {
+                            groups.set(mat.id, {
+                              materialId: mat.id,
+                              materialName: mat.name,
+                              thickness: mat.thickness,
+                              unitWeightLbs: mat.unit_weight_lbs,
+                              stockQtyOnHand: mat.qty_on_hand ?? null,
+                              scrapRate: mat.scrap_rate ?? 0.15,
+                              totalPartsWeight: partWeight,
+                            })
+                          }
+                        }
+
+                        if (groups.size === 0) {
+                          return <div className="empty">No sheet parts with weight data found.</div>
+                        }
+
+                        return (
+                          <div className="table-wrap">
+                            <table className="table">
+                              <thead>
+                                <tr>
+                                  <th>Material</th>
+                                  <th style={{ textAlign: 'right' }}>Parts Weight (lbs)</th>
+                                  <th style={{ textAlign: 'center' }}>Sheet Wt (lbs)</th>
+                                  <th style={{ textAlign: 'center' }}>Utilization</th>
+                                  <th style={{ textAlign: 'center' }}>Sheets Needed</th>
+                                  <th style={{ textAlign: 'center' }}>In Stock</th>
+                                  <th style={{ textAlign: 'center' }}>To Order</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {Array.from(groups.values()).map((g) => {
+                                  const utilization = 1 - g.scrapRate
+                                  const sheetsNeeded = Math.ceil(g.totalPartsWeight / (g.unitWeightLbs * utilization))
+                                  const inStock = g.stockQtyOnHand ?? 0
+                                  const toOrder = Math.max(0, sheetsNeeded - inStock)
+                                  return (
+                                    <tr key={g.materialId}>
+                                      <td>
+                                        <div style={{ fontWeight: 700, fontSize: '0.85rem' }}>{g.materialName}</div>
+                                        {g.thickness && (
+                                          <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>{g.thickness}&Prime; thick</div>
+                                        )}
+                                      </td>
+                                      <td style={{ textAlign: 'right', fontFamily: 'monospace', fontSize: '0.83rem' }}>
+                                        {g.totalPartsWeight.toFixed(2)}
+                                      </td>
+                                      <td style={{ textAlign: 'center', fontSize: '0.83rem', color: 'var(--text-2)' }}>
+                                        {g.unitWeightLbs} lbs
+                                      </td>
+                                      <td style={{ textAlign: 'center', fontSize: '0.83rem', color: 'var(--text-2)' }}>
+                                        {(utilization * 100).toFixed(0)}%
+                                      </td>
+                                      <td style={{ textAlign: 'center', fontWeight: 700 }}>
+                                        {sheetsNeeded}
+                                      </td>
+                                      <td style={{ textAlign: 'center', fontSize: '0.83rem' }}>
+                                        {g.stockQtyOnHand != null
+                                          ? <span style={{ color: inStock >= sheetsNeeded ? 'var(--success)' : 'var(--warning, #f59e0b)' }}>{inStock}</span>
+                                          : <span style={{ color: 'var(--muted)' }}>—</span>
+                                        }
+                                      </td>
+                                      <td style={{ textAlign: 'center', fontWeight: 700 }}>
+                                        {toOrder > 0
+                                          ? <span style={{ color: 'var(--danger, #ef4444)', fontWeight: 800 }}>{toOrder}</span>
+                                          : <span style={{ color: 'var(--success)' }}>✓</span>
+                                        }
+                                      </td>
+                                    </tr>
+                                  )
+                                })}
+                              </tbody>
+                            </table>
+                            <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: 8 }}>
+                              Sheets needed = ⌈ total parts weight ÷ (sheet weight × utilization rate) ⌉ ·
+                              Utilization = 1 − scrap rate set on each material.
+                            </div>
+                          </div>
+                        )
+                      })()}
                     </div>
                   </section>
                 )}
