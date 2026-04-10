@@ -47,6 +47,8 @@ type Order = {
 
 type SKU = { id: string; description: string }
 type InventoryRow = { sku_id: string; qty_on_hand: number }
+type BatchLine = { batch_id: string; sku_id: string }
+type ActiveBatch = { id: string; name: string; status: string }
 type AllocStatus = 'ready' | 'partial' | 'build_needed' | 'unmatched'
 type ViewMode = 'by_order' | 'by_sku'
 type SortDir = 'asc' | 'desc'
@@ -137,6 +139,10 @@ export default function OrdersPage() {
   // Category grouping
   const [groupByCategory, setGroupByCategory] = useState(false)
 
+  // Batch status tracking
+  const [batchLines, setBatchLines] = useState<BatchLine[]>([])
+  const [activeBatches, setActiveBatches] = useState<ActiveBatch[]>([])
+
   // Ship modal
   const [shippingOrderId, setShippingOrderId] = useState<string | null>(null)
   const [shippingCost, setShippingCost]       = useState('')
@@ -173,9 +179,18 @@ export default function OrdersPage() {
     setInventory((data ?? []) as InventoryRow[])
   }
 
+  async function loadBatches() {
+    const [{ data: bl }, { data: ab }] = await Promise.all([
+      supabase.from('build_batch_lines').select('batch_id, sku_id'),
+      supabase.from('build_batches').select('id, name, status').in('status', ['planned', 'in_progress', 'at_powder']),
+    ])
+    setBatchLines((bl ?? []) as BatchLine[])
+    setActiveBatches((ab ?? []) as ActiveBatch[])
+  }
+
   async function initialLoad() {
     setLoading(true)
-    await Promise.all([loadConfig(), loadOrders(), loadSkus(), loadInventory()])
+    await Promise.all([loadConfig(), loadOrders(), loadSkus(), loadInventory(), loadBatches()])
     setLoading(false)
   }
   useEffect(() => { void initialLoad() }, [])
@@ -418,6 +433,31 @@ export default function OrdersPage() {
 
   const readyCount     = Object.values(allocStatuses).filter((s) => s === 'ready').length
   const buildCount     = Object.values(allocStatuses).filter((s) => s === 'build_needed').length
+
+  // Map sku_id → most relevant active batch status
+  const skuBatchStatus = useMemo(() => {
+    const map: Record<string, { batchName: string; status: string; batchId: string }> = {}
+    const STATUS_PRIORITY: Record<string, number> = { in_progress: 3, at_powder: 2, planned: 1 }
+    for (const line of batchLines) {
+      const batch = activeBatches.find((b) => b.id === line.batch_id)
+      if (!batch) continue
+      const existing = map[line.sku_id]
+      const priority = STATUS_PRIORITY[batch.status] ?? 0
+      const existingPriority = existing ? (STATUS_PRIORITY[existing.status] ?? 0) : -1
+      if (priority > existingPriority) {
+        map[line.sku_id] = { batchName: batch.name, status: batch.status, batchId: batch.id }
+      }
+    }
+    return map
+  }, [batchLines, activeBatches])
+
+  const BATCH_STATUS_STYLE: Record<string, { label: string; bg: string; color: string }> = {
+    planned:     { label: 'Planned',     bg: 'rgba(100,116,139,0.2)', color: '#94a3b8' },
+    in_progress: { label: 'In Build',    bg: 'rgba(234,179,8,0.2)',   color: '#facc15' },
+    at_powder:   { label: 'At Powder',   bg: 'rgba(167,139,250,0.2)', color: '#a78bfa' },
+  }
+
+  const STATUS_PRIORITY: Record<string, number> = { in_progress: 3, at_powder: 2, planned: 1 }
 
   // ─────────────────────────────────────────────────────────────────────────────
   return (
@@ -704,6 +744,12 @@ export default function OrdersPage() {
                         const alloc        = status ? ALLOC_STYLE[status] : null
                         const chStyle      = CH_STYLE[order.channel] ?? CH_STYLE.shopify
                         const totalQty     = order.order_lines.reduce((s, l) => s + l.qty, 0)
+                        const orderBatchStatuses = order.order_lines
+                          .filter((l) => l.sku_id && skuBatchStatus[l.sku_id])
+                          .map((l) => skuBatchStatus[l.sku_id!])
+                        const topBatch = orderBatchStatuses.sort((a, b) =>
+                          (STATUS_PRIORITY[b.status] ?? 0) - (STATUS_PRIORITY[a.status] ?? 0)
+                        )[0]
 
                         return (
                           <>
@@ -784,8 +830,21 @@ export default function OrdersPage() {
                               {/* Qty */}
                               <td style={{ textAlign: 'center', fontWeight: 700 }}>{totalQty}</td>
 
-                              {/* Customer */}
-                              <td style={{ color: 'var(--text-2)' }}>{order.customer_name ?? '—'}</td>
+                              {/* Customer + batch status */}
+                              <td style={{ color: 'var(--text-2)' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                  <span>{order.customer_name ?? '—'}</span>
+                                  {topBatch && (
+                                    <span style={{
+                                      background: BATCH_STATUS_STYLE[topBatch.status]?.bg,
+                                      color: BATCH_STATUS_STYLE[topBatch.status]?.color,
+                                      borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700, flexShrink: 0,
+                                    }}>
+                                      {BATCH_STATUS_STYLE[topBatch.status]?.label}
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
 
                               {/* Alloc status + ship button */}
                               {allocated && (

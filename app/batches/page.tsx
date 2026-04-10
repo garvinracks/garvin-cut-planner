@@ -8,6 +8,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createBrowserClient } from '@/lib/supabase'
+import DxfPartPreview from '@/components/DxfPartPreview'
+
+const SUB_IMAGE_BUCKET = 'subassembly-images'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -49,6 +52,7 @@ type Part = {
   tube_wall: string | null
   cut_length: number | null
   weight_lbs: number | null
+  dxf_file: string | null
   requires_laser: boolean
   requires_sheet_bend: boolean
   requires_tube_bend: boolean
@@ -60,7 +64,7 @@ type Part = {
 type SkuPart = { sku_id: string; part_id: string; qty: number }
 type SkuSubAssembly = { sku_id: string; sub_assembly_id: string; qty: number }
 type SubAssemblyPart = { sub_assembly_id: string; part_id: string; qty: number }
-type SubAssembly = { id: string; name: string; requires_weld: boolean }
+type SubAssembly = { id: string; name: string; requires_weld: boolean; image_file: string | null }
 
 type MaterialRecord = {
   id: string
@@ -163,11 +167,11 @@ export default function BatchesPage() {
       supabase.from('build_batches').select('*').order('created_at', { ascending: false }),
       supabase.from('build_batch_lines').select('*'),
       supabase.from('skus').select('id, description').order('id'),
-      supabase.from('parts').select('id, part_number, description, part_type, material, tube_od, tube_wall, cut_length, weight_lbs, requires_laser, requires_sheet_bend, requires_tube_bend, requires_saw, requires_drill, requires_weld'),
+      supabase.from('parts').select('id, part_number, description, part_type, material, tube_od, tube_wall, cut_length, weight_lbs, dxf_file, requires_laser, requires_sheet_bend, requires_tube_bend, requires_saw, requires_drill, requires_weld'),
       supabase.from('sku_parts').select('sku_id, part_id, qty'),
       supabase.from('sku_sub_assemblies').select('sku_id, sub_assembly_id, qty'),
       supabase.from('sub_assembly_parts').select('sub_assembly_id, part_id, qty'),
-      supabase.from('sub_assemblies').select('id, name, requires_weld'),
+      supabase.from('sub_assemblies').select('id, name, requires_weld, image_file'),
       supabase.from('materials').select('id, material_type, tube_od, tube_wall, thickness, unit_weight_lbs, stock_length_in, qty_on_hand'),
       supabase.from('material_price_logs').select('material_id, price').order('date_purchased', { ascending: false }),
     ])
@@ -327,6 +331,32 @@ export default function BatchesPage() {
     if (activeBatch) await syncBatchStageFlags(activeBatch, newCompletions, workItems, subAssemblyGroupsForBatch)
   }
 
+  async function handleBulkToggle(
+    batchId: string,
+    items: Array<{ id: string; stageKey: string }>,
+    checked: boolean,
+    workItems: Map<string, { part: Part; totalQty: number; subAssemblyId: string | null }>,
+    subAssemblyGroupsForBatch: Map<string, { subAssembly: SubAssembly; items: Array<{ part: Part; totalQty: number }> }>
+  ) {
+    const newCompletions = new Set(completions)
+    if (checked) {
+      for (const item of items) newCompletions.add(`${item.id}:${item.stageKey}`)
+      await supabase.from('batch_part_completions').upsert(
+        items.map((item) => ({ batch_id: batchId, part_id: item.id, stage_key: item.stageKey })),
+        { onConflict: 'batch_id,part_id,stage_key' }
+      )
+    } else {
+      for (const item of items) newCompletions.delete(`${item.id}:${item.stageKey}`)
+      // Delete each unchecked item
+      for (const item of items) {
+        await supabase.from('batch_part_completions').delete()
+          .eq('batch_id', batchId).eq('part_id', item.id).eq('stage_key', item.stageKey)
+      }
+    }
+    setCompletions(newCompletions)
+    if (activeBatch) await syncBatchStageFlags(activeBatch, newCompletions, workItems, subAssemblyGroupsForBatch)
+  }
+
   // ── Batch actions ─────────────────────────────────────────────────────────────
 
   async function createBatch() {
@@ -360,9 +390,14 @@ export default function BatchesPage() {
   }
 
   async function sendToPowder(batch: BuildBatch) {
-    await supabase.from('build_batches').update({ status: 'at_powder' }).eq('id', batch.id)
+    const { error } = await supabase.from('build_batches').update({ status: 'at_powder' }).eq('id', batch.id)
+    if (error) {
+      setMessage(`Failed to send to powder: ${error.message}`)
+      return
+    }
     const updated = { ...batch, status: 'at_powder' as BatchStatus }
     setBatches((prev) => prev.map((b) => b.id === batch.id ? updated : b))
+    setActiveBatch(updated)
     router.push('/powder')
   }
 
@@ -572,6 +607,16 @@ export default function BatchesPage() {
                 {activeBatch.status === 'planned' && (
                   <button className="btn btn-primary" onClick={() => updateStatus(activeBatch, 'in_progress')}>▶ Start Build</button>
                 )}
+                {activeBatch.status === 'in_progress' && (
+                  <button
+                    className="btn btn-secondary"
+                    style={{ fontSize: '0.8rem', background: 'rgba(167,139,250,0.15)', borderColor: 'rgba(167,139,250,0.4)', color: '#a78bfa' }}
+                    onClick={() => void sendToPowder(activeBatch)}
+                    title="Mark this batch as sent to powder coater"
+                  >
+                    🎨 Send to Powder
+                  </button>
+                )}
                 {activeBatch.status === 'at_powder' && (
                   <button className="btn btn-secondary" style={{ fontSize: '0.8rem' }} onClick={() => markCompleteWithCost(activeBatch)}>Mark Complete Manually</button>
                 )}
@@ -643,6 +688,40 @@ export default function BatchesPage() {
                           <span style={{ color: stageAllDone ? 'var(--success)' : 'var(--muted)', fontSize: '0.8rem', marginLeft: 4 }}>
                             {stageDone}/{stageTotal} {stageAllDone ? '✓' : ''}
                           </span>
+                          <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                            {!stageAllDone && (
+                              <button
+                                type="button"
+                                className="btn btn-secondary"
+                                style={{ fontSize: '0.7rem', padding: '2px 8px', height: 24 }}
+                                onClick={() => {
+                                  const allItems = [
+                                    ...stageWorkItems.map((w) => ({ id: w.part.id, stageKey })),
+                                    ...(stageKey === 'weld' ? saWeldItems.map(({ subAssembly }) => ({ id: subAssembly.id, stageKey: 'weld' })) : []),
+                                  ]
+                                  void handleBulkToggle(activeBatch.id, allItems, true, workItems, subAssemblyGroups)
+                                }}
+                              >
+                                ✓ Check All
+                              </button>
+                            )}
+                            {stageDone > 0 && (
+                              <button
+                                type="button"
+                                className="btn btn-secondary"
+                                style={{ fontSize: '0.7rem', padding: '2px 8px', height: 24 }}
+                                onClick={() => {
+                                  const allItems = [
+                                    ...stageWorkItems.map((w) => ({ id: w.part.id, stageKey })),
+                                    ...(stageKey === 'weld' ? saWeldItems.map(({ subAssembly }) => ({ id: subAssembly.id, stageKey: 'weld' })) : []),
+                                  ]
+                                  void handleBulkToggle(activeBatch.id, allItems, false, workItems, subAssemblyGroups)
+                                }}
+                              >
+                                ✕ Uncheck All
+                              </button>
+                            )}
+                          </div>
                         </div>
 
                         {/* Sub-assembly groups (component parts) */}
@@ -662,6 +741,14 @@ export default function BatchesPage() {
                           return (
                             <div key={saId} style={{ marginBottom: 12, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
                               <div style={{ background: 'rgba(167,139,250,0.08)', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 8, borderBottom: '1px solid var(--border)' }}>
+                                {subAssembly.image_file && (
+                                  <img
+                                    src={supabase.storage.from(SUB_IMAGE_BUCKET).getPublicUrl(subAssembly.image_file).data.publicUrl}
+                                    alt={subAssembly.name}
+                                    style={{ width: 32, height: 32, objectFit: 'cover', borderRadius: 4, border: '1px solid rgba(167,139,250,0.3)', flexShrink: 0 }}
+                                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                                  />
+                                )}
                                 <span style={{ fontSize: '0.7rem', color: '#a78bfa', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Sub-Assembly</span>
                                 <span style={{ fontWeight: 700, fontSize: '0.88rem' }}>{subAssembly.name}</span>
                                 {isBlocked && (
@@ -680,6 +767,15 @@ export default function BatchesPage() {
                                           <input type="checkbox" checked={done}
                                             onChange={(e) => handleToggle(activeBatch.id, part.id, stageKey, e.target.checked, workItems, subAssemblyGroups)}
                                             style={{ width: 18, height: 18, cursor: 'pointer', accentColor: 'var(--accent)' }} />
+                                        </td>
+                                        <td style={{ width: 36, padding: '4px 6px' }}>
+                                          <DxfPartPreview
+                                            dxfFile={part.dxf_file}
+                                            partNumber={part.part_number}
+                                            size="tiny"
+                                            isTube={part.part_type === 'tube'}
+                                            tubeFallback={false}
+                                          />
                                         </td>
                                         <td style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: '0.83rem', color: done ? 'var(--muted)' : 'var(--text)', textDecoration: done ? 'line-through' : 'none' }}>{part.part_number}</td>
                                         <td style={{ color: done ? 'var(--muted)' : 'var(--text-2)', textDecoration: done ? 'line-through' : 'none' }}>{part.description}</td>
@@ -709,6 +805,15 @@ export default function BatchesPage() {
                                         <input type="checkbox" checked={done}
                                           onChange={(e) => handleToggle(activeBatch.id, part.id, stageKey, e.target.checked, workItems, subAssemblyGroups)}
                                           style={{ width: 18, height: 18, cursor: 'pointer', accentColor: 'var(--accent)' }} />
+                                      </td>
+                                      <td style={{ width: 36, padding: '4px 6px' }}>
+                                        <DxfPartPreview
+                                          dxfFile={part.dxf_file}
+                                          partNumber={part.part_number}
+                                          size="tiny"
+                                          isTube={part.part_type === 'tube'}
+                                          tubeFallback={false}
+                                        />
                                       </td>
                                       <td style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: '0.83rem', color: done ? 'var(--muted)' : 'var(--text)', textDecoration: done ? 'line-through' : 'none' }}>{part.part_number}</td>
                                       <td style={{ color: done ? 'var(--muted)' : 'var(--text-2)', textDecoration: done ? 'line-through' : 'none' }}>{part.description}</td>

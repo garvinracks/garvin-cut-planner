@@ -2106,6 +2106,7 @@ export default function SkusPage() {
                         <table className="table">
                           <thead>
                             <tr>
+                              <th></th>
                               <th>Part #</th>
                               <th>Description</th>
                               <th>Qty</th>
@@ -2121,6 +2122,15 @@ export default function SkusPage() {
 
                               return (
                                 <tr key={row.id}>
+                                  <td style={{ width: 36, padding: '4px 6px' }}>
+                                    <DxfPartPreview
+                                      dxfFile={row.dxf_file}
+                                      partNumber={row.part_number}
+                                      size="tiny"
+                                      isTube={row.part_type === 'tube'}
+                                      tubeFallback={false}
+                                    />
+                                  </td>
                                   <td style={{ fontWeight: 700, fontFamily: 'monospace', fontSize: '0.83rem' }}>
                                     {row.part_number}
                                   </td>
