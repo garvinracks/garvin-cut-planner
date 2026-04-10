@@ -10,6 +10,7 @@ type BuildBatch = {
   name: string
   status: string
   created_at: string
+  completed_at: string | null
   powder_batch_id: string | null
 }
 
@@ -45,35 +46,40 @@ function fmtDate(iso: string | null) {
 function fmtCost(n: number) { return '$' + n.toFixed(2) }
 function fmtWeight(n: number) { return n.toFixed(1) + ' lbs' }
 
+function daysAgo(iso: string) {
+  const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000)
+  if (days === 0) return 'today'
+  if (days === 1) return '1 day ago'
+  return `${days} days ago`
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function PowderPage() {
   const supabase = useMemo(() => createBrowserClient(), [])
 
-  const [buildBatches, setBuildBatches]   = useState<BuildBatch[]>([])
-  const [batchLines, setBatchLines]       = useState<BuildBatchLine[]>([])
+  const [buildBatches, setBuildBatches] = useState<BuildBatch[]>([])
+  const [batchLines, setBatchLines]     = useState<BuildBatchLine[]>([])
   const [powderBatches, setPowderBatches] = useState<PowderBatch[]>([])
-  const [skuParts, setSkuParts]           = useState<SkuPart[]>([])
-  const [skuSubs, setSkuSubs]             = useState<SkuSubAssembly[]>([])
-  const [subParts, setSubParts]           = useState<SubAssemblyPart[]>([])
-  const [parts, setParts]                 = useState<Part[]>([])
+  const [skuParts, setSkuParts]         = useState<SkuPart[]>([])
+  const [skuSubs, setSkuSubs]           = useState<SkuSubAssembly[]>([])
+  const [subParts, setSubParts]         = useState<SubAssemblyPart[]>([])
+  const [parts, setParts]               = useState<Part[]>([])
 
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState('')
   const [saving, setSaving]   = useState(false)
 
-  // Create form
-  const [createOpen, setCreateOpen]             = useState(false)
-  const [formName, setFormName]                 = useState('')
-  const [formDate, setFormDate]                 = useState(new Date().toISOString().split('T')[0])
-  const [formCost, setFormCost]                 = useState('')
-  const [formNotes, setFormNotes]               = useState('')
-  const [selectedBatchIds, setSelectedBatchIds] = useState<Set<string>>(new Set())
+  // "Record return" flow
+  const [returnMode, setReturnMode]         = useState(false)
+  const [returnSelected, setReturnSelected] = useState<Set<string>>(new Set())
+  const [returnCost, setReturnCost]         = useState('')
+  const [returnNotes, setReturnNotes]       = useState('')
 
-  // Detail expand
+  // History expand
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
-  // ── Load ─────────────────────────────────────────────────────────────────────
+  // ── Data loading ──────────────────────────────────────────────────────────────
 
   async function loadAll() {
     setLoading(true)
@@ -86,7 +92,10 @@ export default function PowderPage() {
       { data: sapData },
       { data: partData },
     ] = await Promise.all([
-      supabase.from('build_batches').select('id, name, status, created_at, powder_batch_id').in('status', ['at_powder', 'complete']),
+      supabase.from('build_batches')
+        .select('id, name, status, created_at, completed_at, powder_batch_id')
+        .in('status', ['at_powder', 'complete'])
+        .order('created_at', { ascending: false }),
       supabase.from('build_batch_lines').select('batch_id, sku_id, qty'),
       supabase.from('powder_batches').select('*').order('created_at', { ascending: false }),
       supabase.from('sku_parts').select('sku_id, part_id, qty'),
@@ -105,14 +114,6 @@ export default function PowderPage() {
   }
 
   useEffect(() => { void loadAll() }, [])
-
-  useEffect(() => {
-    if (createOpen) {
-      setSelectedBatchIds(new Set(
-        buildBatches.filter((b) => b.status === 'at_powder' && !b.powder_batch_id).map((b) => b.id)
-      ))
-    }
-  }, [createOpen])
 
   // ── Weight calculation ────────────────────────────────────────────────────────
 
@@ -135,43 +136,103 @@ export default function PowderPage() {
 
   // ── Derived ───────────────────────────────────────────────────────────────────
 
-  const pendingBatches        = buildBatches.filter((b) => b.status === 'at_powder' && !b.powder_batch_id)
-  const activePowderBatches   = powderBatches.filter((p) => p.status === 'at_coater')
-  const completedPowderBatches = powderBatches.filter((p) => p.status === 'complete')
+  // Build batches currently at the powder coater (no powder run assigned yet)
+  const atCoaterBatches = buildBatches.filter(
+    (b) => b.status === 'at_powder' && !b.powder_batch_id
+  )
 
-  const selectedWeight = Array.from(selectedBatchIds).reduce((s, id) => s + calcBatchWeight(id), 0)
-  const estCostPerLb   = formCost && selectedWeight > 0 ? parseFloat(formCost) / selectedWeight : null
+  // Legacy: batches linked to an active powder run (old flow)
+  const legacyRuns = powderBatches.filter((p) => p.status === 'at_coater')
 
-  // ── Actions ───────────────────────────────────────────────────────────────────
+  const completedRuns = powderBatches.filter((p) => p.status === 'complete')
 
-  async function createRun() {
-    if (!formName.trim())                      { setMessage('Run name is required.'); return }
-    if (!formCost || isNaN(parseFloat(formCost))) { setMessage('Total cost is required.'); return }
-    if (selectedBatchIds.size === 0)           { setMessage('Select at least one build batch.'); return }
-    setSaving(true); setMessage('')
+  const returnWeight = Array.from(returnSelected).reduce(
+    (s, id) => s + calcBatchWeight(id), 0
+  )
+  const estCostPerLb =
+    returnCost && returnWeight > 0 ? parseFloat(returnCost) / returnWeight : null
 
+  // ── Record return action ──────────────────────────────────────────────────────
+
+  async function recordReturn() {
+    if (returnSelected.size === 0) {
+      setMessage('Select at least one batch.')
+      return
+    }
+    if (!returnCost || isNaN(parseFloat(returnCost))) {
+      setMessage('Enter the total invoice cost.')
+      return
+    }
+    setSaving(true)
+    setMessage('')
+
+    const today    = new Date()
+    const todayStr = today.toISOString().split('T')[0]
+    const todayIso = today.toISOString()
+    const runName  = `Powder Return — ${today.toLocaleDateString('en-US', {
+      month: 'short', day: 'numeric', year: 'numeric',
+    })}`
+
+    // Create a completed powder_batch record (acts as a cost receipt)
     const { data: pb, error } = await supabase
       .from('powder_batches')
-      .insert({ batch_name: formName.trim(), sent_date: formDate || null, total_cost: parseFloat(formCost), notes: formNotes.trim() || null, status: 'at_coater' })
-      .select('*').single()
+      .insert({
+        batch_name:    runName,
+        returned_date: todayStr,
+        total_cost:    parseFloat(returnCost),
+        notes:         returnNotes.trim() || null,
+        status:        'complete',
+      })
+      .select('id')
+      .single()
 
-    if (error || !pb) { setMessage('Save failed: ' + (error?.message ?? 'unknown')); setSaving(false); return }
+    if (error || !pb) {
+      setMessage('Save failed: ' + (error?.message ?? 'unknown'))
+      setSaving(false)
+      return
+    }
 
-    await supabase.from('build_batches').update({ powder_batch_id: pb.id }).in('id', Array.from(selectedBatchIds))
+    // Link selected build batches → this run and mark them complete
+    await supabase
+      .from('build_batches')
+      .update({ powder_batch_id: pb.id, status: 'complete', completed_at: todayIso })
+      .in('id', Array.from(returnSelected))
 
-    setFormName(''); setFormDate(new Date().toISOString().split('T')[0]); setFormCost(''); setFormNotes('')
-    setCreateOpen(false)
+    const count = returnSelected.size
+    setReturnMode(false)
+    setReturnSelected(new Set())
+    setReturnCost('')
+    setReturnNotes('')
     await loadAll()
     setSaving(false)
-    setMessage('Powder run created.')
+    setMessage(
+      `✓ ${count} batch${count !== 1 ? 'es' : ''} marked complete — powder coat cost recorded at ${fmtCost(parseFloat(returnCost))}.`
+    )
   }
 
-  async function markRunComplete(pb: PowderBatch) {
+  // Legacy: mark an at_coater powder run complete (backward compat)
+  async function markLegacyComplete(pb: PowderBatch) {
     const today = new Date().toISOString()
-    await supabase.from('powder_batches').update({ status: 'complete', returned_date: today.split('T')[0] }).eq('id', pb.id)
-    await supabase.from('build_batches').update({ status: 'complete', completed_at: today }).eq('powder_batch_id', pb.id)
+    await supabase
+      .from('powder_batches')
+      .update({ status: 'complete', returned_date: today.split('T')[0] })
+      .eq('id', pb.id)
+    await supabase
+      .from('build_batches')
+      .update({ status: 'complete', completed_at: today })
+      .eq('powder_batch_id', pb.id)
     await loadAll()
     setMessage('Run marked complete — all linked build batches are now complete.')
+  }
+
+  // ── Toggle batch selection ────────────────────────────────────────────────────
+
+  function toggleBatch(id: string) {
+    setReturnSelected((prev) => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
   }
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -180,167 +241,260 @@ export default function PowderPage() {
 
   return (
     <div className="section-stack">
+
+      {/* Page header */}
       <div className="page-header">
         <div>
           <div className="kicker">Garvin Internal Tool</div>
           <h1 className="page-title">Powder Coat</h1>
-          <div className="page-subtitle">
-            Track powder coat runs sent to the coater, calculate cost per pound, and mark batches complete when parts return.
-          </div>
+          <p className="page-subtitle">
+            Batches appear here automatically when sent from the Batches page.
+            When parts come back from the coater, record the invoice cost to mark them complete.
+          </p>
         </div>
-        <button className="btn btn-primary" onClick={() => setCreateOpen((v) => !v)}>
-          {createOpen ? '✕ Cancel' : '+ Create Powder Run'}
-        </button>
       </div>
 
-      {message && <div className="message">{message}</div>}
+      {message && (
+        <div
+          className="message"
+          style={{ color: message.startsWith('✓') ? 'var(--success)' : message.includes('failed') ? 'var(--danger)' : undefined }}
+        >
+          {message}
+        </div>
+      )}
 
-      {/* ── Create run form ───────────────────────────────────────────────────── */}
-      {createOpen && (
-        <section className="card">
-          <div className="card-header">
-            <h2 className="card-title">New Powder Run</h2>
-            <div className="card-subtitle">Group build batches into a single trip to the coater</div>
+      {/* ── At the Coater ─────────────────────────────────────────────────────── */}
+      <section className="card">
+        <div className="card-header">
+          <h2 className="card-title">At the Coater</h2>
+          <div className="card-subtitle">
+            {atCoaterBatches.length === 0
+              ? 'Nothing currently at the powder coater'
+              : `${atCoaterBatches.length} batch${atCoaterBatches.length !== 1 ? 'es' : ''} waiting for return`}
           </div>
-          <div className="card-body">
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 20 }}>
-              <div>
-                <label className="label">Run Name *</label>
-                <input className="field" value={formName} onChange={(e) => setFormName(e.target.value)} placeholder="e.g. Run #7 — April 2026" />
-              </div>
-              <div>
-                <label className="label">Sent Date</label>
-                <input className="field" type="date" value={formDate} onChange={(e) => setFormDate(e.target.value)} />
-              </div>
-              <div>
-                <label className="label">Total Invoice Cost ($) *</label>
-                <input className="field" type="number" step="0.01" min="0" value={formCost} onChange={(e) => setFormCost(e.target.value)} placeholder="0.00" />
-              </div>
-              <div style={{ gridColumn: '1 / -1' }}>
-                <label className="label">Notes</label>
-                <textarea className="field" rows={2} value={formNotes} onChange={(e) => setFormNotes(e.target.value)} placeholder="Optional" style={{ resize: 'vertical' }} />
-              </div>
-            </div>
 
-            <label className="label" style={{ marginBottom: 10, display: 'block' }}>Build Batches to Include</label>
-            {pendingBatches.length === 0 ? (
-              <div className="empty" style={{ marginBottom: 16 }}>
-                No build batches are waiting at the powder coater. When manufacturing stages are complete on a batch, click "Send to Powder Coater" on the Batches page.
-              </div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
-                {pendingBatches.map((batch) => {
+          {/* Actions */}
+          {atCoaterBatches.length > 0 && !returnMode && (
+            <button
+              className="btn btn-primary"
+              style={{ background: 'var(--success)', borderColor: 'var(--success)' }}
+              onClick={() => {
+                setReturnMode(true)
+                // Pre-select all batches
+                setReturnSelected(new Set(atCoaterBatches.map((b) => b.id)))
+              }}
+            >
+              ✓ Record Parts Returned
+            </button>
+          )}
+          {returnMode && (
+            <button
+              className="btn btn-secondary"
+              onClick={() => { setReturnMode(false); setReturnSelected(new Set()) }}
+            >
+              ✕ Cancel
+            </button>
+          )}
+        </div>
+
+        <div className="card-body">
+          {atCoaterBatches.length === 0 ? (
+            <div className="empty">
+              No build batches are currently at the powder coater.<br />
+              On the <strong>Batches</strong> page, complete all manufacturing stages then click
+              {' '}<strong>"Send to Powder Coater"</strong> — the batch will appear here immediately.
+            </div>
+          ) : (
+            <>
+              {/* Batch cards */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {atCoaterBatches.map((batch) => {
                   const weight    = calcBatchWeight(batch.id)
                   const lineCount = batchLines.filter((l) => l.batch_id === batch.id).length
-                  const checked   = selectedBatchIds.has(batch.id)
+                  const selected  = returnSelected.has(batch.id)
+
                   return (
-                    <label key={batch.id} style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '8px 12px', background: checked ? 'var(--accent-soft)' : 'var(--panel-2)', borderRadius: 6, border: `1px solid ${checked ? 'var(--accent-border)' : 'var(--border)'}` }}>
-                      <input type="checkbox" checked={checked}
-                        onChange={(e) => setSelectedBatchIds((prev) => { const n = new Set(prev); e.target.checked ? n.add(batch.id) : n.delete(batch.id); return n })}
-                        style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--accent)', flexShrink: 0 }} />
-                      <span style={{ fontWeight: 700, flex: 1 }}>{batch.name}</span>
-                      <span style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>{lineCount} SKU{lineCount !== 1 ? 's' : ''}</span>
-                      <span style={{ color: 'var(--text-2)', fontSize: '0.82rem', fontWeight: 600 }}>{fmtWeight(weight)}</span>
-                    </label>
+                    <div
+                      key={batch.id}
+                      onClick={() => returnMode && toggleBatch(batch.id)}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 14,
+                        padding: '12px 16px',
+                        background: selected ? 'var(--accent-soft)' : 'var(--panel-2)',
+                        border: `1px solid ${selected ? 'var(--accent-border)' : 'var(--border)'}`,
+                        borderRadius: 8,
+                        cursor: returnMode ? 'pointer' : 'default',
+                        transition: 'background 0.12s, border-color 0.12s',
+                        userSelect: 'none',
+                      }}
+                    >
+                      {/* Checkbox (only shown in return mode) */}
+                      {returnMode && (
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          onChange={() => {}}
+                          style={{
+                            width: 17, height: 17,
+                            accentColor: 'var(--accent)',
+                            flexShrink: 0,
+                            pointerEvents: 'none',
+                          }}
+                        />
+                      )}
+
+                      {/* Icon */}
+                      <div style={{
+                        width: 38, height: 38, borderRadius: 8, flexShrink: 0,
+                        background: 'rgba(167,139,250,0.15)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: '1.1rem',
+                      }}>
+                        🎨
+                      </div>
+
+                      {/* Info */}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 700, fontSize: '0.92rem' }}>{batch.name}</div>
+                        <div style={{ fontSize: '0.76rem', color: 'var(--muted)', marginTop: 2 }}>
+                          {lineCount} SKU{lineCount !== 1 ? 's' : ''} · sent {daysAgo(batch.created_at)}
+                        </div>
+                      </div>
+
+                      {/* Weight */}
+                      <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                        {weight > 0 ? (
+                          <>
+                            <div style={{ fontWeight: 700, fontSize: '0.92rem' }}>{fmtWeight(weight)}</div>
+                            <div style={{ fontSize: '0.72rem', color: 'var(--muted)' }}>est. weight</div>
+                          </>
+                        ) : (
+                          <div style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>no weight data</div>
+                        )}
+                      </div>
+                    </div>
                   )
                 })}
               </div>
-            )}
 
-            {/* Running totals */}
-            <div style={{ display: 'flex', gap: 24, padding: '12px 16px', background: 'var(--panel-2)', borderRadius: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-              <div>
-                <div style={{ fontSize: '0.7rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Total Weight</div>
-                <div style={{ fontWeight: 800, fontSize: '1.05rem' }}>{fmtWeight(selectedWeight)}</div>
-              </div>
-              {estCostPerLb != null && (
-                <div>
-                  <div style={{ fontSize: '0.7rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Est. Cost / lb</div>
-                  <div style={{ fontWeight: 800, fontSize: '1.05rem', color: 'var(--accent)' }}>{fmtCost(estCostPerLb)}</div>
+              {/* ── Inline return form ──────────────────────────────────────── */}
+              {returnMode && (
+                <div style={{
+                  marginTop: 16,
+                  padding: 20,
+                  background: 'var(--panel-2)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 10,
+                }}>
+                  <div style={{ fontWeight: 700, marginBottom: 14, fontSize: '0.9rem' }}>
+                    Record Parts Returned from Powder Coating
+                  </div>
+
+                  {/* Summary pills */}
+                  <div style={{ display: 'flex', gap: 20, marginBottom: 18, flexWrap: 'wrap' }}>
+                    {[
+                      { label: 'Batches selected', value: String(returnSelected.size) },
+                      { label: 'Total weight',     value: fmtWeight(returnWeight) },
+                      ...(estCostPerLb != null
+                        ? [{ label: 'Est. cost / lb', value: fmtCost(estCostPerLb) }]
+                        : []),
+                    ].map(({ label, value }) => (
+                      <div key={label}>
+                        <div style={{ fontSize: '0.67rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.09em' }}>{label}</div>
+                        <div style={{ fontWeight: 800, fontSize: '1.1rem' }}>{value}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Cost + notes inputs */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
+                    <div>
+                      <label className="label">Powder Coat Invoice Total ($) *</label>
+                      <input
+                        className="field"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={returnCost}
+                        onChange={(e) => setReturnCost(e.target.value)}
+                        placeholder="0.00"
+                        autoFocus
+                      />
+                    </div>
+                    <div>
+                      <label className="label">Notes (optional)</label>
+                      <input
+                        className="field"
+                        value={returnNotes}
+                        onChange={(e) => setReturnNotes(e.target.value)}
+                        placeholder="Invoice #, coater, etc."
+                      />
+                    </div>
+                  </div>
+
+                  <div className="btn-row">
+                    <button
+                      className="btn btn-primary"
+                      style={{ background: 'var(--success)', borderColor: 'var(--success)' }}
+                      disabled={saving || returnSelected.size === 0 || !returnCost}
+                      onClick={recordReturn}
+                    >
+                      {saving ? 'Saving…' : `✓ Confirm Return & Mark ${returnSelected.size} Batch${returnSelected.size !== 1 ? 'es' : ''} Complete`}
+                    </button>
+                    <span style={{ fontSize: '0.78rem', color: 'var(--muted)', alignSelf: 'center' }}>
+                      Cost will be split proportionally by part weight across selected batches
+                    </span>
+                  </div>
                 </div>
               )}
-              {formCost && (
-                <div>
-                  <div style={{ fontSize: '0.7rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Total Cost</div>
-                  <div style={{ fontWeight: 800, fontSize: '1.05rem' }}>{fmtCost(parseFloat(formCost) || 0)}</div>
-                </div>
-              )}
-            </div>
-
-            <div className="btn-row">
-              <button className="btn btn-primary" disabled={saving} onClick={createRun}>
-                {saving ? 'Saving…' : 'Create Run'}
-              </button>
-            </div>
-          </div>
-        </section>
-      )}
-
-      {/* ── Active runs at coater ─────────────────────────────────────────────── */}
-      <section className="card">
-        <div className="card-header">
-          <h2 className="card-title">Active Runs</h2>
-          <div className="card-subtitle">
-            {activePowderBatches.length > 0
-              ? `${activePowderBatches.length} run${activePowderBatches.length !== 1 ? 's' : ''} at the coater`
-              : 'Nothing currently at the coater'}
-          </div>
-        </div>
-        <div className="card-body">
-          {/* Unassigned batches waiting */}
-          {pendingBatches.length > 0 && (
-            <div style={{ marginBottom: 20, padding: '12px 16px', background: 'rgba(167,139,250,0.1)', border: '1px solid rgba(167,139,250,0.3)', borderRadius: 8 }}>
-              <div style={{ fontWeight: 700, color: '#a78bfa', marginBottom: 8 }}>
-                🎨 {pendingBatches.length} batch{pendingBatches.length !== 1 ? 'es' : ''} ready to be grouped into a run
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
-                {pendingBatches.map((b) => (
-                  <span key={b.id} style={{ background: 'rgba(167,139,250,0.15)', color: '#a78bfa', borderRadius: 20, padding: '2px 10px', fontSize: '0.8rem', fontWeight: 600 }}>
-                    {b.name}
-                  </span>
-                ))}
-              </div>
-              <button className="btn btn-primary" style={{ background: '#a78bfa', borderColor: '#a78bfa' }} onClick={() => setCreateOpen(true)}>
-                + Group into Powder Run
-              </button>
-            </div>
+            </>
           )}
+        </div>
+      </section>
 
-          {activePowderBatches.length === 0 && pendingBatches.length === 0 ? (
-            <div className="empty">
-              No build batches are currently at the powder coater. When all manufacturing stages are complete on a build batch, click "Send to Powder Coater" on the Batches page.
+      {/* ── Legacy active runs (backward compat if old flow was used) ─────────── */}
+      {legacyRuns.length > 0 && (
+        <section className="card">
+          <div className="card-header">
+            <h2 className="card-title">Active Runs</h2>
+            <div className="card-subtitle">
+              {legacyRuns.length} run{legacyRuns.length !== 1 ? 's' : ''} at the coater
             </div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {activePowderBatches.map((pb) => {
+          </div>
+          <div className="card-body">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {legacyRuns.map((pb) => {
                 const linked      = buildBatches.filter((b) => b.powder_batch_id === pb.id)
                 const totalWeight = linked.reduce((s, b) => s + calcBatchWeight(b.id), 0)
                 const cpl         = totalWeight > 0 ? pb.total_cost / totalWeight : null
                 const isExpanded  = expandedId === pb.id
 
                 return (
-                  <div key={pb.id} style={{ border: '1px solid rgba(167,139,250,0.4)', borderRadius: 8, overflow: 'hidden' }}>
+                  <div key={pb.id} style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
                     <div
-                      style={{ background: 'rgba(167,139,250,0.1)', padding: '12px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}
                       onClick={() => setExpandedId(isExpanded ? null : pb.id)}
+                      style={{
+                        padding: '12px 16px', cursor: 'pointer',
+                        display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap',
+                        background: 'var(--panel-2)',
+                      }}
                     >
-                      <span style={{ fontWeight: 700, fontSize: '0.95rem', flex: 1 }}>{pb.batch_name}</span>
+                      <span style={{ fontWeight: 700, flex: 1 }}>{pb.batch_name}</span>
                       <span style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>Sent {fmtDate(pb.sent_date)}</span>
                       <span style={{ fontWeight: 600 }}>{fmtWeight(totalWeight)}</span>
                       {cpl != null && <span style={{ color: 'var(--accent)', fontWeight: 700 }}>{fmtCost(cpl)}/lb</span>}
-                      <span style={{ color: 'var(--muted)', fontSize: '0.8rem' }}>{isExpanded ? '▲' : '▼'}</span>
+                      <span style={{ color: 'var(--muted)' }}>{isExpanded ? '▲' : '▼'}</span>
                     </div>
 
                     {isExpanded && (
-                      <div style={{ padding: '16px' }}>
-                        {pb.notes && <div style={{ color: 'var(--text-2)', fontSize: '0.85rem', marginBottom: 14 }}>{pb.notes}</div>}
-
-                        <div style={{ display: 'flex', gap: 20, marginBottom: 16, flexWrap: 'wrap' }}>
+                      <div style={{ padding: 16 }}>
+                        <div style={{ display: 'flex', gap: 20, marginBottom: 14, flexWrap: 'wrap' }}>
                           {[
                             { label: 'Total Cost',   value: fmtCost(pb.total_cost) },
                             { label: 'Total Weight', value: fmtWeight(totalWeight) },
                             { label: 'Cost / lb',    value: cpl != null ? fmtCost(cpl) : '—' },
-                            { label: 'Batches',      value: String(linked.length) },
                           ].map(({ label, value }) => (
                             <div key={label}>
                               <div style={{ fontSize: '0.7rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{label}</div>
@@ -348,46 +502,10 @@ export default function PowderPage() {
                             </div>
                           ))}
                         </div>
-
-                        <div className="table-wrap" style={{ marginBottom: 16 }}>
-                          <table className="table">
-                            <thead>
-                              <tr>
-                                <th>Build Batch</th>
-                                <th style={{ textAlign: 'center' }}>SKUs</th>
-                                <th style={{ textAlign: 'right' }}>Weight</th>
-                                <th style={{ textAlign: 'right' }}>Cost Share</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {linked.map((batch) => {
-                                const w            = calcBatchWeight(batch.id)
-                                const contribution = totalWeight > 0 ? (w / totalWeight) * pb.total_cost : 0
-                                const lineCount    = batchLines.filter((l) => l.batch_id === batch.id).length
-                                return (
-                                  <tr key={batch.id}>
-                                    <td style={{ fontWeight: 600 }}>{batch.name}</td>
-                                    <td style={{ textAlign: 'center' }}>{lineCount}</td>
-                                    <td style={{ textAlign: 'right' }}>{fmtWeight(w)}</td>
-                                    <td style={{ textAlign: 'right', fontWeight: 700 }}>{fmtCost(contribution)}</td>
-                                  </tr>
-                                )
-                              })}
-                            </tbody>
-                            <tfoot>
-                              <tr>
-                                <td colSpan={2} style={{ fontWeight: 700, color: 'var(--muted)' }}>Total</td>
-                                <td style={{ textAlign: 'right', fontWeight: 700 }}>{fmtWeight(totalWeight)}</td>
-                                <td style={{ textAlign: 'right', fontWeight: 800, color: 'var(--accent)' }}>{fmtCost(pb.total_cost)}</td>
-                              </tr>
-                            </tfoot>
-                          </table>
-                        </div>
-
                         <button
                           className="btn btn-primary"
                           style={{ background: 'var(--success)', borderColor: 'var(--success)' }}
-                          onClick={() => markRunComplete(pb)}
+                          onClick={() => markLegacyComplete(pb)}
                         >
                           ✓ Mark Complete — Parts Returned
                         </button>
@@ -397,26 +515,27 @@ export default function PowderPage() {
                 )
               })}
             </div>
-          )}
-        </div>
-      </section>
+          </div>
+        </section>
+      )}
 
       {/* ── History ───────────────────────────────────────────────────────────── */}
       <section className="card">
         <div className="card-header">
           <h2 className="card-title">History</h2>
-          <div className="card-subtitle">{completedPowderBatches.length} completed run{completedPowderBatches.length !== 1 ? 's' : ''}</div>
+          <div className="card-subtitle">
+            {completedRuns.length} completed run{completedRuns.length !== 1 ? 's' : ''}
+          </div>
         </div>
-        <div className="card-body">
-          {completedPowderBatches.length === 0 ? (
+        <div className="card-body" style={{ padding: 0 }}>
+          {completedRuns.length === 0 ? (
             <div className="empty">No completed powder runs yet.</div>
           ) : (
             <div className="table-wrap">
               <table className="table">
                 <thead>
                   <tr>
-                    <th>Run Name</th>
-                    <th>Sent</th>
+                    <th>Run</th>
                     <th>Returned</th>
                     <th style={{ textAlign: 'center' }}>Batches</th>
                     <th style={{ textAlign: 'right' }}>Total Weight</th>
@@ -425,14 +544,13 @@ export default function PowderPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {completedPowderBatches.map((pb) => {
+                  {completedRuns.map((pb) => {
                     const linked      = buildBatches.filter((b) => b.powder_batch_id === pb.id)
                     const totalWeight = linked.reduce((s, b) => s + calcBatchWeight(b.id), 0)
                     const cpl         = totalWeight > 0 ? pb.total_cost / totalWeight : null
                     return (
                       <tr key={pb.id}>
                         <td style={{ fontWeight: 600 }}>{pb.batch_name}</td>
-                        <td>{fmtDate(pb.sent_date)}</td>
                         <td style={{ color: 'var(--success)' }}>{fmtDate(pb.returned_date)}</td>
                         <td style={{ textAlign: 'center' }}>{linked.length}</td>
                         <td style={{ textAlign: 'right' }}>{fmtWeight(totalWeight)}</td>
@@ -449,6 +567,7 @@ export default function PowderPage() {
           )}
         </div>
       </section>
+
     </div>
   )
 }
