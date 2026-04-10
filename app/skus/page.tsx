@@ -65,6 +65,7 @@ type MaterialRow = {
   tube_od: string | null
   tube_wall: string | null
   unit_weight_lbs: number | null
+  stock_length_in: number | null
   scrap_rate: number | null
 }
 
@@ -357,7 +358,7 @@ export default function SkusPage() {
   async function loadMaterials() {
     const { data, error } = await supabase
       .from('materials')
-      .select('id, name, material_type, material, thickness, tube_od, tube_wall, unit_weight_lbs, scrap_rate')
+      .select('id, name, material_type, material, thickness, tube_od, tube_wall, unit_weight_lbs, stock_length_in, scrap_rate')
       .order('name', { ascending: true })
 
     if (!error) {
@@ -917,16 +918,31 @@ export default function SkusPage() {
         return
       }
 
+      const editMaterial = partForm.material_id
+        ? materials.find((m) => m.id === partForm.material_id) ?? null
+        : null
+
+      // For tubes: auto-compute weight from cut_length × material; sheet: manual entry
+      const editCutLength =
+        partForm.part_type === 'tube' && partForm.cut_length.trim() !== ''
+          ? Number(partForm.cut_length)
+          : null
+      const editWeight =
+        partForm.part_type === 'tube'
+          ? editMaterial?.unit_weight_lbs && editMaterial?.stock_length_in && editCutLength != null
+            ? (editCutLength / editMaterial.stock_length_in) * editMaterial.unit_weight_lbs
+            : null
+          : partForm.weight_lbs.trim() !== ''
+          ? Number(partForm.weight_lbs)
+          : null
+
       const updatePayload: Record<string, unknown> = {
         part_number: partForm.part_number.trim(),
         description: partForm.description.trim(),
         part_type: partForm.part_type,
-        cut_length:
-          partForm.part_type === 'tube' && partForm.cut_length.trim() !== ''
-            ? Number(partForm.cut_length)
-            : null,
+        cut_length: editCutLength,
         dxf_file: partForm.part_type === 'sheet' ? partForm.dxf_file.trim() || null : null,
-        weight_lbs: partForm.weight_lbs.trim() !== '' ? Number(partForm.weight_lbs) : null,
+        weight_lbs: editWeight,
         notes: partForm.notes.trim() || null,
         requires_laser: partForm.requires_laser,
         requires_sheet_bend: partForm.requires_sheet_bend,
@@ -943,14 +959,11 @@ export default function SkusPage() {
       }
 
       // If a material was selected, update material fields too
-      if (partForm.material_id) {
-        const selectedMaterial = materials.find((m) => m.id === partForm.material_id)
-        if (selectedMaterial) {
-          updatePayload.material = selectedMaterial.material || null
-          updatePayload.thickness = partForm.part_type === 'sheet' ? selectedMaterial.thickness || null : null
-          updatePayload.tube_od = partForm.part_type === 'tube' ? selectedMaterial.tube_od || null : null
-          updatePayload.tube_wall = partForm.part_type === 'tube' ? selectedMaterial.tube_wall || null : null
-        }
+      if (editMaterial) {
+        updatePayload.material = editMaterial.material || null
+        updatePayload.thickness = partForm.part_type === 'sheet' ? editMaterial.thickness || null : null
+        updatePayload.tube_od = partForm.part_type === 'tube' ? editMaterial.tube_od || null : null
+        updatePayload.tube_wall = partForm.part_type === 'tube' ? editMaterial.tube_wall || null : null
       }
 
       const { error } = await supabase.from('parts').update(updatePayload).eq('id', partId)
@@ -976,6 +989,22 @@ export default function SkusPage() {
       return
     }
 
+    const createCutLength =
+      partForm.part_type === 'tube' && partForm.cut_length.trim() !== ''
+        ? Number(partForm.cut_length)
+        : null
+
+    // Tubes: weight auto-calculated from cut_length × material density
+    // Sheets: weight entered manually
+    const createWeight =
+      partForm.part_type === 'tube'
+        ? selectedMaterial.unit_weight_lbs && selectedMaterial.stock_length_in && createCutLength != null
+          ? (createCutLength / selectedMaterial.stock_length_in) * selectedMaterial.unit_weight_lbs
+          : null
+        : partForm.weight_lbs.trim() !== ''
+        ? Number(partForm.weight_lbs)
+        : null
+
     const payload = {
       id: partForm.id.trim(),
       part_number: partForm.part_number.trim(),
@@ -985,12 +1014,9 @@ export default function SkusPage() {
       thickness: partForm.part_type === 'sheet' ? selectedMaterial.thickness || null : null,
       tube_od: partForm.part_type === 'tube' ? selectedMaterial.tube_od || null : null,
       tube_wall: partForm.part_type === 'tube' ? selectedMaterial.tube_wall || null : null,
-      cut_length:
-        partForm.part_type === 'tube' && partForm.cut_length.trim() !== ''
-          ? Number(partForm.cut_length)
-          : null,
+      cut_length: createCutLength,
       dxf_file: partForm.part_type === 'sheet' ? partForm.dxf_file.trim() || null : null,
-      weight_lbs: partForm.weight_lbs.trim() !== '' ? Number(partForm.weight_lbs) : null,
+      weight_lbs: createWeight,
       notes: partForm.notes.trim() || null,
       requires_laser: partForm.requires_laser,
       requires_sheet_bend: partForm.requires_sheet_bend,
@@ -2328,7 +2354,7 @@ export default function SkusPage() {
 
             {partForm.part_type === 'tube' ? (
               <div>
-                <label className="label">Cut Length (in)</label>
+                <label className="label">Cut Length (in) *</label>
                 <input
                   className="field"
                   type="number"
@@ -2350,17 +2376,56 @@ export default function SkusPage() {
               </div>
             )}
 
-            <div>
-              <label className="label">Weight (lbs)</label>
-              <input
-                className="field"
-                type="number"
-                step="0.001"
-                value={partForm.weight_lbs}
-                onChange={(e) => setPartForm((prev) => ({ ...prev, weight_lbs: e.target.value }))}
-                placeholder="0.5"
-              />
-            </div>
+            {partForm.part_type === 'tube' ? (
+              // Tubes: weight is derived — show a live computed preview, no manual entry
+              (() => {
+                const mat = materials.find((m) => m.id === partForm.material_id)
+                const len = partForm.cut_length.trim() !== '' ? Number(partForm.cut_length) : null
+                const computed =
+                  mat?.unit_weight_lbs && mat?.stock_length_in && len != null && !isNaN(len)
+                    ? (len / mat.stock_length_in) * mat.unit_weight_lbs
+                    : null
+                return (
+                  <div>
+                    <label className="label">Weight (auto-calculated)</label>
+                    <div
+                      style={{
+                        padding: '8px 11px',
+                        background: 'var(--panel)',
+                        border: '1px solid var(--border)',
+                        borderRadius: 'var(--radius-sm)',
+                        fontSize: '0.84rem',
+                        color: computed != null ? 'var(--text)' : 'var(--muted)',
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      {computed != null ? (
+                        <>
+                          <span style={{ fontWeight: 700 }}>{computed.toFixed(3)} lbs</span>
+                          <span style={{ color: 'var(--muted)', marginLeft: 8, fontSize: '0.78rem' }}>
+                            ({partForm.cut_length}&Prime; ÷ {mat!.stock_length_in}&Prime; stock × {mat!.unit_weight_lbs} lbs/stick)
+                          </span>
+                        </>
+                      ) : (
+                        'Enter cut length and select material to calculate'
+                      )}
+                    </div>
+                  </div>
+                )
+              })()
+            ) : (
+              <div>
+                <label className="label">Weight (lbs)</label>
+                <input
+                  className="field"
+                  type="number"
+                  step="0.001"
+                  value={partForm.weight_lbs}
+                  onChange={(e) => setPartForm((prev) => ({ ...prev, weight_lbs: e.target.value }))}
+                  placeholder="0.5"
+                />
+              </div>
+            )}
 
             {/* Manufacturing stages */}
             <div style={{ gridColumn: '1 / -1' }}>
