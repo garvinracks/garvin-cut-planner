@@ -1,5 +1,10 @@
 'use client'
 
+/*
+ * SQL migration — run before using sub-assembly weld tracking:
+ * ALTER TABLE sub_assemblies ADD COLUMN IF NOT EXISTS requires_weld boolean DEFAULT false;
+ */
+
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createBrowserClient } from '@/lib/supabase'
@@ -55,7 +60,7 @@ type Part = {
 type SkuPart = { sku_id: string; part_id: string; qty: number }
 type SkuSubAssembly = { sku_id: string; sub_assembly_id: string; qty: number }
 type SubAssemblyPart = { sub_assembly_id: string; part_id: string; qty: number }
-type SubAssembly = { id: string; name: string }
+type SubAssembly = { id: string; name: string; requires_weld: boolean }
 
 type MaterialRecord = {
   id: string
@@ -71,7 +76,7 @@ type MaterialRecord = {
 type PriceLog = { material_id: string; price: number }
 
 // batch_part_completions: tracks individual part+stage checkoffs per batch
-// key format: "partId:stageKey"
+// key format: "id:stageKey" — works for both part IDs and sub-assembly IDs
 type CompletionSet = Set<string>
 
 type View = 'list' | 'create' | 'detail' | 'traveler'
@@ -128,7 +133,7 @@ export default function BatchesPage() {
   const [message, setMessage]         = useState('')
   const [activeBatch, setActiveBatch] = useState<BuildBatch | null>(null)
 
-  // Per-part completions for the active batch: Set<"partId:stageKey">
+  // Per-part/sub-assembly completions for the active batch: Set<"id:stageKey">
   const [completions, setCompletions] = useState<CompletionSet>(new Set())
   const [loadingCompletions, setLoadingCompletions] = useState(false)
 
@@ -162,7 +167,7 @@ export default function BatchesPage() {
       supabase.from('sku_parts').select('sku_id, part_id, qty'),
       supabase.from('sku_sub_assemblies').select('sku_id, sub_assembly_id, qty'),
       supabase.from('sub_assembly_parts').select('sub_assembly_id, part_id, qty'),
-      supabase.from('sub_assemblies').select('id, name'),
+      supabase.from('sub_assemblies').select('id, name, requires_weld'),
       supabase.from('materials').select('id, material_type, tube_od, tube_wall, thickness, unit_weight_lbs, stock_length_in, qty_on_hand'),
       supabase.from('material_price_logs').select('material_id, price').order('date_purchased', { ascending: false }),
     ])
@@ -211,7 +216,6 @@ export default function BatchesPage() {
 
   // ── Part helpers ──────────────────────────────────────────────────────────────
 
-  // Returns all { partId, qty, subAssemblyId } for a SKU
   function getSkuPartEntries(skuId: string): Array<{ partId: string; qty: number; subAssemblyId: string | null }> {
     const result: Array<{ partId: string; qty: number; subAssemblyId: string | null }> = []
     for (const sp of skuParts.filter((s) => s.sku_id === skuId))
@@ -222,8 +226,6 @@ export default function BatchesPage() {
     return result
   }
 
-  // Build deduplicated work-item map for a set of batch lines
-  // Returns: Map<partId, { part, totalQty, subAssemblyId (first found) }>
   function buildWorkItems(batchLines: BuildBatchLine[]) {
     const map = new Map<string, { part: Part; totalQty: number; subAssemblyId: string | null }>()
     for (const line of batchLines) {
@@ -242,7 +244,6 @@ export default function BatchesPage() {
     return map
   }
 
-  // Material cost calculation
   function calcMatCost(skuId: string, batchQty: number): number {
     const entries = getSkuPartEntries(skuId)
     let total = 0
@@ -265,34 +266,35 @@ export default function BatchesPage() {
 
   // ── Completion actions ────────────────────────────────────────────────────────
 
-  async function toggleCompletion(batchId: string, partId: string, stageKey: string, checked: boolean) {
-    const key = `${partId}:${stageKey}`
-    // Optimistic update
-    setCompletions((prev) => {
-      const next = new Set(prev)
-      checked ? next.add(key) : next.delete(key)
-      return next
-    })
-    if (checked) {
-      await supabase.from('batch_part_completions').upsert(
-        { batch_id: batchId, part_id: partId, stage_key: stageKey },
-        { onConflict: 'batch_id,part_id,stage_key' }
-      )
-    } else {
-      await supabase.from('batch_part_completions')
-        .delete()
-        .eq('batch_id', batchId).eq('part_id', partId).eq('stage_key', stageKey)
-    }
-  }
-
-  // After toggling, auto-update batch-level stage flags
-  async function syncBatchStageFlags(batch: BuildBatch, newCompletions: CompletionSet, workItems: Map<string, { part: Part; totalQty: number; subAssemblyId: string | null }>) {
+  async function syncBatchStageFlags(
+    batch: BuildBatch,
+    newCompletions: CompletionSet,
+    workItems: Map<string, { part: Part; totalQty: number; subAssemblyId: string | null }>,
+    subAssemblyGroupsForBatch: Map<string, { subAssembly: SubAssembly; items: Array<{ part: Part; totalQty: number }> }>
+  ) {
     const updates: Partial<BuildBatch> = {}
     for (const stage of STAGES) {
       const partsNeedingStage = Array.from(workItems.values()).filter((w) => w.part[stage.partKey as keyof Part])
-      if (partsNeedingStage.length === 0) continue
-      const allDone = partsNeedingStage.every((w) => newCompletions.has(`${w.part.id}:${stage.stageKey}`))
-      updates[stage.key as keyof BuildBatch] = allDone as any
+
+      if (stage.stageKey === 'weld') {
+        // For weld, also count sub-assembly weld ops
+        const saWeldNeeded = Array.from(subAssemblyGroupsForBatch.values()).filter(
+          ({ subAssembly }) => subAssembly.requires_weld
+        )
+        const allPartsDone =
+          partsNeedingStage.length === 0 ||
+          partsNeedingStage.every((w) => newCompletions.has(`${w.part.id}:weld`))
+        const allSaDone =
+          saWeldNeeded.length === 0 ||
+          saWeldNeeded.every(({ subAssembly }) => newCompletions.has(`${subAssembly.id}:weld`))
+
+        if (partsNeedingStage.length === 0 && saWeldNeeded.length === 0) continue
+        updates[stage.key as keyof BuildBatch] = (allPartsDone && allSaDone) as any
+      } else {
+        if (partsNeedingStage.length === 0) continue
+        const allDone = partsNeedingStage.every((w) => newCompletions.has(`${w.part.id}:${stage.stageKey}`))
+        updates[stage.key as keyof BuildBatch] = allDone as any
+      }
     }
     if (Object.keys(updates).length > 0) {
       await supabase.from('build_batches').update(updates).eq('id', batch.id)
@@ -301,21 +303,28 @@ export default function BatchesPage() {
     }
   }
 
-  async function handleToggle(batchId: string, partId: string, stageKey: string, checked: boolean, workItems: Map<string, { part: Part; totalQty: number; subAssemblyId: string | null }>) {
-    const key = `${partId}:${stageKey}`
+  async function handleToggle(
+    batchId: string,
+    itemId: string,
+    stageKey: string,
+    checked: boolean,
+    workItems: Map<string, { part: Part; totalQty: number; subAssemblyId: string | null }>,
+    subAssemblyGroupsForBatch: Map<string, { subAssembly: SubAssembly; items: Array<{ part: Part; totalQty: number }> }>
+  ) {
+    const key = `${itemId}:${stageKey}`
     const newCompletions = new Set(completions)
     checked ? newCompletions.add(key) : newCompletions.delete(key)
     setCompletions(newCompletions)
     if (checked) {
       await supabase.from('batch_part_completions').upsert(
-        { batch_id: batchId, part_id: partId, stage_key: stageKey },
+        { batch_id: batchId, part_id: itemId, stage_key: stageKey },
         { onConflict: 'batch_id,part_id,stage_key' }
       )
     } else {
       await supabase.from('batch_part_completions').delete()
-        .eq('batch_id', batchId).eq('part_id', partId).eq('stage_key', stageKey)
+        .eq('batch_id', batchId).eq('part_id', itemId).eq('stage_key', stageKey)
     }
-    if (activeBatch) await syncBatchStageFlags(activeBatch, newCompletions, workItems)
+    if (activeBatch) await syncBatchStageFlags(activeBatch, newCompletions, workItems, subAssemblyGroupsForBatch)
   }
 
   // ── Batch actions ─────────────────────────────────────────────────────────────
@@ -415,6 +424,16 @@ export default function BatchesPage() {
     const batchLines = lines.filter((l) => l.batch_id === activeBatch.id)
     const workItems  = buildWorkItems(batchLines)
     const totalParts = Array.from(workItems.values()).reduce((s, w) => s + w.totalQty, 0)
+
+    // Sub-assemblies present in this batch
+    const batchSubAssemblyIds = new Set<string>()
+    for (const line of batchLines) {
+      for (const ss of skuSubs.filter((s) => s.sku_id === line.sku_id)) {
+        batchSubAssemblyIds.add(ss.sub_assembly_id)
+      }
+    }
+    const batchSubAssemblies = subAssemblies.filter((sa) => batchSubAssemblyIds.has(sa.id))
+
     return (
       <div className="section-stack">
         <style>{`@media print { .no-print { display: none !important } }`}</style>
@@ -432,7 +451,21 @@ export default function BatchesPage() {
           </div>
           {STAGES.map(({ stageKey, partKey, label }) => {
             const stageParts = Array.from(workItems.values()).filter((w) => w.part[partKey as keyof Part])
-            if (stageParts.length === 0) return null
+
+            // For weld stage, also include sub-assemblies with requires_weld
+            const saWeldRows = stageKey === 'weld'
+              ? batchSubAssemblies.filter((sa) => sa.requires_weld).map((sa) => {
+                  // Total qty of this sub-assembly in the batch
+                  let totalQty = 0
+                  for (const line of batchLines) {
+                    const saEntry = skuSubs.find((s) => s.sku_id === line.sku_id && s.sub_assembly_id === sa.id)
+                    if (saEntry) totalQty += saEntry.qty * line.qty
+                  }
+                  return { sa, totalQty }
+                })
+              : []
+
+            if (stageParts.length === 0 && saWeldRows.length === 0) return null
             return (
               <div key={stageKey} style={{ marginBottom: 28, pageBreakInside: 'avoid' }}>
                 <div style={{ fontWeight: 800, fontSize: '1rem', marginBottom: 8, padding: '6px 12px', background: 'var(--panel-2)', borderLeft: '4px solid var(--accent)', borderRadius: '0 6px 6px 0' }}>
@@ -445,6 +478,14 @@ export default function BatchesPage() {
                       <tr key={part.id}>
                         <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>{part.part_number}</td>
                         <td>{part.description}</td>
+                        <td style={{ textAlign: 'center', fontWeight: 700 }}>{totalQty}</td>
+                        <td style={{ textAlign: 'center', fontSize: '1.1rem' }}>☐</td>
+                      </tr>
+                    ))}
+                    {saWeldRows.map(({ sa, totalQty }) => (
+                      <tr key={`sa-${sa.id}`} style={{ background: 'rgba(167,139,250,0.06)' }}>
+                        <td style={{ fontFamily: 'monospace', fontWeight: 700, color: '#a78bfa' }}>{sa.id}</td>
+                        <td>Weld {sa.name}</td>
                         <td style={{ textAlign: 'center', fontWeight: 700 }}>{totalQty}</td>
                         <td style={{ textAlign: 'center', fontSize: '1.1rem' }}>☐</td>
                       </tr>
@@ -470,18 +511,6 @@ export default function BatchesPage() {
     const totalMatCost   = batchLines.reduce((s, l) => s + (l.mat_cost_snapshot ?? 0), 0)
     const ss             = STATUS_STYLE[activeBatch.status]
 
-    // Progress calculation from actual completions
-    const allWorkOps: Array<{ partId: string; stageKey: string }> = []
-    for (const { part } of workItems.values()) {
-      for (const stage of STAGES) {
-        if (part[stage.partKey as keyof Part]) allWorkOps.push({ partId: part.id, stageKey: stage.stageKey })
-      }
-    }
-    const totalOps    = allWorkOps.length
-    const doneOps     = allWorkOps.filter((op) => completions.has(`${op.partId}:${op.stageKey}`)).length
-    const pct         = totalOps > 0 ? Math.round((doneOps / totalOps) * 100) : 0
-    const allDone     = totalOps > 0 && doneOps === totalOps
-
     // Group work items by sub-assembly for the checklist
     const subAssemblyGroups = new Map<string, { subAssembly: SubAssembly; items: Array<{ part: Part; totalQty: number }> }>()
     const directItems: Array<{ part: Part; totalQty: number }> = []
@@ -496,6 +525,25 @@ export default function BatchesPage() {
         directItems.push({ part, totalQty })
       }
     }
+
+    // Progress calculation from actual completions
+    // allWorkOps includes both part ops and sub-assembly weld ops
+    const allWorkOps: Array<{ id: string; stageKey: string }> = []
+    for (const { part } of workItems.values()) {
+      for (const stage of STAGES) {
+        if (part[stage.partKey as keyof Part]) allWorkOps.push({ id: part.id, stageKey: stage.stageKey })
+      }
+    }
+    // Add sub-assembly weld ops
+    for (const [saId, { subAssembly }] of subAssemblyGroups.entries()) {
+      if (subAssembly.requires_weld) {
+        allWorkOps.push({ id: saId, stageKey: 'weld' })
+      }
+    }
+    const totalOps    = allWorkOps.length
+    const doneOps     = allWorkOps.filter((op) => completions.has(`${op.id}:${op.stageKey}`)).length
+    const pct         = totalOps > 0 ? Math.round((doneOps / totalOps) * 100) : 0
+    const allDone     = totalOps > 0 && doneOps === totalOps
 
     return (
       <div className="section-stack">
@@ -571,13 +619,19 @@ export default function BatchesPage() {
                   {/* Stage sections */}
                   {STAGES.map(({ stageKey, partKey, label }) => {
                     const stageWorkItems = Array.from(workItems.values()).filter((w) => w.part[partKey as keyof Part])
-                    if (stageWorkItems.length === 0) return null
-                    const stageDone  = stageWorkItems.filter((w) => completions.has(`${w.part.id}:${stageKey}`)).length
-                    const stageTotal = stageWorkItems.length
+                    const saWeldItems = stageKey === 'weld'
+                      ? Array.from(subAssemblyGroups.values()).filter(({ subAssembly }) => subAssembly.requires_weld)
+                      : []
+
+                    if (stageWorkItems.length === 0 && saWeldItems.length === 0) return null
+
+                    const stageDoneCount  = stageWorkItems.filter((w) => completions.has(`${w.part.id}:${stageKey}`)).length
+                    const saWeldDoneCount = saWeldItems.filter(({ subAssembly }) => completions.has(`${subAssembly.id}:weld`)).length
+                    const stageTotal = stageWorkItems.length + saWeldItems.length
+                    const stageDone  = stageDoneCount + saWeldDoneCount
                     const stageAllDone = stageDone === stageTotal
                     const dotColor = stageDone === 0 ? 'var(--danger)' : stageAllDone ? 'var(--success)' : 'var(--warning)'
 
-                    // Is this the weld stage? Check if any sub-assembly parts still have incomplete prior stages
                     const isWeldStage = stageKey === 'weld'
 
                     return (
@@ -591,13 +645,11 @@ export default function BatchesPage() {
                           </span>
                         </div>
 
-                        {/* Sub-assembly groups */}
+                        {/* Sub-assembly groups (component parts) */}
                         {Array.from(subAssemblyGroups.entries()).map(([saId, { subAssembly, items }]) => {
                           const saStageItems = items.filter((i) => i.part[partKey as keyof Part])
                           if (saStageItems.length === 0) return null
 
-                          // Check if prior stages for this sub-assembly's parts are all done
-                          const priorStageKeys = STAGES.filter((s) => s.stageKey !== stageKey && s.stageKey !== 'weld').map((s) => s.stageKey)
                           const blockedParts = isWeldStage ? items.filter((i) => {
                             return STAGES.some((s) => {
                               if (s.stageKey === 'weld') return false
@@ -626,7 +678,7 @@ export default function BatchesPage() {
                                       <tr key={part.id} style={{ background: done ? 'rgba(34,197,94,0.06)' : 'transparent' }}>
                                         <td style={{ width: 36 }}>
                                           <input type="checkbox" checked={done}
-                                            onChange={(e) => handleToggle(activeBatch.id, part.id, stageKey, e.target.checked, workItems)}
+                                            onChange={(e) => handleToggle(activeBatch.id, part.id, stageKey, e.target.checked, workItems, subAssemblyGroups)}
                                             style={{ width: 18, height: 18, cursor: 'pointer', accentColor: 'var(--accent)' }} />
                                         </td>
                                         <td style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: '0.83rem', color: done ? 'var(--muted)' : 'var(--text)', textDecoration: done ? 'line-through' : 'none' }}>{part.part_number}</td>
@@ -643,7 +695,7 @@ export default function BatchesPage() {
 
                         {/* Direct parts */}
                         {directItems.filter((i) => i.part[partKey as keyof Part]).length > 0 && (
-                          <div style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+                          <div style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', marginBottom: 12 }}>
                             <div style={{ background: 'var(--panel-2)', padding: '6px 12px', borderBottom: '1px solid var(--border)' }}>
                               <span style={{ fontSize: '0.7rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Direct Parts</span>
                             </div>
@@ -655,12 +707,62 @@ export default function BatchesPage() {
                                     <tr key={part.id} style={{ background: done ? 'rgba(34,197,94,0.06)' : 'transparent' }}>
                                       <td style={{ width: 36 }}>
                                         <input type="checkbox" checked={done}
-                                          onChange={(e) => handleToggle(activeBatch.id, part.id, stageKey, e.target.checked, workItems)}
+                                          onChange={(e) => handleToggle(activeBatch.id, part.id, stageKey, e.target.checked, workItems, subAssemblyGroups)}
                                           style={{ width: 18, height: 18, cursor: 'pointer', accentColor: 'var(--accent)' }} />
                                       </td>
                                       <td style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: '0.83rem', color: done ? 'var(--muted)' : 'var(--text)', textDecoration: done ? 'line-through' : 'none' }}>{part.part_number}</td>
                                       <td style={{ color: done ? 'var(--muted)' : 'var(--text-2)', textDecoration: done ? 'line-through' : 'none' }}>{part.description}</td>
                                       <td style={{ textAlign: 'center', fontWeight: 700, color: 'var(--muted)', fontSize: '0.85rem' }}>×{totalQty}</td>
+                                    </tr>
+                                  )
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+
+                        {/* Sub-assembly weld section (weld stage only) */}
+                        {isWeldStage && saWeldItems.length > 0 && (
+                          <div style={{ border: '1px solid rgba(167,139,250,0.35)', borderRadius: 6, overflow: 'hidden', marginBottom: 12 }}>
+                            <div style={{ background: 'rgba(167,139,250,0.1)', padding: '6px 12px', borderBottom: '1px solid rgba(167,139,250,0.25)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <span style={{ fontSize: '0.7rem', color: '#a78bfa', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Sub-Assembly Weld</span>
+                            </div>
+                            <table className="table" style={{ margin: 0 }}>
+                              <tbody>
+                                {saWeldItems.map(({ subAssembly, items }) => {
+                                  const done = completions.has(`${subAssembly.id}:weld`)
+
+                                  // Check if all component parts' prior stages are complete
+                                  const priorStagesIncomplete = items.filter((i) => {
+                                    return STAGES.some((s) => {
+                                      if (s.stageKey === 'weld') return false
+                                      if (!i.part[s.partKey as keyof Part]) return false
+                                      return !completions.has(`${i.part.id}:${s.stageKey}`)
+                                    })
+                                  })
+                                  const isBlocked = priorStagesIncomplete.length > 0
+
+                                  return (
+                                    <tr key={subAssembly.id} style={{ background: done ? 'rgba(34,197,94,0.06)' : 'transparent' }}>
+                                      <td style={{ width: 36 }}>
+                                        <input
+                                          type="checkbox"
+                                          checked={done}
+                                          disabled={isBlocked}
+                                          onChange={(e) => handleToggle(activeBatch.id, subAssembly.id, 'weld', e.target.checked, workItems, subAssemblyGroups)}
+                                          style={{ width: 18, height: 18, cursor: isBlocked ? 'not-allowed' : 'pointer', accentColor: 'var(--accent)' }}
+                                        />
+                                      </td>
+                                      <td style={{ fontWeight: 700, fontSize: '0.88rem', color: done ? 'var(--muted)' : 'var(--text)', textDecoration: done ? 'line-through' : 'none' }}>
+                                        Weld {subAssembly.name}
+                                      </td>
+                                      <td>
+                                        {isBlocked && (
+                                          <span style={{ fontSize: '0.75rem', color: 'var(--warning)', fontWeight: 600 }}>
+                                            ⚠ {priorStagesIncomplete.length} part{priorStagesIncomplete.length !== 1 ? 's' : ''} not yet complete
+                                          </span>
+                                        )}
+                                      </td>
                                     </tr>
                                   )
                                 })}
