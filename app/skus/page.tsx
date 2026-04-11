@@ -272,6 +272,7 @@ export default function SkusPage() {
   const [parts, setParts] = useState<Part[]>([])
   const [materials, setMaterials] = useState<MaterialRow[]>([])
   const [latestPriceByMaterialId, setLatestPriceByMaterialId] = useState<Record<string, number>>({})
+  const [latestPowderCostPerLb, setLatestPowderCostPerLb]     = useState<number | null>(null)
   const [selectedSkuId, setSelectedSkuId] = useState('')
 
   const [selectedSkuSubassemblies, setSelectedSkuSubassemblies] = useState<SkuSubAssemblyRow[]>([])
@@ -510,10 +511,24 @@ export default function SkusPage() {
     }
   }
 
+  async function loadPowderRate() {
+    const { data } = await supabase
+      .from('powder_batches')
+      .select('cost_per_lb')
+      .eq('status', 'complete')
+      .not('cost_per_lb', 'is', null)
+      .order('returned_date', { ascending: false })
+      .limit(1)
+      .single()
+    if (data && (data as any).cost_per_lb) {
+      setLatestPowderCostPerLb((data as any).cost_per_lb as number)
+    }
+  }
+
   async function initialLoad() {
     setLoading(true)
     setMessage('')
-    await Promise.all([loadSkus(), loadSubassemblies(), loadParts(), loadMaterials(), loadPriceLogs()])
+    await Promise.all([loadSkus(), loadSubassemblies(), loadParts(), loadMaterials(), loadPriceLogs(), loadPowderRate()])
     setLoading(false)
   }
 
@@ -1450,13 +1465,22 @@ export default function SkusPage() {
     return hasAny ? total : null
   })()
 
+  // Powder coat cost estimate: SKU total weight × latest cost/lb from powder runs
+  const skuTotalWeight = fullExplosion.reduce(
+    (sum, r) => r.weight_lbs != null ? sum + r.weight_lbs * r.qty : sum, 0
+  )
+  const powderEstCost = latestPowderCostPerLb != null && skuTotalWeight > 0
+    ? skuTotalWeight * latestPowderCostPerLb
+    : null
+
   const totalUnitCost = (() => {
     if (!selectedSku) return null
     let total = matEstCost ?? 0
+    if (powderEstCost) total += powderEstCost
     if (selectedSku.bolt_kit_cost) total += selectedSku.bolt_kit_cost
     if (selectedSku.packaging_cost) total += selectedSku.packaging_cost
     if (selectedSku.labor_cost_per_unit) total += selectedSku.labor_cost_per_unit
-    if (!matEstCost && !selectedSku.bolt_kit_cost && !selectedSku.packaging_cost && !selectedSku.labor_cost_per_unit) return null
+    if (!matEstCost && !powderEstCost && !selectedSku.bolt_kit_cost && !selectedSku.packaging_cost && !selectedSku.labor_cost_per_unit) return null
     return total
   })()
 
@@ -2263,6 +2287,26 @@ export default function SkusPage() {
                                 {matEstCost != null ? `$${matEstCost.toFixed(2)}` : '—'}
                               </td>
                             </tr>
+                            {powderEstCost != null && (
+                              <tr>
+                                <td colSpan={5} style={{ fontSize: '0.8rem', color: '#a78bfa', paddingTop: 4 }}>
+                                  Powder Coat
+                                  <span style={{ marginLeft: 6, fontSize: '0.72rem', color: 'var(--muted)' }}>
+                                    ({skuTotalWeight.toFixed(2)} lbs × ${latestPowderCostPerLb!.toFixed(2)}/lb)
+                                  </span>
+                                </td>
+                                <td style={{ textAlign: 'right', fontSize: '0.8rem', paddingTop: 4, color: '#a78bfa' }}>
+                                  ${powderEstCost.toFixed(2)}
+                                </td>
+                              </tr>
+                            )}
+                            {powderEstCost == null && latestPowderCostPerLb == null && (
+                              <tr>
+                                <td colSpan={6} style={{ fontSize: '0.75rem', color: 'var(--muted)', paddingTop: 4, fontStyle: 'italic' }}>
+                                  Powder coat cost not yet available — record a return on the Powder Coat page to set the rate.
+                                </td>
+                              </tr>
+                            )}
                             {selectedSku.bolt_kit_cost != null && (
                               <tr>
                                 <td colSpan={5} style={{ fontSize: '0.8rem', color: 'var(--muted)', paddingTop: 4 }}>Bolt kit</td>

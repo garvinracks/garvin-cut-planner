@@ -15,6 +15,7 @@ type BuildBatch = {
 }
 
 type BuildBatchLine = {
+  id: string
   batch_id: string
   sku_id: string
   qty: number
@@ -97,7 +98,7 @@ export default function PowderPage() {
         .select('*')
         .in('status', ['at_powder', 'complete'])
         .order('created_at', { ascending: false }),
-      supabase.from('build_batch_lines').select('batch_id, sku_id, qty'),
+      supabase.from('build_batch_lines').select('id, batch_id, sku_id, qty'),
       supabase.from('powder_batches').select('*').order('created_at', { ascending: false }),
       supabase.from('sku_parts').select('sku_id, part_id, qty'),
       supabase.from('sku_sub_assemblies').select('sku_id, sub_assembly_id, qty'),
@@ -118,21 +119,26 @@ export default function PowderPage() {
 
   // ── Weight calculation ────────────────────────────────────────────────────────
 
-  function calcBatchWeight(batchId: string): number {
+  // Weight of one unit of a SKU (all parts + sub-assembly parts)
+  function calcSkuWeight(skuId: string): number {
     let total = 0
-    for (const line of batchLines.filter((l) => l.batch_id === batchId)) {
-      for (const sp of skuParts.filter((s) => s.sku_id === line.sku_id)) {
-        const part = parts.find((p) => p.id === sp.part_id)
-        total += (part?.weight_lbs ?? 0) * sp.qty * line.qty
-      }
-      for (const ss of skuSubs.filter((s) => s.sku_id === line.sku_id)) {
-        for (const sap of subParts.filter((s) => s.sub_assembly_id === ss.sub_assembly_id)) {
-          const part = parts.find((p) => p.id === sap.part_id)
-          total += (part?.weight_lbs ?? 0) * sap.qty * ss.qty * line.qty
-        }
+    for (const sp of skuParts.filter((s) => s.sku_id === skuId)) {
+      const part = parts.find((p) => p.id === sp.part_id)
+      total += (part?.weight_lbs ?? 0) * sp.qty
+    }
+    for (const ss of skuSubs.filter((s) => s.sku_id === skuId)) {
+      for (const sap of subParts.filter((s) => s.sub_assembly_id === ss.sub_assembly_id)) {
+        const part = parts.find((p) => p.id === sap.part_id)
+        total += (part?.weight_lbs ?? 0) * sap.qty * ss.qty
       }
     }
     return total
+  }
+
+  function calcBatchWeight(batchId: string): number {
+    return batchLines
+      .filter((l) => l.batch_id === batchId)
+      .reduce((s, l) => s + calcSkuWeight(l.sku_id) * l.qty, 0)
   }
 
   // ── Derived ───────────────────────────────────────────────────────────────────
@@ -174,15 +180,21 @@ export default function PowderPage() {
       month: 'short', day: 'numeric', year: 'numeric',
     })}`
 
+    const totalInvoice  = parseFloat(returnCost)
+    const totalWeight   = returnWeight  // already computed via calcBatchWeight
+    const costPerLb     = totalWeight > 0 ? totalInvoice / totalWeight : 0
+
     // Create a completed powder_batch record (acts as a cost receipt)
     const { data: pb, error } = await supabase
       .from('powder_batches')
       .insert({
-        batch_name:    runName,
-        returned_date: todayStr,
-        total_cost:    parseFloat(returnCost),
-        notes:         returnNotes.trim() || null,
-        status:        'complete',
+        batch_name:       runName,
+        returned_date:    todayStr,
+        total_cost:       totalInvoice,
+        total_weight_lbs: totalWeight,
+        cost_per_lb:      costPerLb,
+        notes:            returnNotes.trim() || null,
+        status:           'complete',
       })
       .select('id')
       .single()
@@ -193,11 +205,26 @@ export default function PowderPage() {
       return
     }
 
-    // Link selected build batches → this run and mark them complete
+    // Link selected build batches → this run, mark complete, store powder cost per line
+    const selectedIds = Array.from(returnSelected)
     await supabase
       .from('build_batches')
       .update({ powder_batch_id: pb.id, status: 'complete', completed_at: todayIso })
-      .in('id', Array.from(returnSelected))
+      .in('id', selectedIds)
+
+    // Split powder cost proportionally across batch lines by weight
+    for (const batchId of selectedIds) {
+      const batchWeight = calcBatchWeight(batchId)
+      const batchLines  = batchLines.filter((l) => l.batch_id === batchId)
+      for (const line of batchLines) {
+        const lineWeight      = calcSkuWeight(line.sku_id) * line.qty
+        const linePowderCost  = totalWeight > 0 ? (lineWeight / totalWeight) * totalInvoice : 0
+        await supabase
+          .from('build_batch_lines')
+          .update({ powder_cost_snapshot: linePowderCost })
+          .eq('id', line.id)
+      }
+    }
 
     const count = returnSelected.size
     setReturnMode(false)
@@ -207,7 +234,7 @@ export default function PowderPage() {
     await loadAll()
     setSaving(false)
     setMessage(
-      `✓ ${count} batch${count !== 1 ? 'es' : ''} marked complete — powder coat cost recorded at ${fmtCost(parseFloat(returnCost))}.`
+      `✓ ${count} batch${count !== 1 ? 'es' : ''} marked complete — powder coat recorded at ${fmtCost(costPerLb)}/lb.`
     )
   }
 
