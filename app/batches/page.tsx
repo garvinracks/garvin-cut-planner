@@ -404,17 +404,22 @@ export default function BatchesPage() {
   async function sendToPowder(batch: BuildBatch) {
     setSendingToPowder(true)
     setMessage('')
-    const { error } = await supabase.from('build_batches').update({ status: 'at_powder' }).eq('id', batch.id)
-    if (error) {
-      setMessage(`Failed to send to powder: ${error.message}`)
+    // Use .select() so we can verify the row was actually updated
+    const { data: updated, error } = await supabase
+      .from('build_batches')
+      .update({ status: 'at_powder' })
+      .eq('id', batch.id)
+      .select('*')
+      .single()
+    if (error || !updated) {
+      setMessage(`Failed to send to powder: ${error?.message ?? 'No row returned — check Supabase RLS policies.'}`)
       setSendingToPowder(false)
       return
     }
-    const updated = { ...batch, status: 'at_powder' as BatchStatus }
-    setBatches((prev) => prev.map((b) => b.id === batch.id ? updated : b))
-    setActiveBatch(updated)
-    // Hard navigate so the powder page always reloads fresh
-    window.location.href = '/powder'
+    setBatches((prev) => prev.map((b) => b.id === batch.id ? updated as BuildBatch : b))
+    setActiveBatch(updated as BuildBatch)
+    // Hard navigate with cache-bust so the powder page always reloads fresh data
+    window.location.href = '/powder?from=batch&t=' + Date.now()
   }
 
   async function markCompleteWithCost(batch: BuildBatch) {
