@@ -68,6 +68,9 @@ type ShopFloorStation = {
     description: string
     dxf_file: string | null
     part_type: 'tube' | 'sheet'
+    tube_od: string | null
+    tube_wall: string | null
+    cut_length: number | null
     qty: number
     step: number
     totalSteps: number
@@ -715,6 +718,9 @@ export default function PlannerPage() {
           description: row.description,
           dxf_file: part.dxf_file,
           part_type: part.part_type,
+          tube_od: part.tube_od,
+          tube_wall: part.tube_wall,
+          cut_length: part.cut_length,
           qty: row.qty,
           step: 0,
           totalSteps: 0,
@@ -740,6 +746,9 @@ export default function PlannerPage() {
             description: row.description,
             dxf_file: part.dxf_file,
             part_type: part.part_type,
+            tube_od: part.tube_od,
+            tube_wall: part.tube_wall,
+            cut_length: part.cut_length,
             qty: row.qty,
             step: op.step,
             totalSteps: ops.length,
@@ -1671,7 +1680,10 @@ export default function PlannerPage() {
                         {station.parts.map((p) => (
                           <tr key={p.part_id}>
                             <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
-                              <DxfPartPreview dxfFile={p.dxf_file} partNumber={p.part_number} size="small" isTube={p.part_type === 'tube'} tubeFallback={false} />
+                              <DxfPartPreview dxfFile={p.dxf_file} partNumber={p.part_number} size="small"
+                                isTube={p.part_type === 'tube'} tubeFallback={true}
+                                tubeOd={p.tube_od ?? undefined} tubeWall={p.tube_wall ?? undefined}
+                                cutLength={p.cut_length ?? undefined} tubeShape="round" />
                               <div style={{ fontSize: '0.68rem', fontFamily: 'monospace', fontWeight: 700, color: 'var(--muted)', marginTop: 4 }}>{p.part_number}</div>
                             </td>
                             <td style={{ fontWeight: 700, color: 'var(--accent)', textAlign: 'center', verticalAlign: 'middle' }}>{p.qty}</td>

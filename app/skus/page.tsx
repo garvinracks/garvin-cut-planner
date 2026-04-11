@@ -88,6 +88,9 @@ type SkuPartRow = {
   part_type: 'tube' | 'sheet' | null
   dxf_file: string | null
   weight_lbs: number | null
+  tube_od: string | null
+  tube_wall: string | null
+  cut_length: number | null
 }
 
 type SubAssemblyPartRow = {
@@ -99,6 +102,9 @@ type SubAssemblyPartRow = {
   part_type: 'tube' | 'sheet' | null
   dxf_file: string | null
   weight_lbs: number | null
+  tube_od: string | null
+  tube_wall: string | null
+  cut_length: number | null
 }
 
 type ExplodedPreviewRow = {
@@ -109,6 +115,9 @@ type ExplodedPreviewRow = {
   part_type: 'tube' | 'sheet' | null
   dxf_file: string | null
   weight_lbs: number | null
+  tube_od: string | null
+  tube_wall: string | null
+  cut_length: number | null
 }
 
 type JoinedSubassemblyRow = {
@@ -128,6 +137,9 @@ type JoinedSkuPartRow = {
     part_type?: string | null
     dxf_file?: string | null
     weight_lbs?: number | null
+    tube_od?: string | null
+    tube_wall?: string | null
+    cut_length?: number | null
   } | null
 }
 
@@ -413,7 +425,10 @@ export default function SkusPage() {
           description,
           part_type,
           dxf_file,
-          weight_lbs
+          weight_lbs,
+          tube_od,
+          tube_wall,
+          cut_length
         )
       `)
       .eq('sub_assembly_id', subassemblyId)
@@ -433,6 +448,9 @@ export default function SkusPage() {
       part_type: (row.part?.part_type as 'tube' | 'sheet' | null) ?? null,
       dxf_file: row.part?.dxf_file ?? null,
       weight_lbs: row.part?.weight_lbs ?? null,
+      tube_od: row.part?.tube_od ?? null,
+      tube_wall: row.part?.tube_wall ?? null,
+      cut_length: row.part?.cut_length ?? null,
     }))
 
     setSubassemblyPartMap((prev) => ({ ...prev, [subassemblyId]: rows }))
@@ -474,7 +492,10 @@ export default function SkusPage() {
             description,
             part_type,
             dxf_file,
-            weight_lbs
+            weight_lbs,
+            tube_od,
+            tube_wall,
+            cut_length
           )
         `)
         .eq('sku_id', skuId),
@@ -506,6 +527,9 @@ export default function SkusPage() {
         part_type: (row.part?.part_type as 'tube' | 'sheet' | null) ?? null,
         dxf_file: row.part?.dxf_file ?? null,
         weight_lbs: row.part?.weight_lbs ?? null,
+        tube_od: row.part?.tube_od ?? null,
+        tube_wall: row.part?.tube_wall ?? null,
+        cut_length: row.part?.cut_length ?? null,
       }))
       setSelectedSkuParts(mappedPartRows)
     }
@@ -1381,6 +1405,9 @@ export default function SkusPage() {
           part_type: row.part_type,
           dxf_file: row.dxf_file,
           weight_lbs: row.weight_lbs,
+          tube_od: row.tube_od,
+          tube_wall: row.tube_wall,
+          cut_length: row.cut_length,
         })
       }
     }
@@ -1401,6 +1428,9 @@ export default function SkusPage() {
             part_type: subPart.part_type,
             dxf_file: subPart.dxf_file,
             weight_lbs: subPart.weight_lbs,
+            tube_od: subPart.tube_od,
+            tube_wall: subPart.tube_wall,
+            cut_length: subPart.cut_length,
           })
         }
       }
@@ -2002,7 +2032,11 @@ export default function SkusPage() {
                                                     partNumber={subRow.part_number}
                                                     size="tiny"
                                                     isTube={subRow.part_type === 'tube'}
-                                                    tubeFallback={false}
+                                                    tubeFallback={true}
+                                                    tubeOd={subRow.tube_od ?? undefined}
+                                                    tubeWall={subRow.tube_wall ?? undefined}
+                                                    cutLength={subRow.cut_length ?? undefined}
+                                                    tubeShape="round"
                                                   />
                                                 </td>
                                                 <td style={{ fontWeight: 700, fontFamily: 'monospace', fontSize: '0.83rem' }}>
@@ -2161,7 +2195,11 @@ export default function SkusPage() {
                                       partNumber={row.part_number}
                                       size="tiny"
                                       isTube={row.part_type === 'tube'}
-                                      tubeFallback={false}
+                                      tubeFallback={true}
+                                      tubeOd={row.tube_od ?? undefined}
+                                      tubeWall={row.tube_wall ?? undefined}
+                                      cutLength={row.cut_length ?? undefined}
+                                      tubeShape="round"
                                     />
                                   </td>
                                   <td style={{ fontWeight: 700, fontFamily: 'monospace', fontSize: '0.83rem' }}>
@@ -2250,7 +2288,11 @@ export default function SkusPage() {
                                       partNumber={row.part_number}
                                       size="tiny"
                                       isTube={row.part_type === 'tube'}
-                                      tubeFallback={false}
+                                      tubeFallback={true}
+                                      tubeOd={row.tube_od ?? undefined}
+                                      tubeWall={row.tube_wall ?? undefined}
+                                      cutLength={row.cut_length ?? undefined}
+                                      tubeShape="round"
                                     />
                                   </td>
                                   <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>{row.part_number}</td>
