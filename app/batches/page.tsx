@@ -254,17 +254,27 @@ export default function BatchesPage() {
     let total = 0
     for (const { partId, qty: partQty } of entries) {
       const part = parts.find((p) => p.id === partId)
-      if (!part?.weight_lbs) continue
+      if (!part) continue
       const mat = materials.find((m) =>
         m.material_type === part.part_type &&
         (part.part_type === 'tube'
           ? m.tube_od === part.tube_od && m.tube_wall === part.tube_wall
           : m.thickness === part.material)
       )
-      if (!mat?.unit_weight_lbs) continue
+      if (!mat) continue
       const log = priceLogs.find((pl) => pl.material_id === mat.id)
       if (!log) continue
-      total += part.weight_lbs * (log.price / mat.unit_weight_lbs) * partQty
+
+      if (part.part_type === 'tube') {
+        // Length-based: fraction of a full bar × price per bar
+        if (!part.cut_length || !mat.stock_length_in) continue
+        total += (part.cut_length / mat.stock_length_in) * log.price * partQty
+      } else {
+        // Sheet: weight-based with scrap rate
+        if (!part.weight_lbs || !mat.unit_weight_lbs) continue
+        const scrap = mat.scrap_rate ?? 0
+        total += part.weight_lbs * (log.price / mat.unit_weight_lbs) * (1 + scrap) * partQty
+      }
     }
     return total * batchQty
   }
