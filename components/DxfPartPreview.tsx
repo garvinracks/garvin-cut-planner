@@ -170,8 +170,12 @@ export default function DxfPartPreview({
     const isFillOrLarge = size === 'fill' || size === 'large'
     const svgSize = isFillOrLarge ? 48 : size === 'small' ? 36 : 26
 
+    const dimFontSize   = isFillOrLarge ? '0.8rem'  : size === 'small' ? '0.68rem' : '0.6rem'
+    const cutFontSize   = isFillOrLarge ? '0.72rem' : size === 'small' ? '0.62rem' : '0.56rem'
+    const hasDims       = tubeOd || tubeWall || (cutLength != null && cutLength > 0)
+
     return (
-      <div style={{ ...baseBox, flexDirection: 'row', gap: 10, padding: isFillOrLarge ? 12 : 8, alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ ...baseBox, flexDirection: 'row', gap: isFillOrLarge ? 10 : 6, padding: isFillOrLarge ? 12 : size === 'small' ? 7 : 5, alignItems: 'center', justifyContent: 'center' }}>
         {/* Cross-section SVG */}
         <svg
           width={svgSize}
@@ -192,17 +196,17 @@ export default function DxfPartPreview({
           )}
         </svg>
 
-        {/* Dims / cut length */}
-        {isFillOrLarge && (tubeOd || tubeWall || (cutLength != null && cutLength > 0)) && (
-          <div style={{ lineHeight: 1.4, minWidth: 0 }}>
+        {/* Dims / cut length — shown at all sizes */}
+        {hasDims && (
+          <div style={{ lineHeight: 1.35, minWidth: 0 }}>
             {(tubeOd || tubeWall) && (
-              <div style={{ fontSize: '0.8rem', fontWeight: 700, color: '#e0a050', whiteSpace: 'nowrap' }}>
+              <div style={{ fontSize: dimFontSize, fontWeight: 700, color: '#e0a050', whiteSpace: 'nowrap' }}>
                 {[tubeOd, tubeWall].filter(Boolean).join(' × ')}
               </div>
             )}
             {cutLength != null && cutLength > 0 && (
-              <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: 1, whiteSpace: 'nowrap' }}>
-                {cutLength}&Prime; · {(cutLength / 12).toFixed(2)} ft
+              <div style={{ fontSize: cutFontSize, color: '#94a3b8', marginTop: 1, whiteSpace: 'nowrap' }}>
+                {cutLength}&Prime;{isFillOrLarge ? ` · ${(cutLength / 12).toFixed(2)} ft` : ''}
               </div>
             )}
           </div>

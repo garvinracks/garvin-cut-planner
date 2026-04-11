@@ -1129,7 +1129,7 @@ export default function OrdersPage() {
                       <th>SKU</th>
                       <th style={{ textAlign: 'center' }}>Qty</th>
                       <th>Customer</th>
-                      {allocated && <th>Status</th>}
+                      <th>Status</th>
                       <th style={{ minWidth: 180 }}>Notes</th>
                     </tr>
                   </thead>
@@ -1153,7 +1153,7 @@ export default function OrdersPage() {
                         for (const order of filtered) rows.push({ type: 'order', order })
                       }
 
-                      const colSpan = allocated ? 8 : 7
+                      const colSpan = 8
 
                       return rows.map((row, idx) => {
                         if (row.type === 'group') {
@@ -1266,43 +1266,43 @@ export default function OrdersPage() {
                               {/* Qty */}
                               <td style={{ textAlign: 'center', fontWeight: 700 }}>{totalQty}</td>
 
-                              {/* Customer + batch status */}
+                              {/* Customer */}
                               <td style={{ color: 'var(--text-2)' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                                  <span>{order.customer_name ?? '—'}</span>
+                                {order.customer_name ?? '—'}
+                              </td>
+
+                              {/* Status — production + alloc */}
+                              <td>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
+                                  {/* Production status: shows for any SKU in a batch */}
                                   {topBatch && (
                                     <span style={{
                                       background: BATCH_STATUS_STYLE[topBatch.status]?.bg,
                                       color: BATCH_STATUS_STYLE[topBatch.status]?.color,
-                                      borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700, flexShrink: 0,
+                                      borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700,
                                     }}>
                                       {BATCH_STATUS_STYLE[topBatch.status]?.label}
                                     </span>
                                   )}
-                                </div>
-                              </td>
-
-                              {/* Alloc status + ship button */}
-                              {allocated && (
-                                <td>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                    {alloc && (
+                                  {/* Allocation status: shown once stock is allocated */}
+                                  {allocated && alloc && (
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                                       <span style={{ fontSize: '0.78rem', color: alloc.color, fontWeight: 600, whiteSpace: 'nowrap' }}>
                                         {alloc.icon} {alloc.label}
                                       </span>
-                                    )}
-                                    {status === 'ready' && (
-                                      <button
-                                        className="btn btn-primary"
-                                        style={{ height: 24, fontSize: '0.72rem', padding: '0 8px', flexShrink: 0 }}
-                                        onClick={(e) => { e.stopPropagation(); setShippingOrderId(order.id); setShippingCost('') }}
-                                      >
-                                        Ship →
-                                      </button>
-                                    )}
-                                  </div>
-                                </td>
-                              )}
+                                      {status === 'ready' && (
+                                        <button
+                                          className="btn btn-primary"
+                                          style={{ height: 24, fontSize: '0.72rem', padding: '0 8px', flexShrink: 0 }}
+                                          onClick={(e) => { e.stopPropagation(); setShippingOrderId(order.id); setShippingCost('') }}
+                                        >
+                                          Ship →
+                                        </button>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
 
                               {/* Inline notes */}
                               <td onClick={(e) => e.stopPropagation()}>
@@ -1335,20 +1335,37 @@ export default function OrdersPage() {
                                           <th>SKU</th>
                                           <th>Description</th>
                                           <th style={{ textAlign: 'center' }}>Qty</th>
+                                          <th>Status</th>
                                         </tr>
                                       </thead>
                                       <tbody>
-                                        {order.order_lines.map((line) => (
-                                          <tr key={line.id}>
-                                            <td style={{ fontFamily: 'monospace', fontSize: '0.83rem', fontWeight: 600 }}>
-                                              {line.ss_sku}
-                                            </td>
-                                            <td style={{ color: 'var(--text-2)', fontSize: '0.83rem' }}>
-                                              {line.description ?? skus.find((s) => s.id === line.sku_id)?.description ?? '—'}
-                                            </td>
-                                            <td style={{ textAlign: 'center', fontWeight: 700 }}>{line.qty}</td>
-                                          </tr>
-                                        ))}
+                                        {order.order_lines.map((line) => {
+                                          const lineSkuBatch = line.sku_id ? skuBatchStatus[line.sku_id] : null
+                                          return (
+                                            <tr key={line.id}>
+                                              <td style={{ fontFamily: 'monospace', fontSize: '0.83rem', fontWeight: 600 }}>
+                                                {line.ss_sku}
+                                              </td>
+                                              <td style={{ color: 'var(--text-2)', fontSize: '0.83rem' }}>
+                                                {line.description ?? skus.find((s) => s.id === line.sku_id)?.description ?? '—'}
+                                              </td>
+                                              <td style={{ textAlign: 'center', fontWeight: 700 }}>{line.qty}</td>
+                                              <td>
+                                                {lineSkuBatch ? (
+                                                  <span style={{
+                                                    background: BATCH_STATUS_STYLE[lineSkuBatch.status]?.bg,
+                                                    color: BATCH_STATUS_STYLE[lineSkuBatch.status]?.color,
+                                                    borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700,
+                                                  }}>
+                                                    {BATCH_STATUS_STYLE[lineSkuBatch.status]?.label}
+                                                  </span>
+                                                ) : (
+                                                  <span style={{ color: 'var(--muted)', fontSize: '0.72rem' }}>—</span>
+                                                )}
+                                              </td>
+                                            </tr>
+                                          )
+                                        })}
                                       </tbody>
                                     </table>
                                   </div>
@@ -1407,15 +1424,17 @@ export default function OrdersPage() {
                           <th>Customer</th>
                           <th>Order Date</th>
                           <th style={{ textAlign: 'center' }}>Qty</th>
-                          {allocated && <th>Status</th>}
+                          <th>Status</th>
                         </tr>
                       </thead>
                       <tbody>
                         {group.orders.map(({ order, qty }) => {
-                          const chStyle  = CH_STYLE[order.channel] ?? CH_STYLE.shopify
-                          const status   = allocStatuses[order.id]
-                          const alloc    = status ? ALLOC_STYLE[status] : null
-                          const days     = daysSince(order.order_date)
+                          const chStyle      = CH_STYLE[order.channel] ?? CH_STYLE.shopify
+                          const allocStatus  = allocStatuses[order.id]
+                          const alloc        = allocStatus ? ALLOC_STYLE[allocStatus] : null
+                          const days         = daysSince(order.order_date)
+                          // For By-SKU view, the group is already filtered to a single SKU
+                          const lineSkuBatch = skuBatchStatus[group.sku_id] ?? null
                           return (
                             <tr key={order.id} style={{ background: selectedIds.has(order.id) ? 'var(--accent-soft)' : 'transparent' }}>
                               <td>
@@ -1439,11 +1458,24 @@ export default function OrdersPage() {
                                 )}
                               </td>
                               <td style={{ textAlign: 'center', fontWeight: 700 }}>{qty}</td>
-                              {allocated && (
-                                <td>
-                                  {alloc && <span style={{ fontSize: '0.78rem', color: alloc.color, fontWeight: 600 }}>{alloc.icon} {alloc.label}</span>}
-                                </td>
-                              )}
+                              <td>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'flex-start' }}>
+                                  {lineSkuBatch && (
+                                    <span style={{
+                                      background: BATCH_STATUS_STYLE[lineSkuBatch.status]?.bg,
+                                      color: BATCH_STATUS_STYLE[lineSkuBatch.status]?.color,
+                                      borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700,
+                                    }}>
+                                      {BATCH_STATUS_STYLE[lineSkuBatch.status]?.label}
+                                    </span>
+                                  )}
+                                  {allocated && alloc && (
+                                    <span style={{ fontSize: '0.78rem', color: alloc.color, fontWeight: 600 }}>
+                                      {alloc.icon} {alloc.label}
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
                             </tr>
                           )
                         })}
