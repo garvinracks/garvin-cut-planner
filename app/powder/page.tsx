@@ -98,7 +98,7 @@ export default function PowderPage() {
       { data: allBbData },
     ] = await Promise.all([
       supabase.from('build_batches')
-        .select('id, name, status, created_at, completed_at, powder_batch_id')
+        .select('*')
         .in('status', ['at_powder', 'complete'])
         .order('created_at', { ascending: false }),
       supabase.from('build_batch_lines').select('batch_id, sku_id, qty'),
@@ -109,7 +109,7 @@ export default function PowderPage() {
       supabase.from('parts').select('id, weight_lbs'),
       // Diagnostic: fetch ALL batches so we can see real DB status
       supabase.from('build_batches')
-        .select('id, name, status, powder_batch_id')
+        .select('*')
         .order('created_at', { ascending: false })
         .limit(20),
     ])
