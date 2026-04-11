@@ -1408,8 +1408,12 @@ export default function OrdersPage() {
                                                   <span style={{ background: 'rgba(234,179,8,0.15)', color: 'var(--warning)', borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700 }}>
                                                     {lineOnHand}/{line.qty} on hand
                                                   </span>
+                                                ) : !line.sku_id ? (
+                                                  <span style={{ color: 'var(--muted)', fontSize: '0.72rem', fontStyle: 'italic' }}>No SKU Match</span>
                                                 ) : (
-                                                  <span style={{ color: 'var(--muted)', fontSize: '0.72rem' }}>—</span>
+                                                  <span style={{ background: 'rgba(239,68,68,0.12)', color: 'var(--danger)', borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700 }}>
+                                                    🔴 Build Needed
+                                                  </span>
                                                 )}
                                               </td>
                                             </tr>
