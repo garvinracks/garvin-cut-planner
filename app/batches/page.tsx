@@ -69,6 +69,7 @@ type SubAssembly = { id: string; name: string; requires_weld: boolean; image_fil
 
 type MaterialRecord = {
   id: string
+  name: string | null
   material_type: string
   tube_od: string | null
   tube_wall: string | null
@@ -184,7 +185,7 @@ export default function BatchesPage() {
       supabase.from('sku_sub_assemblies').select('sku_id, sub_assembly_id, qty'),
       supabase.from('sub_assembly_parts').select('sub_assembly_id, part_id, qty'),
       supabase.from('sub_assemblies').select('id, name, requires_weld, image_file'),
-      supabase.from('materials').select('id, material_type, tube_od, tube_wall, thickness, unit_weight_lbs, stock_length_in, scrap_rate, qty_on_hand'),
+      supabase.from('materials').select('id, name, material_type, tube_od, tube_wall, thickness, unit_weight_lbs, stock_length_in, scrap_rate, qty_on_hand'),
       supabase.from('material_price_logs').select('material_id, price').order('date_purchased', { ascending: false }),
     ])
     const loadedBatches = (batchData ?? []) as BuildBatch[]
@@ -709,13 +710,18 @@ export default function BatchesPage() {
     const sheetGroupMap = new Map<string, SheetCutListGroup>()
     for (const { part, totalQty } of wItems.values()) {
       if (part.part_type !== 'sheet') continue
+      // Match by ID first, then by name, then by thickness (legacy)
       const mat = materials.find(
-        (m) => m.material_type === 'sheet' && m.thickness === part.material
+        (m) => m.material_type === 'sheet' && (
+          m.id === part.material ||
+          (m.name != null && m.name === part.material) ||
+          m.thickness === part.material
+        )
       )
-      // Group key: combine material field + thickness so different thicknesses get separate groups
-      const groupKey = `${part.material ?? '__none__'}::${mat?.thickness ?? '__none__'}`
+      const displayName = mat?.name ?? part.material ?? 'Sheet'
+      const groupKey = `${part.material ?? '__none__'}::${mat?.id ?? '__none__'}`
       const matName = mat
-        ? (mat.thickness ? `${part.material ?? 'Sheet'} — ${mat.thickness}"` : `${part.material ?? 'Sheet material'}`)
+        ? (mat.thickness ? `${displayName} — ${mat.thickness}"` : displayName)
         : `${part.material ?? 'Sheet'} (no material record)`
       const thickness = mat?.thickness ?? null
 
@@ -1059,6 +1065,12 @@ export default function BatchesPage() {
       const unsawedTubeParts = tubeParts.filter((w) => w.part.requires_saw && !completions.has(`${w.part.id}:saw`))
       const unbentTubeParts = tubeParts.filter((w) => w.part.requires_tube_bend && !completions.has(`${w.part.id}:tube_bend`))
       const sheetParts = Array.from(workItems.values()).filter((w) => w.part.part_type === 'sheet')
+      const laserPending = sheetParts.filter((w) => w.part.requires_laser && !completions.has(`${w.part.id}:laser`))
+      const sheetBendPending = sheetParts.filter((w) =>
+        w.part.requires_sheet_bend &&
+        (!w.part.requires_laser || completions.has(`${w.part.id}:laser`)) &&
+        !completions.has(`${w.part.id}:sheet_bend`)
+      )
       const unprocessedSheetParts = sheetParts.filter((w) =>
         (w.part.requires_laser && !completions.has(`${w.part.id}:laser`)) ||
         (w.part.requires_sheet_bend && !completions.has(`${w.part.id}:sheet_bend`))
@@ -1077,6 +1089,12 @@ export default function BatchesPage() {
       } else if (unbentTubeParts.length > 0) {
         nextUpIcon = '\ud83d\udd04'
         nextUpText = `Bend ${unbentTubeParts.length} tube part${unbentTubeParts.length !== 1 ? 's' : ''}`
+      } else if (laserPending.length > 0) {
+        nextUpIcon = '\ud83d\udd35'
+        nextUpText = `Laser-cut ${laserPending.length} sheet part${laserPending.length !== 1 ? 's' : ''}`
+      } else if (sheetBendPending.length > 0) {
+        nextUpIcon = '\ud83d\udd27'
+        nextUpText = `Bend ${sheetBendPending.length} sheet part${sheetBendPending.length !== 1 ? 's' : ''}`
       } else if (unprocessedSheetParts.length > 0) {
         nextUpIcon = '\ud83d\udccc'
         nextUpText = `Process ${unprocessedSheetParts.length} sheet part${unprocessedSheetParts.length !== 1 ? 's' : ''}`
@@ -1648,7 +1666,11 @@ export default function BatchesPage() {
                             </tr>
                             {/* Part rows */}
                             {items.map(({ part, totalQty }) => {
-                              const rowAllDone = activeStages.every((s) => !part[s.partKey as keyof Part] || completions.has(`${part.id}:${s.stageKey}`))
+                              // For SA parts, weld is tracked at the SA level — skip per-part weld
+                              const rowAllDone = activeStages.every((s) => {
+                                if (s.stageKey === 'weld') return true // SA weld row handles this
+                                return !part[s.partKey as keyof Part] || completions.has(`${part.id}:${s.stageKey}`)
+                              })
                               return (
                                 <tr key={`part-${part.id}`} style={{ borderBottom: '1px solid var(--border)', background: rowAllDone ? 'rgba(34,197,94,0.04)' : 'transparent' }}>
                                   <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
@@ -1660,6 +1682,8 @@ export default function BatchesPage() {
                                   </td>
                                   <td style={{ textAlign: 'center', fontWeight: 700, fontSize: '0.88rem', verticalAlign: 'middle', color: 'var(--muted)' }}>×{totalQty}</td>
                                   {activeStages.map(({ stageKey, partKey }) => {
+                                    // Weld for SA parts is handled by the SA Weld row — show blank cell
+                                    if (stageKey === 'weld') return <td key={stageKey} style={{ borderLeft: '1px solid var(--border)', background: 'rgba(0,0,0,0.03)' }} />
                                     if (!part[partKey as keyof Part]) return <td key={stageKey} style={{ borderLeft: '1px solid var(--border)', background: 'rgba(0,0,0,0.03)' }} />
                                     const done = completions.has(`${part.id}:${stageKey}`)
                                     const stageIdx = STAGES.findIndex((s) => s.stageKey === stageKey)
