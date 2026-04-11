@@ -613,6 +613,38 @@ export default function BatchesPage() {
     }>
   }
 
+  // ── Tube nesting: first-fit-decreasing bin-packing ───────────────────────────
+  type NestSegment = { cut: CutListCut; start: number; len: number }
+  type NestBar    = { segments: NestSegment[]; used: number }
+
+  function nestTubeCuts(cuts: CutListCut[], stockLen: number, kerf = 0.125): NestBar[] {
+    const pieces: { cut: CutListCut; len: number }[] = []
+    for (const cut of cuts) {
+      if (!cut.cutLengthIn) continue
+      for (let i = 0; i < cut.qty; i++) pieces.push({ cut, len: cut.cutLengthIn })
+    }
+    pieces.sort((a, b) => b.len - a.len)
+
+    const bars: NestBar[] = []
+    for (const piece of pieces) {
+      let placed = false
+      for (const bar of bars) {
+        if (piece.len <= stockLen - bar.used + 0.001) {
+          bar.segments.push({ cut: piece.cut, start: bar.used, len: piece.len })
+          bar.used += piece.len + kerf
+          placed = true
+          break
+        }
+      }
+      if (!placed) {
+        bars.push({ segments: [{ cut: piece.cut, start: 0, len: piece.len }], used: piece.len + kerf })
+      }
+    }
+    return bars
+  }
+
+  const NEST_COLORS = ['#3b82f6','#8b5cf6','#ec4899','#f97316','#14b8a6','#a3e635','#f59e0b','#06b6d4','#e11d48','#84cc16']
+
   function buildCutList(
     wItems: Map<string, { part: Part; totalQty: number; subAssemblyId: string | null }>,
     comps: CompletionSet,
@@ -1378,6 +1410,84 @@ export default function BatchesPage() {
                                   </span>
                                 </div>
                               )}
+
+                              {/* ── Tube nesting diagram ─────────────────────── */}
+                              {grp.stockLengthIn && grp.stockLengthIn > 0 && (() => {
+                                const bars = nestTubeCuts(grp.cuts, grp.stockLengthIn)
+                                if (bars.length === 0) return null
+                                const partIds = [...new Set(grp.cuts.map((c) => c.partId))]
+                                const colorMap: Record<string, string> = {}
+                                partIds.forEach((id, i) => { colorMap[id] = NEST_COLORS[i % NEST_COLORS.length] })
+                                return (
+                                  <div style={{ borderTop: '1px solid var(--border)', padding: '12px 16px 14px' }}>
+                                    <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--muted)', marginBottom: 10 }}>
+                                      Stock Layout &mdash; {bars.length} bar{bars.length !== 1 ? 's' : ''}
+                                    </div>
+
+                                    {bars.map((bar, barIdx) => {
+                                      const scrapLen = Math.max(0, grp.stockLengthIn! - (bar.used - 0.125))
+                                      const scrapPct = (scrapLen / grp.stockLengthIn!) * 100
+                                      return (
+                                        <div key={barIdx} style={{ marginBottom: 8 }}>
+                                          <div style={{ fontSize: '0.66rem', color: 'var(--muted)', marginBottom: 3, fontFamily: 'monospace' }}>
+                                            Bar {barIdx + 1} / {grp.stockLengthIn}"
+                                          </div>
+                                          <div style={{ display: 'flex', height: 34, borderRadius: 5, overflow: 'hidden', border: '1px solid var(--border)' }}>
+                                            {bar.segments.map((seg, si) => {
+                                              const pct = (seg.len / grp.stockLengthIn!) * 100
+                                              const color = colorMap[seg.cut.partId]
+                                              return (
+                                                <div
+                                                  key={si}
+                                                  title={`${seg.cut.partNumber} — ${seg.len}"`}
+                                                  style={{
+                                                    width: `${pct}%`,
+                                                    minWidth: 2,
+                                                    background: color,
+                                                    borderRight: '2px solid rgba(0,0,0,0.25)',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    overflow: 'hidden',
+                                                    flexShrink: 0,
+                                                  }}
+                                                >
+                                                  {pct > 7 && (
+                                                    <span style={{ fontSize: '0.6rem', fontWeight: 700, color: '#fff', textShadow: '0 1px 2px rgba(0,0,0,0.5)', whiteSpace: 'nowrap', overflow: 'hidden', padding: '0 3px', maxWidth: '100%' }}>
+                                                      {pct > 16 ? `${seg.cut.partNumber} · ${seg.len}"` : `${seg.len}"`}
+                                                    </span>
+                                                  )}
+                                                </div>
+                                              )
+                                            })}
+                                            {scrapPct > 0.3 && (
+                                              <div style={{ flex: 1, background: 'rgba(255,255,255,0.04)', display: 'flex', alignItems: 'center', justifyContent: 'center', borderLeft: scrapPct > 1 ? '1px dashed rgba(255,255,255,0.12)' : 'none' }}>
+                                                {scrapPct > 6 && (
+                                                  <span style={{ fontSize: '0.6rem', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+                                                    {scrapLen.toFixed(2)}" scrap
+                                                  </span>
+                                                )}
+                                              </div>
+                                            )}
+                                          </div>
+                                        </div>
+                                      )
+                                    })}
+
+                                    {/* Legend */}
+                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px 16px', marginTop: 12 }}>
+                                      {grp.cuts.map((cut) => (
+                                        <div key={cut.partId} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                                          <div style={{ width: 10, height: 10, borderRadius: 2, background: colorMap[cut.partId], flexShrink: 0 }} />
+                                          <span style={{ fontSize: '0.7rem', fontFamily: 'monospace', color: 'var(--text-2)' }}>
+                                            {cut.partNumber}{cut.cutLengthIn != null ? ` ${cut.cutLengthIn}"` : ''} &times;{cut.qty}
+                                          </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )
+                              })()}
                             </div>
 
                             {/* Bends sub-section */}
