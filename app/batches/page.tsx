@@ -254,17 +254,27 @@ export default function BatchesPage() {
     let total = 0
     for (const { partId, qty: partQty } of entries) {
       const part = parts.find((p) => p.id === partId)
-      if (!part?.weight_lbs) continue
+      if (!part) continue
       const mat = materials.find((m) =>
         m.material_type === part.part_type &&
         (part.part_type === 'tube'
           ? m.tube_od === part.tube_od && m.tube_wall === part.tube_wall
           : m.thickness === part.material)
       )
-      if (!mat?.unit_weight_lbs) continue
+      if (!mat) continue
       const log = priceLogs.find((pl) => pl.material_id === mat.id)
       if (!log) continue
-      total += part.weight_lbs * (log.price / mat.unit_weight_lbs) * partQty
+
+      if (part.part_type === 'tube') {
+        // Length-based: fraction of a full bar × price per bar
+        if (!part.cut_length || !mat.stock_length_in) continue
+        total += (part.cut_length / mat.stock_length_in) * log.price * partQty
+      } else {
+        // Sheet: weight-based with scrap rate
+        if (!part.weight_lbs || !mat.unit_weight_lbs) continue
+        const scrap = mat.scrap_rate ?? 0
+        total += part.weight_lbs * (log.price / mat.unit_weight_lbs) * (1 + scrap) * partQty
+      }
     }
     return total * batchQty
   }
@@ -512,22 +522,23 @@ export default function BatchesPage() {
                   {label}
                 </div>
                 <table className="table">
-                  <thead><tr><th>Part #</th><th>Description</th><th style={{ textAlign: 'center' }}>Qty</th><th style={{ textAlign: 'center' }}>☐</th></tr></thead>
+                  <thead><tr><th style={{ width: 170 }}>Part</th><th style={{ textAlign: 'center', width: 50 }}>Qty</th><th style={{ textAlign: 'center', width: 36 }}>☐</th></tr></thead>
                   <tbody>
                     {stageParts.map(({ part, totalQty }) => (
                       <tr key={part.id}>
-                        <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>{part.part_number}</td>
-                        <td>{part.description}</td>
-                        <td style={{ textAlign: 'center', fontWeight: 700 }}>{totalQty}</td>
-                        <td style={{ textAlign: 'center', fontSize: '1.1rem' }}>☐</td>
+                        <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
+                          <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small" isTube={part.part_type === 'tube'} tubeFallback={false} />
+                          <div style={{ fontSize: '0.7rem', fontFamily: 'monospace', fontWeight: 700, color: '#555', marginTop: 4 }}>{part.part_number}</div>
+                        </td>
+                        <td style={{ textAlign: 'center', fontWeight: 700, verticalAlign: 'middle' }}>{totalQty}</td>
+                        <td style={{ textAlign: 'center', fontSize: '1.1rem', verticalAlign: 'middle' }}>☐</td>
                       </tr>
                     ))}
                     {saWeldRows.map(({ sa, totalQty }) => (
                       <tr key={`sa-${sa.id}`} style={{ background: 'rgba(167,139,250,0.06)' }}>
-                        <td style={{ fontFamily: 'monospace', fontWeight: 700, color: '#a78bfa' }}>{sa.id}</td>
-                        <td>Weld {sa.name}</td>
-                        <td style={{ textAlign: 'center', fontWeight: 700 }}>{totalQty}</td>
-                        <td style={{ textAlign: 'center', fontSize: '1.1rem' }}>☐</td>
+                        <td style={{ padding: '8px 10px', fontWeight: 700, color: '#a78bfa', verticalAlign: 'middle' }}>Weld {sa.name}</td>
+                        <td style={{ textAlign: 'center', fontWeight: 700, verticalAlign: 'middle' }}>{totalQty}</td>
+                        <td style={{ textAlign: 'center', fontSize: '1.1rem', verticalAlign: 'middle' }}>☐</td>
                       </tr>
                     ))}
                   </tbody>
@@ -584,6 +595,15 @@ export default function BatchesPage() {
     const doneOps     = allWorkOps.filter((op) => completions.has(`${op.id}:${op.stageKey}`)).length
     const pct         = totalOps > 0 ? Math.round((doneOps / totalOps) * 100) : 0
     const allDone     = totalOps > 0 && doneOps === totalOps
+
+    // Which stages are actually required by any part/SA in this batch?
+    const activeStages = STAGES.filter(({ stageKey, partKey }) => {
+      if (stageKey === 'weld') {
+        return Array.from(workItems.values()).some((w) => w.part.requires_weld) ||
+               Array.from(subAssemblyGroups.values()).some(({ subAssembly }) => subAssembly.requires_weld)
+      }
+      return Array.from(workItems.values()).some((w) => !!w.part[partKey as keyof Part])
+    })
 
     return (
       <div className="section-stack">
@@ -667,227 +687,189 @@ export default function BatchesPage() {
                     <div style={{ height: '100%', width: `${pct}%`, background: allDone ? 'var(--success)' : 'var(--accent)', borderRadius: 6, transition: 'width 0.25s' }} />
                   </div>
 
-                  {/* Stage sections */}
-                  {STAGES.map(({ stageKey, partKey, label }) => {
-                    const stageWorkItems = Array.from(workItems.values()).filter((w) => w.part[partKey as keyof Part])
-                    const saWeldItems = stageKey === 'weld'
-                      ? Array.from(subAssemblyGroups.values()).filter(({ subAssembly }) => subAssembly.requires_weld)
-                      : []
-
-                    if (stageWorkItems.length === 0 && saWeldItems.length === 0) return null
-
-                    const stageDoneCount  = stageWorkItems.filter((w) => completions.has(`${w.part.id}:${stageKey}`)).length
-                    const saWeldDoneCount = saWeldItems.filter(({ subAssembly }) => completions.has(`${subAssembly.id}:weld`)).length
-                    const stageTotal = stageWorkItems.length + saWeldItems.length
-                    const stageDone  = stageDoneCount + saWeldDoneCount
-                    const stageAllDone = stageDone === stageTotal
-                    const dotColor = stageDone === 0 ? 'var(--danger)' : stageAllDone ? 'var(--success)' : 'var(--warning)'
-
-                    const isWeldStage = stageKey === 'weld'
-
-                    return (
-                      <div key={stageKey} style={{ marginBottom: 28 }}>
-                        {/* Stage header */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, padding: '6px 12px', background: 'var(--panel-2)', borderRadius: 6 }}>
-                          <div style={{ width: 10, height: 10, borderRadius: '50%', background: dotColor, flexShrink: 0 }} />
-                          <span style={{ fontWeight: 800, fontSize: '0.95rem' }}>{label}</span>
-                          <span style={{ color: stageAllDone ? 'var(--success)' : 'var(--muted)', fontSize: '0.8rem', marginLeft: 4 }}>
-                            {stageDone}/{stageTotal} {stageAllDone ? '✓' : ''}
-                          </span>
-                          <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-                            {!stageAllDone && (
-                              <button
-                                type="button"
-                                className="btn btn-secondary"
-                                style={{ fontSize: '0.7rem', padding: '2px 8px', height: 24 }}
-                                onClick={() => {
-                                  const allItems = [
-                                    ...stageWorkItems.map((w) => ({ id: w.part.id, stageKey })),
-                                    ...(stageKey === 'weld' ? saWeldItems.map(({ subAssembly }) => ({ id: subAssembly.id, stageKey: 'weld' })) : []),
-                                  ]
-                                  void handleBulkToggle(activeBatch.id, allItems, true, workItems, subAssemblyGroups)
-                                }}
-                              >
-                                ✓ Check All
-                              </button>
-                            )}
-                            {stageDone > 0 && (
-                              <button
-                                type="button"
-                                className="btn btn-secondary"
-                                style={{ fontSize: '0.7rem', padding: '2px 8px', height: 24 }}
-                                onClick={() => {
-                                  const allItems = [
-                                    ...stageWorkItems.map((w) => ({ id: w.part.id, stageKey })),
-                                    ...(stageKey === 'weld' ? saWeldItems.map(({ subAssembly }) => ({ id: subAssembly.id, stageKey: 'weld' })) : []),
-                                  ]
-                                  void handleBulkToggle(activeBatch.id, allItems, false, workItems, subAssemblyGroups)
-                                }}
-                              >
-                                ✕ Uncheck All
-                              </button>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Sub-assembly groups (component parts) */}
-                        {Array.from(subAssemblyGroups.entries()).map(([saId, { subAssembly, items }]) => {
-                          const saStageItems = items.filter((i) => i.part[partKey as keyof Part])
-                          if (saStageItems.length === 0) return null
-
-                          const blockedParts = isWeldStage ? items.filter((i) => {
-                            return STAGES.some((s) => {
-                              if (s.stageKey === 'weld') return false
-                              if (!i.part[s.partKey as keyof Part]) return false
-                              return !completions.has(`${i.part.id}:${s.stageKey}`)
-                            })
-                          }) : []
-                          const isBlocked = isWeldStage && blockedParts.length > 0
-
-                          return (
-                            <div key={saId} style={{ marginBottom: 12, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
-                              <div style={{ background: 'rgba(167,139,250,0.08)', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 8, borderBottom: '1px solid var(--border)' }}>
-                                {subAssembly.image_file && (
-                                  <img
-                                    src={supabase.storage.from(SUB_IMAGE_BUCKET).getPublicUrl(subAssembly.image_file).data.publicUrl}
-                                    alt={subAssembly.name}
-                                    style={{ width: 32, height: 32, objectFit: 'cover', borderRadius: 4, border: '1px solid rgba(167,139,250,0.3)', flexShrink: 0 }}
-                                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
-                                  />
-                                )}
-                                <span style={{ fontSize: '0.7rem', color: '#a78bfa', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Sub-Assembly</span>
-                                <span style={{ fontWeight: 700, fontSize: '0.88rem' }}>{subAssembly.name}</span>
-                                {isBlocked && (
-                                  <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--warning)', fontWeight: 600 }}>
-                                    ⚠ {blockedParts.length} component part{blockedParts.length !== 1 ? 's' : ''} still need earlier stages
-                                  </span>
-                                )}
-                              </div>
-                              <table className="table" style={{ margin: 0 }}>
-                                <tbody>
-                                  {saStageItems.map(({ part, totalQty }) => {
+                  {/* Part-first manufacturing checklist table */}
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+                      <colgroup>
+                        <col style={{ width: 170 }} />
+                        <col style={{ width: 44 }} />
+                        {activeStages.map((s) => <col key={s.stageKey} style={{ width: 84 }} />)}
+                      </colgroup>
+                      <thead>
+                        <tr>
+                          <th style={{ textAlign: 'left', padding: '8px 10px', background: 'var(--panel-2)', borderBottom: '2px solid var(--border)', fontSize: '0.72rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Part</th>
+                          <th style={{ textAlign: 'center', padding: '8px 4px', background: 'var(--panel-2)', borderBottom: '2px solid var(--border)', fontSize: '0.72rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Qty</th>
+                          {activeStages.map(({ stageKey, label }) => {
+                            const allStageItems: Array<{ id: string; stageKey: string }> = []
+                            const stg = STAGES.find((s) => s.stageKey === stageKey)!
+                            for (const w of workItems.values()) {
+                              if (w.part[stg.partKey as keyof Part]) allStageItems.push({ id: w.part.id, stageKey })
+                            }
+                            if (stageKey === 'weld') {
+                              for (const [saId, { subAssembly }] of subAssemblyGroups.entries()) {
+                                if (subAssembly.requires_weld) allStageItems.push({ id: saId, stageKey: 'weld' })
+                              }
+                            }
+                            const allDoneForStage = allStageItems.length > 0 && allStageItems.every((i) => completions.has(`${i.id}:${i.stageKey}`))
+                            const anyDoneForStage = allStageItems.some((i) => completions.has(`${i.id}:${i.stageKey}`))
+                            return (
+                              <th key={stageKey} style={{ textAlign: 'center', padding: '6px 4px', background: 'var(--panel-2)', borderBottom: '2px solid var(--border)', borderLeft: '1px solid var(--border)' }}>
+                                <div style={{ fontSize: '0.72rem', color: allDoneForStage ? 'var(--success)' : 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4, whiteSpace: 'nowrap' }}>
+                                  {allDoneForStage ? '✓ ' : ''}{label}
+                                </div>
+                                <div style={{ display: 'flex', gap: 3, justifyContent: 'center' }}>
+                                  {!allDoneForStage && (
+                                    <button type="button" className="btn btn-secondary" style={{ fontSize: '0.6rem', padding: '1px 5px', height: 18, lineHeight: 1 }}
+                                      onClick={() => void handleBulkToggle(activeBatch.id, allStageItems, true, workItems, subAssemblyGroups)}>
+                                      ✓ All
+                                    </button>
+                                  )}
+                                  {anyDoneForStage && (
+                                    <button type="button" className="btn btn-secondary" style={{ fontSize: '0.6rem', padding: '1px 5px', height: 18, lineHeight: 1 }}
+                                      onClick={() => void handleBulkToggle(activeBatch.id, allStageItems, false, workItems, subAssemblyGroups)}>
+                                      ✕
+                                    </button>
+                                  )}
+                                </div>
+                              </th>
+                            )
+                          })}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {/* ── Sub-assembly groups ── */}
+                        {Array.from(subAssemblyGroups.entries()).map(([saId, { subAssembly, items }]) => (
+                          <>
+                            {/* SA header row */}
+                            <tr key={`sa-hdr-${saId}`}>
+                              <td colSpan={2 + activeStages.length} style={{ padding: '7px 12px', background: 'rgba(167,139,250,0.09)', borderTop: '2px solid rgba(167,139,250,0.22)', borderBottom: '1px solid var(--border)' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                  {subAssembly.image_file && (
+                                    <img
+                                      src={supabase.storage.from(SUB_IMAGE_BUCKET).getPublicUrl(subAssembly.image_file).data.publicUrl}
+                                      alt={subAssembly.name}
+                                      style={{ width: 38, height: 38, objectFit: 'cover', borderRadius: 4, border: '1px solid rgba(167,139,250,0.3)', flexShrink: 0 }}
+                                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                                    />
+                                  )}
+                                  <div>
+                                    <div style={{ fontSize: '0.65rem', color: '#a78bfa', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Sub-Assembly</div>
+                                    <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>{subAssembly.name}</div>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                            {/* Part rows */}
+                            {items.map(({ part, totalQty }) => {
+                              const rowAllDone = activeStages.every((s) => !part[s.partKey as keyof Part] || completions.has(`${part.id}:${s.stageKey}`))
+                              return (
+                                <tr key={`part-${part.id}`} style={{ borderBottom: '1px solid var(--border)', background: rowAllDone ? 'rgba(34,197,94,0.04)' : 'transparent' }}>
+                                  <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
+                                    <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small" isTube={part.part_type === 'tube'} tubeFallback={false} />
+                                    <div style={{ fontSize: '0.68rem', fontFamily: 'monospace', fontWeight: 700, color: 'var(--muted)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{part.part_number}</div>
+                                  </td>
+                                  <td style={{ textAlign: 'center', fontWeight: 700, fontSize: '0.88rem', verticalAlign: 'middle', color: 'var(--muted)' }}>×{totalQty}</td>
+                                  {activeStages.map(({ stageKey, partKey }) => {
+                                    if (!part[partKey as keyof Part]) return <td key={stageKey} style={{ borderLeft: '1px solid var(--border)', background: 'rgba(0,0,0,0.03)' }} />
                                     const done = completions.has(`${part.id}:${stageKey}`)
+                                    const blocked = stageKey === 'weld' && STAGES.some((s) => {
+                                      if (s.stageKey === 'weld') return false
+                                      if (!part[s.partKey as keyof Part]) return false
+                                      return !completions.has(`${part.id}:${s.stageKey}`)
+                                    })
                                     return (
-                                      <tr key={part.id} style={{ background: done ? 'rgba(34,197,94,0.06)' : 'transparent' }}>
-                                        <td style={{ width: 36 }}>
-                                          <input type="checkbox" checked={done}
-                                            onChange={(e) => handleToggle(activeBatch.id, part.id, stageKey, e.target.checked, workItems, subAssemblyGroups)}
-                                            style={{ width: 18, height: 18, cursor: 'pointer', accentColor: 'var(--accent)' }} />
-                                        </td>
-                                        <td style={{ width: 36, padding: '4px 6px' }}>
-                                          <DxfPartPreview
-                                            dxfFile={part.dxf_file}
-                                            partNumber={part.part_number}
-                                            size="tiny"
-                                            isTube={part.part_type === 'tube'}
-                                            tubeFallback={false}
-                                          />
-                                        </td>
-                                        <td style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: '0.83rem', color: done ? 'var(--muted)' : 'var(--text)', textDecoration: done ? 'line-through' : 'none' }}>{part.part_number}</td>
-                                        <td style={{ color: done ? 'var(--muted)' : 'var(--text-2)', textDecoration: done ? 'line-through' : 'none' }}>{part.description}</td>
-                                        <td style={{ textAlign: 'center', fontWeight: 700, color: 'var(--muted)', fontSize: '0.85rem' }}>×{totalQty}</td>
-                                      </tr>
+                                      <td key={stageKey} style={{ textAlign: 'center', verticalAlign: 'middle', borderLeft: '1px solid var(--border)', background: done ? 'rgba(34,197,94,0.1)' : 'transparent', padding: '4px' }}>
+                                        <input type="checkbox" checked={done} disabled={blocked}
+                                          onChange={(e) => handleToggle(activeBatch.id, part.id, stageKey, e.target.checked, workItems, subAssemblyGroups)}
+                                          title={blocked ? '⚠ Complete prior stages first' : undefined}
+                                          style={{ width: 18, height: 18, cursor: blocked ? 'not-allowed' : 'pointer', accentColor: 'var(--accent)', opacity: blocked ? 0.35 : 1 }} />
+                                        {blocked && <div style={{ fontSize: '0.6rem', color: 'var(--warning)', marginTop: 2 }}>⚠</div>}
+                                      </td>
                                     )
                                   })}
-                                </tbody>
-                              </table>
-                            </div>
-                          )
-                        })}
-
-                        {/* Direct parts */}
-                        {directItems.filter((i) => i.part[partKey as keyof Part]).length > 0 && (
-                          <div style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', marginBottom: 12 }}>
-                            <div style={{ background: 'var(--panel-2)', padding: '6px 12px', borderBottom: '1px solid var(--border)' }}>
-                              <span style={{ fontSize: '0.7rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Direct Parts</span>
-                            </div>
-                            <table className="table" style={{ margin: 0 }}>
-                              <tbody>
-                                {directItems.filter((i) => i.part[partKey as keyof Part]).map(({ part, totalQty }) => {
-                                  const done = completions.has(`${part.id}:${stageKey}`)
-                                  return (
-                                    <tr key={part.id} style={{ background: done ? 'rgba(34,197,94,0.06)' : 'transparent' }}>
-                                      <td style={{ width: 36 }}>
-                                        <input type="checkbox" checked={done}
-                                          onChange={(e) => handleToggle(activeBatch.id, part.id, stageKey, e.target.checked, workItems, subAssemblyGroups)}
-                                          style={{ width: 18, height: 18, cursor: 'pointer', accentColor: 'var(--accent)' }} />
+                                </tr>
+                              )
+                            })}
+                            {/* SA weld row */}
+                            {subAssembly.requires_weld && (() => {
+                              const done = completions.has(`${saId}:weld`)
+                              const blocked = items.some((i) => STAGES.some((s) => {
+                                if (s.stageKey === 'weld') return false
+                                if (!i.part[s.partKey as keyof Part]) return false
+                                return !completions.has(`${i.part.id}:${s.stageKey}`)
+                              }))
+                              return (
+                                <tr key={`sa-weld-${saId}`} style={{ borderBottom: '2px solid rgba(167,139,250,0.22)', background: done ? 'rgba(34,197,94,0.06)' : 'rgba(167,139,250,0.05)' }}>
+                                  <td colSpan={2} style={{ padding: '8px 12px', verticalAlign: 'middle' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                      <span style={{ fontSize: '0.65rem', color: '#a78bfa', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', whiteSpace: 'nowrap' }}>SA Weld</span>
+                                      <span style={{ fontWeight: 700, fontSize: '0.88rem', color: done ? 'var(--muted)' : '#a78bfa', textDecoration: done ? 'line-through' : 'none' }}>Weld {subAssembly.name}</span>
+                                      {blocked && <span style={{ fontSize: '0.7rem', color: 'var(--warning)' }}>⚠ parts incomplete</span>}
+                                    </div>
+                                  </td>
+                                  {activeStages.map(({ stageKey }) => {
+                                    if (stageKey !== 'weld') return <td key={stageKey} style={{ borderLeft: '1px solid var(--border)', background: 'rgba(0,0,0,0.03)' }} />
+                                    return (
+                                      <td key={stageKey} style={{ textAlign: 'center', verticalAlign: 'middle', borderLeft: '1px solid var(--border)', background: done ? 'rgba(34,197,94,0.1)' : 'transparent', padding: '4px' }}>
+                                        <input type="checkbox" checked={done} disabled={blocked}
+                                          onChange={(e) => handleToggle(activeBatch.id, saId, 'weld', e.target.checked, workItems, subAssemblyGroups)}
+                                          style={{ width: 18, height: 18, cursor: blocked ? 'not-allowed' : 'pointer', accentColor: '#a78bfa', opacity: blocked ? 0.35 : 1 }} />
                                       </td>
-                                      <td style={{ width: 36, padding: '4px 6px' }}>
-                                        <DxfPartPreview
-                                          dxfFile={part.dxf_file}
-                                          partNumber={part.part_number}
-                                          size="tiny"
-                                          isTube={part.part_type === 'tube'}
-                                          tubeFallback={false}
-                                        />
-                                      </td>
-                                      <td style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: '0.83rem', color: done ? 'var(--muted)' : 'var(--text)', textDecoration: done ? 'line-through' : 'none' }}>{part.part_number}</td>
-                                      <td style={{ color: done ? 'var(--muted)' : 'var(--text-2)', textDecoration: done ? 'line-through' : 'none' }}>{part.description}</td>
-                                      <td style={{ textAlign: 'center', fontWeight: 700, color: 'var(--muted)', fontSize: '0.85rem' }}>×{totalQty}</td>
-                                    </tr>
-                                  )
-                                })}
-                              </tbody>
-                            </table>
-                          </div>
-                        )}
+                                    )
+                                  })}
+                                </tr>
+                              )
+                            })()}
+                          </>
+                        ))}
 
-                        {/* Sub-assembly weld section (weld stage only) */}
-                        {isWeldStage && saWeldItems.length > 0 && (
-                          <div style={{ border: '1px solid rgba(167,139,250,0.35)', borderRadius: 6, overflow: 'hidden', marginBottom: 12 }}>
-                            <div style={{ background: 'rgba(167,139,250,0.1)', padding: '6px 12px', borderBottom: '1px solid rgba(167,139,250,0.25)', display: 'flex', alignItems: 'center', gap: 8 }}>
-                              <span style={{ fontSize: '0.7rem', color: '#a78bfa', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Sub-Assembly Weld</span>
-                            </div>
-                            <table className="table" style={{ margin: 0 }}>
-                              <tbody>
-                                {saWeldItems.map(({ subAssembly, items }) => {
-                                  const done = completions.has(`${subAssembly.id}:weld`)
-
-                                  // Check if all component parts' prior stages are complete
-                                  const priorStagesIncomplete = items.filter((i) => {
-                                    return STAGES.some((s) => {
+                        {/* ── Direct parts ── */}
+                        {directItems.length > 0 && (
+                          <>
+                            <tr>
+                              <td colSpan={2 + activeStages.length} style={{ padding: '6px 12px', background: 'var(--panel-2)', borderTop: '2px solid var(--border)', borderBottom: '1px solid var(--border)' }}>
+                                <span style={{ fontSize: '0.65rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Direct Parts</span>
+                              </td>
+                            </tr>
+                            {directItems.map(({ part, totalQty }) => {
+                              const rowAllDone = activeStages.every((s) => !part[s.partKey as keyof Part] || completions.has(`${part.id}:${s.stageKey}`))
+                              return (
+                                <tr key={`direct-${part.id}`} style={{ borderBottom: '1px solid var(--border)', background: rowAllDone ? 'rgba(34,197,94,0.04)' : 'transparent' }}>
+                                  <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
+                                    <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small" isTube={part.part_type === 'tube'} tubeFallback={false} />
+                                    <div style={{ fontSize: '0.68rem', fontFamily: 'monospace', fontWeight: 700, color: 'var(--muted)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{part.part_number}</div>
+                                  </td>
+                                  <td style={{ textAlign: 'center', fontWeight: 700, fontSize: '0.88rem', verticalAlign: 'middle', color: 'var(--muted)' }}>×{totalQty}</td>
+                                  {activeStages.map(({ stageKey, partKey }) => {
+                                    if (!part[partKey as keyof Part]) return <td key={stageKey} style={{ borderLeft: '1px solid var(--border)', background: 'rgba(0,0,0,0.03)' }} />
+                                    const done = completions.has(`${part.id}:${stageKey}`)
+                                    const blocked = stageKey === 'weld' && STAGES.some((s) => {
                                       if (s.stageKey === 'weld') return false
-                                      if (!i.part[s.partKey as keyof Part]) return false
-                                      return !completions.has(`${i.part.id}:${s.stageKey}`)
+                                      if (!part[s.partKey as keyof Part]) return false
+                                      return !completions.has(`${part.id}:${s.stageKey}`)
                                     })
-                                  })
-                                  const isBlocked = priorStagesIncomplete.length > 0
-
-                                  return (
-                                    <tr key={subAssembly.id} style={{ background: done ? 'rgba(34,197,94,0.06)' : 'transparent' }}>
-                                      <td style={{ width: 36 }}>
-                                        <input
-                                          type="checkbox"
-                                          checked={done}
-                                          disabled={isBlocked}
-                                          onChange={(e) => handleToggle(activeBatch.id, subAssembly.id, 'weld', e.target.checked, workItems, subAssemblyGroups)}
-                                          style={{ width: 18, height: 18, cursor: isBlocked ? 'not-allowed' : 'pointer', accentColor: 'var(--accent)' }}
-                                        />
+                                    return (
+                                      <td key={stageKey} style={{ textAlign: 'center', verticalAlign: 'middle', borderLeft: '1px solid var(--border)', background: done ? 'rgba(34,197,94,0.1)' : 'transparent', padding: '4px' }}>
+                                        <input type="checkbox" checked={done} disabled={blocked}
+                                          onChange={(e) => handleToggle(activeBatch.id, part.id, stageKey, e.target.checked, workItems, subAssemblyGroups)}
+                                          title={blocked ? '⚠ Complete prior stages first' : undefined}
+                                          style={{ width: 18, height: 18, cursor: blocked ? 'not-allowed' : 'pointer', accentColor: 'var(--accent)', opacity: blocked ? 0.35 : 1 }} />
+                                        {blocked && <div style={{ fontSize: '0.6rem', color: 'var(--warning)', marginTop: 2 }}>⚠</div>}
                                       </td>
-                                      <td style={{ fontWeight: 700, fontSize: '0.88rem', color: done ? 'var(--muted)' : 'var(--text)', textDecoration: done ? 'line-through' : 'none' }}>
-                                        Weld {subAssembly.name}
-                                      </td>
-                                      <td>
-                                        {isBlocked && (
-                                          <span style={{ fontSize: '0.75rem', color: 'var(--warning)', fontWeight: 600 }}>
-                                            ⚠ {priorStagesIncomplete.length} part{priorStagesIncomplete.length !== 1 ? 's' : ''} not yet complete
-                                          </span>
-                                        )}
-                                      </td>
-                                    </tr>
-                                  )
-                                })}
-                              </tbody>
-                            </table>
-                          </div>
+                                    )
+                                  })}
+                                </tr>
+                              )
+                            })}
+                          </>
                         )}
-                      </div>
-                    )
-                  })}
+                      </tbody>
+                    </table>
+                  </div>
 
                   {/* All done banner */}
                   {allDone && (
-                    <div style={{ marginTop: 8, padding: '14px 18px', background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.3)', borderRadius: 8 }}>
+                    <div style={{ marginTop: 16, padding: '14px 18px', background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.3)', borderRadius: 8 }}>
                       <div style={{ color: 'var(--success)', fontWeight: 700, marginBottom: 10 }}>✓ All manufacturing operations complete!</div>
                       <button className="btn btn-primary" style={{ background: '#a78bfa', borderColor: '#a78bfa' }} onClick={() => sendToPowder(activeBatch)}>
                         🎨 Send to Powder Coater →
