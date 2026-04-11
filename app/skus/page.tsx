@@ -1,10 +1,18 @@
 'use client'
 
+/*
+ * SQL migration — run before using sub-assembly weld tracking:
+ * ALTER TABLE sub_assemblies ADD COLUMN IF NOT EXISTS requires_weld boolean DEFAULT false;
+ */
+
 /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
 
 import { useEffect, useMemo, useState } from 'react'
 import { createBrowserClient } from '@/lib/supabase'
 import DxfPartPreview from '@/components/DxfPartPreview'
+import PartPickerModal from '@/components/PartPickerModal'
+
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 type SKU = {
   id: string
@@ -12,12 +20,19 @@ type SKU = {
   category: string | null
   notes: string | null
   active: boolean
+  bolt_kit_cost: number | null
+  packaging_cost: number | null
+  labor_cost_per_unit: number | null
 }
+
+const SUB_IMAGE_BUCKET = 'subassembly-images'
 
 type SubAssembly = {
   id: string
   name: string
   notes?: string | null
+  image_file?: string | null
+  requires_weld: boolean | null
 }
 
 type Part = {
@@ -32,6 +47,13 @@ type Part = {
   cut_length: number | null
   dxf_file: string | null
   notes?: string | null
+  weight_lbs: number | null
+  requires_laser: boolean
+  requires_sheet_bend: boolean
+  requires_tube_bend: boolean
+  requires_saw: boolean
+  requires_drill: boolean
+  requires_weld: boolean
 }
 
 type MaterialRow = {
@@ -42,6 +64,10 @@ type MaterialRow = {
   thickness: string | null
   tube_od: string | null
   tube_wall: string | null
+  unit_weight_lbs: number | null
+  stock_length_in: number | null
+  scrap_rate: number | null
+  qty_on_hand: number | null
 }
 
 type SkuSubAssemblyRow = {
@@ -49,6 +75,8 @@ type SkuSubAssemblyRow = {
   qty: number
   sub_assembly_id: string
   sub_assembly_name: string
+  image_file: string | null
+  requires_weld: boolean | null
 }
 
 type SkuPartRow = {
@@ -57,6 +85,9 @@ type SkuPartRow = {
   part_id: string
   part_number: string
   part_description: string
+  part_type: 'tube' | 'sheet' | null
+  dxf_file: string | null
+  weight_lbs: number | null
 }
 
 type SubAssemblyPartRow = {
@@ -65,6 +96,9 @@ type SubAssemblyPartRow = {
   part_id: string
   part_number: string
   part_description: string
+  part_type: 'tube' | 'sheet' | null
+  dxf_file: string | null
+  weight_lbs: number | null
 }
 
 type ExplodedPreviewRow = {
@@ -72,20 +106,29 @@ type ExplodedPreviewRow = {
   part_number: string
   description: string
   qty: number
+  part_type: 'tube' | 'sheet' | null
+  dxf_file: string | null
+  weight_lbs: number | null
 }
 
 type JoinedSubassemblyRow = {
   id: string | number
   qty: number | string
   sub_assembly_id: string | number
-  sub_assembly?: { name?: string | null } | null
+  sub_assembly?: { name?: string | null; image_file?: string | null; requires_weld?: boolean | null } | null
 }
 
 type JoinedSkuPartRow = {
   id: string | number
   qty: number | string
   part_id: string | number
-  part?: { part_number?: string | null; description?: string | null } | null
+  part?: {
+    part_number?: string | null
+    description?: string | null
+    part_type?: string | null
+    dxf_file?: string | null
+    weight_lbs?: number | null
+  } | null
 }
 
 type SourceRelationRow = {
@@ -130,11 +173,24 @@ const CATEGORY_STYLES: Record<string, { bg: string; border: string; text: string
   },
 }
 
+// Note: 'weld' is intentionally excluded — welding is tracked at the sub-assembly
+// level (sub_assemblies.requires_weld), not on individual parts.
+const STAGE_FIELDS = [
+  { key: 'requires_laser',      label: 'Laser Cut' },
+  { key: 'requires_sheet_bend', label: 'Sheet Bend' },
+  { key: 'requires_tube_bend',  label: 'Tube Bend' },
+  { key: 'requires_saw',        label: 'Saw' },
+  { key: 'requires_drill',      label: 'Drill' },
+] as const
+
 const emptySkuForm = {
   id: '',
   description: '',
   category: 'Racks',
   notes: '',
+  bolt_kit_cost: '',
+  packaging_cost: '',
+  labor_cost_per_unit: '',
 }
 
 const emptyPartForm = {
@@ -145,14 +201,68 @@ const emptyPartForm = {
   material_id: '',
   cut_length: '',
   dxf_file: '',
+  weight_lbs: '',
   notes: '',
+  requires_laser: false,
+  requires_sheet_bend: false,
+  requires_tube_bend: false,
+  requires_saw: false,
+  requires_drill: false,
+  requires_weld: false,
 }
 
 const emptySubassemblyForm = {
   id: '',
   name: '',
   notes: '',
+  requires_weld: false,
 }
+
+// ── Modal wrapper component ───────────────────────────────────────────────────
+
+function Modal({ onClose, children }: { onClose: () => void; children: React.ReactNode }) {
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.6)',
+        backdropFilter: 'blur(3px)',
+        zIndex: 1000,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 16,
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{
+          background: 'var(--panel)',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--radius-lg)',
+          padding: 28,
+          width: '100%',
+          maxWidth: 560,
+          maxHeight: '90vh',
+          overflowY: 'auto',
+          position: 'relative',
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {children}
+      </div>
+    </div>
+  )
+}
+
+// ── Page component ────────────────────────────────────────────────────────────
 
 export default function SkusPage() {
   const supabase = useMemo(() => createBrowserClient(), [])
@@ -161,6 +271,7 @@ export default function SkusPage() {
   const [subassemblies, setSubassemblies] = useState<SubAssembly[]>([])
   const [parts, setParts] = useState<Part[]>([])
   const [materials, setMaterials] = useState<MaterialRow[]>([])
+  const [latestPriceByMaterialId, setLatestPriceByMaterialId] = useState<Record<string, number>>({})
   const [selectedSkuId, setSelectedSkuId] = useState('')
 
   const [selectedSkuSubassemblies, setSelectedSkuSubassemblies] = useState<SkuSubAssemblyRow[]>([])
@@ -172,33 +283,52 @@ export default function SkusPage() {
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
   const [search, setSearch] = useState('')
-  const [editingId, setEditingId] = useState<string | null>(null)
-  const [form, setForm] = useState(emptySkuForm)
-
-  const [subassemblyIdToAdd, setSubassemblyIdToAdd] = useState('')
-  const [subassemblyQtyToAdd, setSubassemblyQtyToAdd] = useState('1')
-  const [partIdToAdd, setPartIdToAdd] = useState('')
-  const [partQtyToAdd, setPartQtyToAdd] = useState('1')
-  const [relationMessage, setRelationMessage] = useState('')
-  const [addingRelation, setAddingRelation] = useState(false)
   const [duplicateBusyId, setDuplicateBusyId] = useState('')
-
-  const [showNewPartForm, setShowNewPartForm] = useState(false)
-  const [showNewSubassemblyForm, setShowNewSubassemblyForm] = useState(false)
-  const [newPartAutoAttachMode, setNewPartAutoAttachMode] = useState<'sku' | 'subassembly'>('sku')
-  const [newPartTargetSubassemblyId, setNewPartTargetSubassemblyId] = useState('')
-  const [newPartQty, setNewPartQty] = useState('1')
-  const [newSubassemblyQty, setNewSubassemblyQty] = useState('1')
-  const [newPartForm, setNewPartForm] = useState(emptyPartForm)
-  const [newSubassemblyForm, setNewSubassemblyForm] = useState(emptySubassemblyForm)
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set())
+  const [addingRelation, setAddingRelation] = useState(false)
+  const [relationMessage, setRelationMessage] = useState('')
   const [builderMessage, setBuilderMessage] = useState('')
   const [builderSaving, setBuilderSaving] = useState(false)
 
-  const [partLookup, setPartLookup] = useState('')
+  // Inline add controls (non-modal dropdowns/inputs for existing items)
+  const [subassemblyIdToAdd, setSubassemblyIdToAdd] = useState('')
+  const [subassemblyQtyToAdd, setSubassemblyQtyToAdd] = useState('1')
   const [subassemblyLookup, setSubassemblyLookup] = useState('')
+  const [partIdToAdd, setPartIdToAdd] = useState('')
+  const [partQtyToAdd, setPartQtyToAdd] = useState('1')
+  const [partLookup, setPartLookup] = useState('')
   const [subassemblyPartLookup, setSubassemblyPartLookup] = useState<Record<string, string>>({})
   const [subassemblyDraftPartId, setSubassemblyDraftPartId] = useState<Record<string, string>>({})
   const [subassemblyDraftQty, setSubassemblyDraftQty] = useState<Record<string, string>>({})
+
+  // 'sku' | sub_assembly_id — for PartPickerModal
+  const [partPickerOpenFor, setPartPickerOpenFor] = useState<'sku' | string | null>(null)
+
+  // ── Modal state ───────────────────────────────────────────────────────────────
+
+  // SKU modal
+  const [skuModalOpen, setSkuModalOpen] = useState(false)
+  const [skuModalIsEdit, setSkuModalIsEdit] = useState(false)
+  const [skuForm, setSkuForm] = useState(emptySkuForm)
+
+  // Part modal
+  const [partModalOpen, setPartModalOpen] = useState(false)
+  const [partModalIsEdit, setPartModalIsEdit] = useState(false)
+  const [partModalEditId, setPartModalEditId] = useState<string | null>(null)
+  const [partForm, setPartForm] = useState(emptyPartForm)
+  // For create mode: attach target
+  const [partAttachMode, setPartAttachMode] = useState<'sku' | 'subassembly'>('sku')
+  const [partAttachSubassemblyId, setPartAttachSubassemblyId] = useState('')
+  const [partAttachQty, setPartAttachQty] = useState('1')
+
+  // Sub-assembly modal
+  const [saModalOpen, setSaModalOpen] = useState(false)
+  const [saModalIsEdit, setSaModalIsEdit] = useState(false)
+  const [saModalEditId, setSaModalEditId] = useState<string | null>(null)
+  const [saForm, setSaForm] = useState(emptySubassemblyForm)
+  const [saAttachQty, setSaAttachQty] = useState('1')
+
+  // ── Data loading ──────────────────────────────────────────────────────────────
 
   async function loadSkus() {
     const { data, error } = await supabase
@@ -224,7 +354,7 @@ export default function SkusPage() {
   async function loadSubassemblies() {
     const { data, error } = await supabase
       .from('sub_assemblies')
-      .select('id, name, notes')
+      .select('id, name, notes, image_file, requires_weld')
       .order('id', { ascending: true })
 
     if (!error) {
@@ -235,7 +365,7 @@ export default function SkusPage() {
   async function loadParts() {
     const { data, error } = await supabase
       .from('parts')
-      .select('id, part_number, description, part_type, material, thickness, tube_od, tube_wall, cut_length, dxf_file, notes')
+      .select('id, part_number, description, part_type, material, thickness, tube_od, tube_wall, cut_length, dxf_file, notes, weight_lbs, requires_laser, requires_sheet_bend, requires_tube_bend, requires_saw, requires_drill, requires_weld')
       .order('part_number', { ascending: true })
 
     if (!error) {
@@ -246,11 +376,26 @@ export default function SkusPage() {
   async function loadMaterials() {
     const { data, error } = await supabase
       .from('materials')
-      .select('id, name, material_type, material, thickness, tube_od, tube_wall')
+      .select('id, name, material_type, material, thickness, tube_od, tube_wall, unit_weight_lbs, stock_length_in, scrap_rate, qty_on_hand')
       .order('name', { ascending: true })
 
     if (!error) {
       setMaterials((data ?? []) as MaterialRow[])
+    }
+  }
+
+  async function loadPriceLogs() {
+    const { data, error } = await supabase
+      .from('material_price_logs')
+      .select('material_id, price, date_purchased')
+      .order('date_purchased', { ascending: true })
+
+    if (!error && data) {
+      const map: Record<string, number> = {}
+      for (const row of data as { material_id: string; price: number; date_purchased: string }[]) {
+        map[row.material_id] = row.price
+      }
+      setLatestPriceByMaterialId(map)
     }
   }
 
@@ -264,7 +409,10 @@ export default function SkusPage() {
         part:parts (
           id,
           part_number,
-          description
+          description,
+          part_type,
+          dxf_file,
+          weight_lbs
         )
       `)
       .eq('sub_assembly_id', subassemblyId)
@@ -281,6 +429,9 @@ export default function SkusPage() {
       part_id: String(row.part_id),
       part_number: row.part?.part_number ?? String(row.part_id),
       part_description: row.part?.description ?? '',
+      part_type: (row.part?.part_type as 'tube' | 'sheet' | null) ?? null,
+      dxf_file: row.part?.dxf_file ?? null,
+      weight_lbs: row.part?.weight_lbs ?? null,
     }))
 
     setSubassemblyPartMap((prev) => ({ ...prev, [subassemblyId]: rows }))
@@ -304,7 +455,9 @@ export default function SkusPage() {
           sub_assembly_id,
           sub_assembly:sub_assemblies (
             id,
-            name
+            name,
+            image_file,
+            requires_weld
           )
         `)
         .eq('sku_id', skuId),
@@ -317,7 +470,10 @@ export default function SkusPage() {
           part:parts (
             id,
             part_number,
-            description
+            description,
+            part_type,
+            dxf_file,
+            weight_lbs
           )
         `)
         .eq('sku_id', skuId),
@@ -331,6 +487,8 @@ export default function SkusPage() {
         qty: Number(row.qty),
         sub_assembly_id: String(row.sub_assembly_id),
         sub_assembly_name: row.sub_assembly?.name ?? '',
+        image_file: row.sub_assembly?.image_file ?? null,
+        requires_weld: row.sub_assembly?.requires_weld ?? null,
       }))
       setSelectedSkuSubassemblies(mappedSubRows)
     }
@@ -344,6 +502,9 @@ export default function SkusPage() {
         part_id: String(row.part_id),
         part_number: row.part?.part_number ?? String(row.part_id),
         part_description: row.part?.description ?? '',
+        part_type: (row.part?.part_type as 'tube' | 'sheet' | null) ?? null,
+        dxf_file: row.part?.dxf_file ?? null,
+        weight_lbs: row.part?.weight_lbs ?? null,
       }))
       setSelectedSkuParts(mappedPartRows)
     }
@@ -352,13 +513,32 @@ export default function SkusPage() {
   async function initialLoad() {
     setLoading(true)
     setMessage('')
-    await Promise.all([loadSkus(), loadSubassemblies(), loadParts(), loadMaterials()])
+    await Promise.all([loadSkus(), loadSubassemblies(), loadParts(), loadMaterials(), loadPriceLogs()])
     setLoading(false)
   }
 
   useEffect(() => {
     void initialLoad()
   }, [])
+
+  // Auto-select SKU from ?id= query param after data loads
+  useEffect(() => {
+    if (loading || skus.length === 0) return
+    try {
+      const params = new URLSearchParams(window.location.search)
+      const idParam = params.get('id')
+      if (!idParam) return
+      const match = skus.find((s) => s.id === idParam)
+      if (match) {
+        setSelectedSkuId(match.id)
+        setTimeout(() => {
+          document.getElementById(`sku-row-${match.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        }, 100)
+      }
+    } catch {
+      // ignore
+    }
+  }, [loading, skus])
 
   useEffect(() => {
     if (selectedSkuId) {
@@ -378,39 +558,7 @@ export default function SkusPage() {
     }
   }, [selectedSkuSubassemblies, expandedSubassemblyId])
 
-  function updateField(name: keyof typeof emptySkuForm, value: string) {
-    setForm((prev) => ({ ...prev, [name]: value }))
-  }
-
-  function updateNewPartField(name: keyof typeof emptyPartForm, value: string) {
-    setNewPartForm((prev) => {
-      const next = { ...prev, [name]: value }
-      if (name === 'part_type') next.material_id = ''
-      return next
-    })
-  }
-
-  function updateNewSubassemblyField(name: keyof typeof emptySubassemblyForm, value: string) {
-    setNewSubassemblyForm((prev) => ({ ...prev, [name]: value }))
-  }
-
-  function startNew() {
-    setEditingId(null)
-    setForm(emptySkuForm)
-    setMessage('')
-  }
-
-  function startEdit(sku: SKU) {
-    setEditingId(sku.id)
-    setSelectedSkuId(sku.id)
-    setForm({
-      id: sku.id,
-      description: sku.description,
-      category: (CATEGORY_OPTIONS.includes((sku.category || '') as SkuCategory) ? sku.category : 'Racks') || 'Racks',
-      notes: sku.notes || '',
-    })
-    setMessage('')
-  }
+  // ── Helpers ───────────────────────────────────────────────────────────────────
 
   function getCategoryStyle(category: string | null | undefined) {
     return CATEGORY_STYLES[category || ''] || CATEGORY_STYLES.Uncategorized
@@ -419,7 +567,6 @@ export default function SkusPage() {
   function findPartByLookup(value: string) {
     const q = value.trim().toLowerCase()
     if (!q) return null
-
     return (
       parts.find(
         (part) =>
@@ -434,7 +581,6 @@ export default function SkusPage() {
   function findSubassemblyByLookup(value: string) {
     const q = value.trim().toLowerCase()
     if (!q) return null
-
     return (
       subassemblies.find(
         (sa) =>
@@ -445,133 +591,42 @@ export default function SkusPage() {
     )
   }
 
-  function openNewPartForSku() {
-    setShowNewPartForm(true)
-    setNewPartAutoAttachMode('sku')
-    setNewPartTargetSubassemblyId('')
-    setNewPartQty('1')
-    setBuilderMessage('')
-  }
-
-  function openNewPartForSubassembly(subassemblyId: string) {
-    setShowNewPartForm(true)
-    setExpandedSubassemblyId(subassemblyId)
-    setNewPartAutoAttachMode('subassembly')
-    setNewPartTargetSubassemblyId(subassemblyId)
-    setNewPartQty(subassemblyDraftQty[subassemblyId] || '1')
-    setBuilderMessage('')
-  }
-
-  function openNewSubassemblyBuilder() {
-    setShowNewSubassemblyForm(true)
-    setNewSubassemblyQty('1')
-    setBuilderMessage('')
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    setSaving(true)
-    setMessage('')
-
-    const payload = {
-      id: form.id.trim(),
-      description: form.description.trim(),
-      category: form.category.trim() || 'Racks',
-      notes: form.notes.trim() || null,
-      active: true,
-    }
-
-    if (!payload.id || !payload.description) {
-      setMessage('SKU and Description are required.')
-      setSaving(false)
-      return
-    }
-
-    const query = editingId
-      ? supabase.from('skus').update(payload).eq('id', editingId)
-      : supabase.from('skus').insert(payload)
-
-    const { error } = await query
-
-    if (error) {
-      setMessage(`${editingId ? 'Update' : 'Save'} failed: ${error.message}`)
-    } else {
-      setMessage(editingId ? 'SKU updated.' : 'SKU saved.')
-      startNew()
-      await loadSkus()
-      setSelectedSkuId(payload.id)
-    }
-
-    setSaving(false)
-  }
-
-  async function handleDeleteSku() {
-    if (!editingId) return
-    const ok = window.confirm(`Delete SKU ${editingId}?`)
-    if (!ok) return
-
-    const { error } = await supabase.from('skus').delete().eq('id', editingId)
-
-    if (error) {
-      setMessage(`Delete failed: ${error.message}`)
-    } else {
-      setMessage('SKU deleted.')
-      setSelectedSkuId('')
-      startNew()
-      await loadSkus()
-    }
-  }
+  // ── Upsert helpers ────────────────────────────────────────────────────────────
 
   async function upsertSkuSubassembly(skuId: string, subassemblyId: string, qty: number) {
     const existing = selectedSkuSubassemblies.find((row) => row.sub_assembly_id === subassemblyId)
-
     if (existing) {
       return supabase
         .from('sku_sub_assemblies')
         .update({ qty: Number(existing.qty) + qty })
         .eq('id', existing.id)
     }
-
-    return supabase.from('sku_sub_assemblies').insert({
-      sku_id: skuId,
-      sub_assembly_id: subassemblyId,
-      qty,
-    })
+    return supabase.from('sku_sub_assemblies').insert({ sku_id: skuId, sub_assembly_id: subassemblyId, qty })
   }
 
   async function upsertSkuPart(skuId: string, partId: string, qty: number) {
     const existing = selectedSkuParts.find((row) => row.part_id === partId)
-
     if (existing) {
       return supabase
         .from('sku_parts')
         .update({ qty: Number(existing.qty) + qty })
         .eq('id', existing.id)
     }
-
-    return supabase.from('sku_parts').insert({
-      sku_id: skuId,
-      part_id: partId,
-      qty,
-    })
+    return supabase.from('sku_parts').insert({ sku_id: skuId, part_id: partId, qty })
   }
 
   async function upsertSubassemblyPart(subassemblyId: string, partId: string, qty: number) {
     const existing = (subassemblyPartMap[subassemblyId] ?? []).find((row) => row.part_id === partId)
-
     if (existing) {
       return supabase
         .from('sub_assembly_parts')
         .update({ qty: Number(existing.qty) + qty })
         .eq('id', existing.id)
     }
-
-    return supabase.from('sub_assembly_parts').insert({
-      sub_assembly_id: subassemblyId,
-      part_id: partId,
-      qty,
-    })
+    return supabase.from('sub_assembly_parts').insert({ sub_assembly_id: subassemblyId, part_id: partId, qty })
   }
+
+  // ── Relation actions ──────────────────────────────────────────────────────────
 
   async function handleAddSubassembly(e: React.FormEvent) {
     e.preventDefault()
@@ -698,11 +753,7 @@ export default function SkusPage() {
   }
 
   async function handleUpdateSkuSubassemblyQty(rowId: string, qty: number) {
-    if (!qty || qty <= 0) {
-      setRelationMessage('Qty must be greater than 0.')
-      return
-    }
-
+    if (!qty || qty <= 0) { setRelationMessage('Qty must be greater than 0.'); return }
     const { error } = await supabase.from('sku_sub_assemblies').update({ qty }).eq('id', rowId)
     if (error) {
       setRelationMessage(`Update qty failed: ${error.message}`)
@@ -713,11 +764,7 @@ export default function SkusPage() {
   }
 
   async function handleUpdateSkuPartQty(rowId: string, qty: number) {
-    if (!qty || qty <= 0) {
-      setRelationMessage('Qty must be greater than 0.')
-      return
-    }
-
+    if (!qty || qty <= 0) { setRelationMessage('Qty must be greater than 0.'); return }
     const { error } = await supabase.from('sku_parts').update({ qty }).eq('id', rowId)
     if (error) {
       setRelationMessage(`Update qty failed: ${error.message}`)
@@ -728,11 +775,7 @@ export default function SkusPage() {
   }
 
   async function handleUpdateSubassemblyPartQty(subassemblyId: string, rowId: string, qty: number) {
-    if (!qty || qty <= 0) {
-      setRelationMessage('Qty must be greater than 0.')
-      return
-    }
-
+    if (!qty || qty <= 0) { setRelationMessage('Qty must be greater than 0.'); return }
     const { error } = await supabase.from('sub_assembly_parts').update({ qty }).eq('id', rowId)
     if (error) {
       setRelationMessage(`Update subassembly part qty failed: ${error.message}`)
@@ -774,11 +817,201 @@ export default function SkusPage() {
     }
   }
 
-  async function handleCreatePartInline() {
+  // ── SKU Modal ─────────────────────────────────────────────────────────────────
+
+  function openSkuModalNew() {
+    setSkuModalIsEdit(false)
+    setSkuForm(emptySkuForm)
+    setMessage('')
+    setSkuModalOpen(true)
+  }
+
+  function openSkuModalEdit(sku: SKU) {
+    setSkuModalIsEdit(true)
+    setSkuForm({
+      id: sku.id,
+      description: sku.description,
+      category: (CATEGORY_OPTIONS.includes((sku.category || '') as SkuCategory) ? sku.category : 'Racks') || 'Racks',
+      notes: sku.notes || '',
+      bolt_kit_cost: sku.bolt_kit_cost != null ? String(sku.bolt_kit_cost) : '',
+      packaging_cost: sku.packaging_cost != null ? String(sku.packaging_cost) : '',
+      labor_cost_per_unit: sku.labor_cost_per_unit != null ? String(sku.labor_cost_per_unit) : '',
+    })
+    setMessage('')
+    setSkuModalOpen(true)
+  }
+
+  async function saveSkuModal() {
+    setSaving(true)
+    setMessage('')
+
+    const payload = {
+      id: skuForm.id.trim(),
+      description: skuForm.description.trim(),
+      category: skuForm.category.trim() || 'Racks',
+      notes: skuForm.notes.trim() || null,
+      active: true,
+      bolt_kit_cost: skuForm.bolt_kit_cost.trim() ? parseFloat(skuForm.bolt_kit_cost) : null,
+      packaging_cost: skuForm.packaging_cost.trim() ? parseFloat(skuForm.packaging_cost) : null,
+      labor_cost_per_unit: skuForm.labor_cost_per_unit.trim() ? parseFloat(skuForm.labor_cost_per_unit) : null,
+    }
+
+    if (!payload.id || !payload.description) {
+      setMessage('SKU and Description are required.')
+      setSaving(false)
+      return
+    }
+
+    const query = skuModalIsEdit
+      ? supabase.from('skus').update(payload).eq('id', payload.id)
+      : supabase.from('skus').insert(payload)
+
+    const { error } = await query
+
+    if (error) {
+      setMessage(`${skuModalIsEdit ? 'Update' : 'Save'} failed: ${error.message}`)
+    } else {
+      setMessage(skuModalIsEdit ? 'SKU updated.' : 'SKU saved.')
+      setSkuModalOpen(false)
+      await loadSkus()
+      setSelectedSkuId(payload.id)
+    }
+
+    setSaving(false)
+  }
+
+  async function handleDeleteSku() {
+    const skuId = skuForm.id
+    if (!skuId) return
+    const ok = window.confirm(`Delete SKU ${skuId}?`)
+    if (!ok) return
+
+    const { error } = await supabase.from('skus').delete().eq('id', skuId)
+
+    if (error) {
+      setMessage(`Delete failed: ${error.message}`)
+    } else {
+      setMessage('SKU deleted.')
+      setSelectedSkuId('')
+      setSkuModalOpen(false)
+      await loadSkus()
+    }
+  }
+
+  // ── Part Modal ────────────────────────────────────────────────────────────────
+
+  function openPartModalNew(defaultAttachMode: 'sku' | 'subassembly' = 'sku', defaultSubId = '') {
+    setPartModalIsEdit(false)
+    setPartModalEditId(null)
+    setPartForm(emptyPartForm)
+    setPartAttachMode(defaultAttachMode)
+    setPartAttachSubassemblyId(defaultSubId)
+    setPartAttachQty('1')
+    setBuilderMessage('')
+    setPartModalOpen(true)
+  }
+
+  function openPartModalEdit(part: Part) {
+    setPartModalIsEdit(true)
+    setPartModalEditId(part.id)
+    setPartForm({
+      id: part.id,
+      part_number: part.part_number,
+      description: part.description,
+      part_type: part.part_type,
+      material_id: '',
+      cut_length: part.cut_length != null ? String(part.cut_length) : '',
+      dxf_file: part.dxf_file || '',
+      weight_lbs: part.weight_lbs != null ? String(part.weight_lbs) : '',
+      notes: part.notes || '',
+      requires_laser: part.requires_laser,
+      requires_sheet_bend: part.requires_sheet_bend,
+      requires_tube_bend: part.requires_tube_bend,
+      requires_saw: part.requires_saw,
+      requires_drill: part.requires_drill,
+      requires_weld: part.requires_weld,
+    })
+    setBuilderMessage('')
+    setPartModalOpen(true)
+  }
+
+  async function savePartModal() {
     setBuilderSaving(true)
     setBuilderMessage('')
 
-    const selectedMaterial = materials.find((material) => material.id === newPartForm.material_id)
+    if (partModalIsEdit) {
+      // Edit mode: update existing part
+      const partId = partModalEditId
+      if (!partId) {
+        setBuilderMessage('No part ID found.')
+        setBuilderSaving(false)
+        return
+      }
+
+      const editMaterial = partForm.material_id
+        ? materials.find((m) => m.id === partForm.material_id) ?? null
+        : null
+
+      // For tubes: auto-compute weight from cut_length × material; sheet: manual entry
+      const editCutLength =
+        partForm.part_type === 'tube' && partForm.cut_length.trim() !== ''
+          ? Number(partForm.cut_length)
+          : null
+      const editWeight =
+        partForm.part_type === 'tube'
+          ? editMaterial?.unit_weight_lbs && editMaterial?.stock_length_in && editCutLength != null
+            ? (editCutLength / editMaterial.stock_length_in) * editMaterial.unit_weight_lbs
+            : null
+          : partForm.weight_lbs.trim() !== ''
+          ? Number(partForm.weight_lbs)
+          : null
+
+      const updatePayload: Record<string, unknown> = {
+        part_number: partForm.part_number.trim(),
+        description: partForm.description.trim(),
+        part_type: partForm.part_type,
+        cut_length: editCutLength,
+        dxf_file: partForm.part_type === 'sheet' ? partForm.dxf_file.trim() || null : null,
+        weight_lbs: editWeight,
+        notes: partForm.notes.trim() || null,
+        requires_laser: partForm.requires_laser,
+        requires_sheet_bend: partForm.requires_sheet_bend,
+        requires_tube_bend: partForm.requires_tube_bend,
+        requires_saw: partForm.requires_saw,
+        requires_drill: partForm.requires_drill,
+        requires_weld: partForm.requires_weld,
+      }
+
+      if (!updatePayload.part_number || !updatePayload.description) {
+        setBuilderMessage('Part number and description are required.')
+        setBuilderSaving(false)
+        return
+      }
+
+      // If a material was selected, update material fields too
+      if (editMaterial) {
+        updatePayload.material = editMaterial.material || null
+        updatePayload.thickness = partForm.part_type === 'sheet' ? editMaterial.thickness || null : null
+        updatePayload.tube_od = partForm.part_type === 'tube' ? editMaterial.tube_od || null : null
+        updatePayload.tube_wall = partForm.part_type === 'tube' ? editMaterial.tube_wall || null : null
+      }
+
+      const { error } = await supabase.from('parts').update(updatePayload).eq('id', partId)
+
+      if (error) {
+        setBuilderMessage(`Update part failed: ${error.message}`)
+        setBuilderSaving(false)
+        return
+      }
+
+      await loadParts()
+      setPartModalOpen(false)
+      setBuilderSaving(false)
+      return
+    }
+
+    // Create mode
+    const selectedMaterial = materials.find((m) => m.id === partForm.material_id)
 
     if (!selectedMaterial) {
       setBuilderMessage('Choose a material from the library.')
@@ -786,21 +1019,41 @@ export default function SkusPage() {
       return
     }
 
+    const createCutLength =
+      partForm.part_type === 'tube' && partForm.cut_length.trim() !== ''
+        ? Number(partForm.cut_length)
+        : null
+
+    // Tubes: weight auto-calculated from cut_length × material density
+    // Sheets: weight entered manually
+    const createWeight =
+      partForm.part_type === 'tube'
+        ? selectedMaterial.unit_weight_lbs && selectedMaterial.stock_length_in && createCutLength != null
+          ? (createCutLength / selectedMaterial.stock_length_in) * selectedMaterial.unit_weight_lbs
+          : null
+        : partForm.weight_lbs.trim() !== ''
+        ? Number(partForm.weight_lbs)
+        : null
+
     const payload = {
-      id: newPartForm.id.trim(),
-      part_number: newPartForm.part_number.trim(),
-      description: newPartForm.description.trim(),
-      part_type: newPartForm.part_type,
+      id: partForm.id.trim(),
+      part_number: partForm.part_number.trim(),
+      description: partForm.description.trim(),
+      part_type: partForm.part_type,
       material: selectedMaterial.material || null,
-      thickness: newPartForm.part_type === 'sheet' ? selectedMaterial.thickness || null : null,
-      tube_od: newPartForm.part_type === 'tube' ? selectedMaterial.tube_od || null : null,
-      tube_wall: newPartForm.part_type === 'tube' ? selectedMaterial.tube_wall || null : null,
-      cut_length:
-        newPartForm.part_type === 'tube' && newPartForm.cut_length.trim() !== ''
-          ? Number(newPartForm.cut_length)
-          : null,
-      dxf_file: newPartForm.part_type === 'sheet' ? newPartForm.dxf_file.trim() || null : null,
-      notes: newPartForm.notes.trim() || null,
+      thickness: partForm.part_type === 'sheet' ? selectedMaterial.thickness || null : null,
+      tube_od: partForm.part_type === 'tube' ? selectedMaterial.tube_od || null : null,
+      tube_wall: partForm.part_type === 'tube' ? selectedMaterial.tube_wall || null : null,
+      cut_length: createCutLength,
+      dxf_file: partForm.part_type === 'sheet' ? partForm.dxf_file.trim() || null : null,
+      weight_lbs: createWeight,
+      notes: partForm.notes.trim() || null,
+      requires_laser: partForm.requires_laser,
+      requires_sheet_bend: partForm.requires_sheet_bend,
+      requires_tube_bend: partForm.requires_tube_bend,
+      requires_saw: partForm.requires_saw,
+      requires_drill: partForm.requires_drill,
+      requires_weld: partForm.requires_weld,
     }
 
     if (!payload.id || !payload.part_number || !payload.description) {
@@ -825,68 +1078,119 @@ export default function SkusPage() {
 
     await loadParts()
 
-    const attachQty = Number(newPartQty || '1')
+    const attachQty = Number(partAttachQty || '1')
     if (!attachQty || attachQty <= 0) {
       setBuilderMessage('Part created. Set a valid attach qty to auto-add it.')
       setBuilderSaving(false)
       return
     }
 
-    if (newPartAutoAttachMode === 'sku') {
+    if (partAttachMode === 'sku') {
       if (!selectedSkuId) {
         setBuilderMessage('Part created, but no SKU is selected to attach it.')
         setBuilderSaving(false)
         return
       }
-
       const attachResult = await upsertSkuPart(selectedSkuId, payload.id, attachQty)
       if (attachResult.error) {
         setBuilderMessage(`Part created, but attaching to SKU failed: ${attachResult.error.message}`)
         setBuilderSaving(false)
         return
       }
-
       await loadSelectedSkuRelations(selectedSkuId)
-      setPartIdToAdd(payload.id)
-      setPartLookup(payload.part_number)
       setBuilderMessage('Part created and added to the SKU BOM.')
     } else {
-      const targetSubassemblyId = newPartTargetSubassemblyId
+      const targetSubassemblyId = partAttachSubassemblyId
       if (!targetSubassemblyId) {
         setBuilderMessage('Part created, but no subassembly target was selected.')
         setBuilderSaving(false)
         return
       }
-
       const attachResult = await upsertSubassemblyPart(targetSubassemblyId, payload.id, attachQty)
       if (attachResult.error) {
         setBuilderMessage(`Part created, but attaching to subassembly failed: ${attachResult.error.message}`)
         setBuilderSaving(false)
         return
       }
-
       await loadSubassemblyParts(targetSubassemblyId)
       await loadSelectedSkuRelations(selectedSkuId)
       setExpandedSubassemblyId(targetSubassemblyId)
-      setSubassemblyDraftPartId((prev) => ({ ...prev, [targetSubassemblyId]: payload.id }))
-      setSubassemblyPartLookup((prev) => ({ ...prev, [targetSubassemblyId]: payload.part_number }))
       setBuilderMessage('Part created and added inside the subassembly.')
     }
 
-    setNewPartForm(emptyPartForm)
-    setNewPartQty('1')
-    setShowNewPartForm(false)
+    setPartModalOpen(false)
     setBuilderSaving(false)
   }
 
-  async function handleCreateSubassemblyInline() {
+  // ── Sub-assembly Modal ────────────────────────────────────────────────────────
+
+  function openSaModalNew() {
+    setSaModalIsEdit(false)
+    setSaModalEditId(null)
+    setSaForm(emptySubassemblyForm)
+    setSaAttachQty('1')
+    setBuilderMessage('')
+    setSaModalOpen(true)
+  }
+
+  function openSaModalEdit(sa: SubAssembly) {
+    setSaModalIsEdit(true)
+    setSaModalEditId(sa.id)
+    setSaForm({
+      id: sa.id,
+      name: sa.name,
+      notes: sa.notes || '',
+      requires_weld: sa.requires_weld ?? false,
+    })
+    setBuilderMessage('')
+    setSaModalOpen(true)
+  }
+
+  async function saveSaModal() {
     setBuilderSaving(true)
     setBuilderMessage('')
 
+    if (saModalIsEdit) {
+      const saId = saModalEditId
+      if (!saId) {
+        setBuilderMessage('No sub-assembly ID found.')
+        setBuilderSaving(false)
+        return
+      }
+
+      const updatePayload = {
+        name: saForm.name.trim(),
+        notes: saForm.notes.trim() || null,
+        requires_weld: saForm.requires_weld,
+      }
+
+      if (!updatePayload.name) {
+        setBuilderMessage('Name is required.')
+        setBuilderSaving(false)
+        return
+      }
+
+      const { error } = await supabase.from('sub_assemblies').update(updatePayload).eq('id', saId)
+
+      if (error) {
+        setBuilderMessage(`Update failed: ${error.message}`)
+        setBuilderSaving(false)
+        return
+      }
+
+      await loadSubassemblies()
+      await loadSelectedSkuRelations(selectedSkuId)
+      setSaModalOpen(false)
+      setBuilderSaving(false)
+      return
+    }
+
+    // Create mode
     const payload = {
-      id: newSubassemblyForm.id.trim(),
-      name: newSubassemblyForm.name.trim(),
-      notes: newSubassemblyForm.notes.trim() || null,
+      id: saForm.id.trim(),
+      name: saForm.name.trim(),
+      notes: saForm.notes.trim() || null,
+      requires_weld: saForm.requires_weld,
     }
 
     if (!payload.id || !payload.name) {
@@ -905,7 +1209,7 @@ export default function SkusPage() {
 
     await loadSubassemblies()
 
-    const qty = Number(newSubassemblyQty || '1')
+    const qty = Number(saAttachQty || '1')
     if (!selectedSkuId) {
       setBuilderMessage('Subassembly created, but no SKU is selected to attach it.')
       setBuilderSaving(false)
@@ -927,14 +1231,12 @@ export default function SkusPage() {
 
     await loadSelectedSkuRelations(selectedSkuId)
     setExpandedSubassemblyId(payload.id)
-    setSubassemblyIdToAdd(payload.id)
-    setSubassemblyLookup(payload.id)
-    setShowNewSubassemblyForm(false)
-    setNewSubassemblyForm(emptySubassemblyForm)
-    setNewSubassemblyQty('1')
+    setSaModalOpen(false)
     setBuilderMessage('Subassembly created and added to the SKU BOM.')
     setBuilderSaving(false)
   }
+
+  // ── Duplicate SKU ─────────────────────────────────────────────────────────────
 
   async function duplicateSkuWithBom(sku: SKU) {
     const newSkuId = window.prompt(`New SKU ID for duplicate of ${sku.id}`, `${sku.id}-COPY`)
@@ -975,9 +1277,7 @@ export default function SkusPage() {
     if (sourceSkuSubassembliesError || sourceSkuPartsError) {
       await supabase.from('skus').delete().eq('id', trimmedId)
       setMessage(
-        `Duplicate failed while reading BOM: ${
-          sourceSkuSubassembliesError?.message || sourceSkuPartsError?.message
-        }`
+        `Duplicate failed while reading BOM: ${sourceSkuSubassembliesError?.message || sourceSkuPartsError?.message}`
       )
       setDuplicateBusyId('')
       return
@@ -1025,12 +1325,12 @@ export default function SkusPage() {
     setDuplicateBusyId('')
   }
 
+  // ── Computed values ───────────────────────────────────────────────────────────
+
   const filteredSkus = skus.filter((sku) => {
     const q = search.trim().toLowerCase()
     if (!q) return true
-    return `${sku.id} ${sku.description} ${sku.category || ''} ${sku.notes || ''}`
-      .toLowerCase()
-      .includes(q)
+    return `${sku.id} ${sku.description} ${sku.category || ''} ${sku.notes || ''}`.toLowerCase().includes(q)
   })
 
   const groupedFilteredSkus = useMemo(() => {
@@ -1041,14 +1341,12 @@ export default function SkusPage() {
       Deflectors: [],
       Uncategorized: [],
     }
-
     for (const sku of filteredSkus) {
       const key = CATEGORY_OPTIONS.includes((sku.category || '') as SkuCategory)
         ? (sku.category as string)
         : 'Uncategorized'
       groups[key].push(sku)
     }
-
     return groups
   }, [filteredSkus])
 
@@ -1065,6 +1363,9 @@ export default function SkusPage() {
           part_number: row.part_number,
           description: row.part_description,
           qty: Number(row.qty),
+          part_type: row.part_type,
+          dxf_file: row.dxf_file,
+          weight_lbs: row.weight_lbs,
         })
       }
     }
@@ -1074,7 +1375,6 @@ export default function SkusPage() {
       for (const subPart of subParts) {
         const multipliedQty = Number(subPart.qty) * Number(sa.qty)
         const existing = totals.get(subPart.part_id)
-
         if (existing) {
           existing.qty += multipliedQty
         } else {
@@ -1083,6 +1383,9 @@ export default function SkusPage() {
             part_number: subPart.part_number,
             description: subPart.part_description,
             qty: multipliedQty,
+            part_type: subPart.part_type,
+            dxf_file: subPart.dxf_file,
+            weight_lbs: subPart.weight_lbs,
           })
         }
       }
@@ -1094,639 +1397,319 @@ export default function SkusPage() {
   }, [selectedSkuParts, selectedSkuSubassemblies, subassemblyPartMap])
 
   const selectedSku = skus.find((sku) => sku.id === selectedSkuId) || null
-  const selectedMaterials = materials.filter((material) => material.material_type === newPartForm.part_type)
+
+  function findMaterialForPart(part: Part): MaterialRow | null {
+    return (
+      materials.find((m) => {
+        if (m.material_type !== part.part_type) return false
+        if (part.part_type === 'sheet') {
+          return m.material === part.material && m.thickness === part.thickness
+        }
+        return m.material === part.material && m.tube_od === part.tube_od && m.tube_wall === part.tube_wall
+      }) ?? null
+    )
+  }
+
+  function calcPartLineCost(partId: string, qty: number): number | null {
+    const part = parts.find((p) => p.id === partId)
+    if (!part?.weight_lbs) return null
+    const mat = findMaterialForPart(part)
+    if (!mat?.unit_weight_lbs) return null
+    const latestPrice = latestPriceByMaterialId[mat.id]
+    if (!latestPrice) return null
+    const costPerLb = latestPrice / mat.unit_weight_lbs
+    const scrap = mat.scrap_rate ?? 0
+    return qty * part.weight_lbs * costPerLb * (1 + scrap)
+  }
+
+  const matEstCost: number | null = (() => {
+    if (!selectedSkuId) return null
+    let total = 0
+    let hasAny = false
+    for (const row of selectedSkuParts) {
+      const c = calcPartLineCost(row.part_id, row.qty)
+      if (c != null) { total += c; hasAny = true }
+    }
+    for (const subRow of selectedSkuSubassemblies) {
+      const subParts = subassemblyPartMap[subRow.sub_assembly_id] ?? []
+      for (const sp of subParts) {
+        const c = calcPartLineCost(sp.part_id, sp.qty * subRow.qty)
+        if (c != null) { total += c; hasAny = true }
+      }
+    }
+    return hasAny ? total : null
+  })()
+
+  const totalUnitCost = (() => {
+    if (!selectedSku) return null
+    let total = matEstCost ?? 0
+    if (selectedSku.bolt_kit_cost) total += selectedSku.bolt_kit_cost
+    if (selectedSku.packaging_cost) total += selectedSku.packaging_cost
+    if (selectedSku.labor_cost_per_unit) total += selectedSku.labor_cost_per_unit
+    if (!matEstCost && !selectedSku.bolt_kit_cost && !selectedSku.packaging_cost && !selectedSku.labor_cost_per_unit) return null
+    return total
+  })()
+
+  const selectedMaterialsFiltered = materials.filter((m) => m.material_type === partForm.part_type)
+
+  // ── Render ────────────────────────────────────────────────────────────────────
 
   return (
-    <div className="section-stack">
-      <div className="page-header">
-        <div>
-          <div className="kicker">Garvin Internal Tool</div>
-          <h1 className="page-title">SKUs</h1>
-          <div className="page-subtitle">
-            Search, select, and build full SKU BOMs from one page.
-          </div>
-        </div>
-      </div>
-
-      <section className="card">
-        <div className="card-header">
-          <h2 className="card-title">SKU Setup</h2>
-          <div className="card-subtitle">
-            Create or edit the parent SKU.
-          </div>
-        </div>
-
-        <div className="card-body">
-          <form onSubmit={handleSubmit}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
-              <div>
-                <label className="label">SKU</label>
-                <input
-                  className="field"
-                  value={form.id}
-                  onChange={(e) => updateField('id', e.target.value)}
-                  placeholder="44307"
-                  disabled={!!editingId}
-                />
-              </div>
-
-              <div>
-                <label className="label">Description</label>
-                <input
-                  className="field"
-                  value={form.description}
-                  onChange={(e) => updateField('description', e.target.value)}
-                  placeholder="Rock Rail Step"
-                />
-              </div>
-
-              <div>
-                <label className="label">Category</label>
-                <select
-                  className="select"
-                  value={form.category}
-                  onChange={(e) => updateField('category', e.target.value)}
-                >
-                  {CATEGORY_OPTIONS.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div style={{ gridColumn: '1 / -1' }}>
-                <label className="label">Notes</label>
-                <textarea
-                  className="textarea"
-                  value={form.notes}
-                  onChange={(e) => updateField('notes', e.target.value)}
-                  rows={4}
-                  placeholder="Optional notes"
-                />
-              </div>
-            </div>
-
-            <div className="btn-row" style={{ marginTop: 18 }}>
-              <button type="submit" disabled={saving} className="btn btn-primary">
-                {saving ? 'Saving...' : editingId ? 'Update SKU' : 'Save SKU'}
-              </button>
-              <button type="button" className="btn btn-secondary" onClick={startNew}>
-                New
-              </button>
-              {editingId && (
-                <button type="button" className="btn btn-danger" onClick={handleDeleteSku}>
-                  Delete
-                </button>
-              )}
-            </div>
-
-            {message && <div className="message">{message}</div>}
-          </form>
-        </div>
-      </section>
-
-      <section className="card">
-        <div
-          className="card-header"
-          style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}
-        >
+    <>
+      <div className="section-stack">
+        <div className="page-header">
           <div>
-            <h2 className="card-title">All SKUs</h2>
-            <div className="card-subtitle">
-              Search and select a SKU to build or edit.
-            </div>
-          </div>
-
-          <div style={{ minWidth: 260, flex: '0 0 320px', position: 'relative' }}>
-            <span
-              style={{
-                position: 'absolute',
-                left: 12,
-                top: '50%',
-                transform: 'translateY(-50%)',
-                color: 'var(--muted)',
-                pointerEvents: 'none',
-              }}
-            >
-              🔍
-            </span>
-            <input
-              className="field"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search SKU or description"
-              style={{ paddingLeft: 36 }}
-            />
+            <div className="kicker">Garvin Internal Tool</div>
+            <h1 className="page-title">SKUs</h1>
+            <div className="page-subtitle">Search, select, and build full SKU BOMs from one page.</div>
           </div>
         </div>
 
-        <div className="card-body">
-          {loading ? (
-            <div className="empty">Loading...</div>
-          ) : filteredSkus.length === 0 ? (
-            <div className="empty">No matching SKUs.</div>
-          ) : (
-            <div className="section-stack" style={{ gap: 18 }}>
-              {Object.entries(groupedFilteredSkus).map(([category, categorySkus]) => {
-                if (categorySkus.length === 0) return null
-                const style = getCategoryStyle(category)
+        {message && <div className="message">{message}</div>}
 
-                return (
-                  <div
-                    key={category}
-                    style={{
-                      border: `1px solid ${style.border}`,
-                      borderRadius: 16,
-                      background: style.bg,
-                      padding: 14,
-                    }}
-                  >
-                    <div
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        marginBottom: 12,
-                      }}
-                    >
-                      <div
-                        style={{
-                          fontWeight: 800,
-                          fontSize: '1rem',
-                          color: style.text,
-                          letterSpacing: '0.02em',
-                        }}
-                      >
-                        {category}
-                      </div>
-                      <div
-                        style={{
-                          background: style.pill,
-                          color: style.text,
-                          border: `1px solid ${style.border}`,
-                          borderRadius: 999,
-                          padding: '4px 10px',
-                          fontSize: '0.8rem',
-                          fontWeight: 700,
-                        }}
-                      >
-                        {categorySkus.length}
-                      </div>
-                    </div>
+        {/* Two-panel layout */}
+        <div
+          style={{
+            display: 'flex',
+            gap: 16,
+            alignItems: 'flex-start',
+          }}
+        >
+          {/* ── Left Panel: SKU List ────────────────────────────────────────────── */}
+          <div
+            style={{
+              minWidth: 280,
+              maxWidth: 380,
+              flexShrink: 0,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+            }}
+          >
+            {/* Search + New SKU */}
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                className="field"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search SKUs..."
+                style={{ flex: 1, minWidth: 0 }}
+              />
+              <button
+                type="button"
+                className="btn btn-primary"
+                style={{ whiteSpace: 'nowrap', flexShrink: 0 }}
+                onClick={openSkuModalNew}
+              >
+                ＋ New SKU
+              </button>
+            </div>
 
-                    <div className="section-stack" style={{ gap: 10 }}>
-                      {categorySkus.map((sku) => (
-                        <div key={sku.id} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 10 }}>
-                          <button
-                            type="button"
-                            onClick={() => startEdit(sku)}
-                            className={`sidebar-link ${selectedSkuId === sku.id ? 'active' : ''}`}
+            {/* SKU list grouped by category */}
+            <div
+              className="card"
+              style={{ padding: 0, overflow: 'hidden' }}
+            >
+              {loading ? (
+                <div className="empty" style={{ padding: 20 }}>Loading...</div>
+              ) : filteredSkus.length === 0 ? (
+                <div className="empty" style={{ padding: 20 }}>No matching SKUs.</div>
+              ) : (
+                <div style={{ maxHeight: 'calc(100vh - 220px)', overflowY: 'auto' }}>
+                  {Object.entries(groupedFilteredSkus).map(([category, categorySkus]) => {
+                    if (categorySkus.length === 0) return null
+                    const style = getCategoryStyle(category)
+                    const isCollapsed = collapsedCategories.has(category)
+                    return (
+                      <div key={category}>
+                        <button
+                          type="button"
+                          style={{
+                            width: '100%',
+                            padding: '6px 12px',
+                            fontSize: '0.72rem',
+                            fontWeight: 800,
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.08em',
+                            color: style.text,
+                            background: style.bg,
+                            border: 'none',
+                            borderBottom: `1px solid ${style.border}`,
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            cursor: 'pointer',
+                          }}
+                          onClick={() => {
+                            setCollapsedCategories((prev) => {
+                              const next = new Set(prev)
+                              if (next.has(category)) next.delete(category)
+                              else next.add(category)
+                              return next
+                            })
+                          }}
+                        >
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span style={{ fontSize: '0.65rem', opacity: 0.8 }}>{isCollapsed ? '▸' : '▾'}</span>
+                            {category}
+                          </span>
+                          <span
                             style={{
-                              width: '100%',
-                              textAlign: 'left',
-                              background: selectedSkuId === sku.id ? style.pill : 'var(--panel-2)',
-                              borderColor: selectedSkuId === sku.id ? style.border : 'var(--border)',
-                              color: selectedSkuId === sku.id ? style.text : 'var(--text)',
+                              background: style.pill,
+                              border: `1px solid ${style.border}`,
+                              borderRadius: 999,
+                              padding: '1px 7px',
+                              fontSize: '0.7rem',
                             }}
                           >
-                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-                              <div style={{ fontWeight: 700 }}>{sku.id}</div>
+                            {categorySkus.length}
+                          </span>
+                        </button>
+                        {!isCollapsed && categorySkus.map((sku) => {
+                          const isSelected = selectedSkuId === sku.id
+                          return (
+                            <div
+                              key={sku.id}
+                              id={`sku-row-${sku.id}`}
+                              style={{
+                                padding: '9px 12px',
+                                cursor: 'pointer',
+                                borderBottom: '1px solid var(--border)',
+                                background: isSelected ? 'var(--accent-soft)' : 'transparent',
+                                borderLeft: isSelected ? '3px solid var(--accent)' : '3px solid transparent',
+                                transition: 'background 0.1s',
+                              }}
+                              onClick={() => setSelectedSkuId(sku.id)}
+                              onMouseEnter={(e) => {
+                                if (!isSelected) e.currentTarget.style.background = 'var(--panel-2)'
+                              }}
+                              onMouseLeave={(e) => {
+                                if (!isSelected) e.currentTarget.style.background = 'transparent'
+                              }}
+                            >
                               <div
                                 style={{
-                                  fontSize: '0.75rem',
                                   fontWeight: 700,
-                                  color: style.text,
-                                  background: style.pill,
-                                  border: `1px solid ${style.border}`,
-                                  borderRadius: 999,
-                                  padding: '2px 8px',
+                                  fontSize: '0.88rem',
+                                  color: isSelected ? 'var(--accent-text)' : 'var(--text)',
+                                }}
+                              >
+                                {sku.id}
+                              </div>
+                              <div
+                                style={{
+                                  fontSize: '0.78rem',
+                                  color: 'var(--muted)',
+                                  marginTop: 1,
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
                                   whiteSpace: 'nowrap',
                                 }}
                               >
-                                {sku.category || 'Uncategorized'}
+                                {sku.description}
                               </div>
                             </div>
-                            <div
-                              style={{
-                                fontSize: '0.9rem',
-                                color: selectedSkuId === sku.id ? style.text : 'var(--muted)',
-                              }}
-                            >
-                              {sku.description}
-                            </div>
-                          </button>
-
-                          <button
-                            className="btn btn-secondary"
-                            onClick={() => void duplicateSkuWithBom(sku)}
-                            disabled={duplicateBusyId === sku.id}
-                          >
-                            {duplicateBusyId === sku.id ? 'Duplicating...' : 'Duplicate'}
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )
-              })}
+                          )
+                        })}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
             </div>
-          )}
-        </div>
-      </section>
-
-      <section className="card">
-        <div className="card-header">
-          <h2 className="card-title">Selected SKU Builder</h2>
-          <div className="card-subtitle">
-            Full-width BOM builder with clearer hierarchy.
           </div>
-        </div>
 
-        <div className="card-body">
-          {!selectedSkuId ? (
-            <div className="empty">Select a SKU.</div>
-          ) : (
-            <>
-              <div style={{ marginBottom: 18 }}>
-                <div className="kicker">Selected</div>
-                <div className="group-title" style={{ marginBottom: 0 }}>{selectedSkuId}</div>
-                {selectedSku && (
-                  <>
-                    <div style={{ color: 'var(--muted)' }}>{selectedSku.description}</div>
-                    <div style={{ marginTop: 8 }}>
-                      <span
-                        style={{
-                          display: 'inline-block',
-                          padding: '4px 10px',
-                          borderRadius: 999,
-                          fontSize: '0.8rem',
-                          fontWeight: 700,
-                          background: getCategoryStyle(selectedSku.category).pill,
-                          border: `1px solid ${getCategoryStyle(selectedSku.category).border}`,
-                          color: getCategoryStyle(selectedSku.category).text,
-                        }}
-                      >
-                        {selectedSku.category || 'Uncategorized'}
-                      </span>
-                    </div>
-                  </>
-                )}
+          {/* ── Right Panel: BOM Detail ─────────────────────────────────────────── */}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {!selectedSku ? (
+              <div className="card">
+                <div className="card-body">
+                  <div className="empty">Select a SKU to view and edit its BOM.</div>
+                </div>
               </div>
-
-              <div className="btn-row" style={{ marginBottom: 18 }}>
-                <button type="button" className="btn btn-secondary" onClick={openNewPartForSku}>
-                  New Part + Add to SKU
-                </button>
-                <button type="button" className="btn btn-secondary" onClick={openNewSubassemblyBuilder}>
-                  New Subassembly + Add to SKU
-                </button>
-              </div>
-
-              {showNewPartForm && (
-                <section className="card" style={{ boxShadow: 'none', marginBottom: 18 }}>
-                  <div className="card-header">
-                    <h3 className="card-title">
-                      {newPartAutoAttachMode === 'sku'
-                        ? 'Create New Part for SKU'
-                        : 'Create New Part for Subassembly'}
-                    </h3>
-                  </div>
+            ) : (
+              <div className="section-stack">
+                {/* SKU header */}
+                <div className="card">
                   <div className="card-body">
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'flex-start',
+                        gap: 12,
+                        flexWrap: 'wrap',
+                      }}
+                    >
                       <div>
-                        <label className="label">Part ID</label>
-                        <input
-                          className="field"
-                          value={newPartForm.id}
-                          onChange={(e) => updateNewPartField('id', e.target.value)}
-                        />
-                      </div>
-                      <div>
-                        <label className="label">Part Number</label>
-                        <input
-                          className="field"
-                          value={newPartForm.part_number}
-                          onChange={(e) => updateNewPartField('part_number', e.target.value)}
-                        />
-                      </div>
-                      <div>
-                        <label className="label">Description</label>
-                        <input
-                          className="field"
-                          value={newPartForm.description}
-                          onChange={(e) => updateNewPartField('description', e.target.value)}
-                        />
-                      </div>
-                      <div>
-                        <label className="label">Type</label>
-                        <select
-                          className="select"
-                          value={newPartForm.part_type}
-                          onChange={(e) => updateNewPartField('part_type', e.target.value)}
-                        >
-                          <option value="sheet">Sheet</option>
-                          <option value="tube">Tube</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label className="label">Material</label>
-                        <select
-                          className="select"
-                          value={newPartForm.material_id}
-                          onChange={(e) => updateNewPartField('material_id', e.target.value)}
-                        >
-                          <option value="">Select material</option>
-                          {selectedMaterials.map((material) => (
-                            <option key={material.id} value={material.id}>
-                              {material.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="label">Auto-add Qty</label>
-                        <input className="field" value={newPartQty} onChange={(e) => setNewPartQty(e.target.value)} />
-                      </div>
-                      {newPartForm.part_type === 'tube' ? (
-                        <div>
-                          <label className="label">Cut Length</label>
-                          <input
-                            className="field"
-                            value={newPartForm.cut_length}
-                            onChange={(e) => updateNewPartField('cut_length', e.target.value)}
-                          />
+                        <div className="group-title" style={{ marginBottom: 2 }}>{selectedSku.id}</div>
+                        <div style={{ color: 'var(--text-2)', fontSize: '0.95rem', marginBottom: 6 }}>
+                          {selectedSku.description}
                         </div>
-                      ) : (
-                        <div>
-                          <label className="label">DXF File</label>
-                          <input
-                            className="field"
-                            value={newPartForm.dxf_file}
-                            onChange={(e) => updateNewPartField('dxf_file', e.target.value)}
-                          />
-                        </div>
-                      )}
-                      {newPartAutoAttachMode === 'subassembly' && (
-                        <div>
-                          <label className="label">Target Subassembly</label>
-                          <input
-                            className="field"
-                            list="selected-subassembly-list"
-                            value={newPartTargetSubassemblyId}
-                            onChange={(e) => setNewPartTargetSubassemblyId(e.target.value)}
-                            placeholder="Type subassembly ID"
-                          />
-                          <datalist id="selected-subassembly-list">
-                            {selectedSkuSubassemblies.map((row) => (
-                              <option key={row.sub_assembly_id} value={row.sub_assembly_id}>
-                                {row.sub_assembly_name}
-                              </option>
-                            ))}
-                          </datalist>
-                        </div>
-                      )}
-                      <div style={{ gridColumn: '1 / -1' }}>
-                        <label className="label">Notes</label>
-                        <textarea
-                          className="textarea"
-                          rows={3}
-                          value={newPartForm.notes}
-                          onChange={(e) => updateNewPartField('notes', e.target.value)}
-                        />
-                      </div>
-                    </div>
-
-                    <div className="btn-row" style={{ marginTop: 18 }}>
-                      <button
-                        type="button"
-                        className="btn btn-primary"
-                        disabled={builderSaving}
-                        onClick={() => void handleCreatePartInline()}
-                      >
-                        {builderSaving ? 'Saving...' : 'Create Part'}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-secondary"
-                        onClick={() => setShowNewPartForm(false)}
-                      >
-                        Close
-                      </button>
-                    </div>
-                  </div>
-                </section>
-              )}
-
-              {showNewSubassemblyForm && (
-                <section className="card" style={{ boxShadow: 'none', marginBottom: 18 }}>
-                  <div className="card-header">
-                    <h3 className="card-title">Create New Subassembly for SKU</h3>
-                  </div>
-                  <div className="card-body">
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-                      <div>
-                        <label className="label">Subassembly ID</label>
-                        <input
-                          className="field"
-                          value={newSubassemblyForm.id}
-                          onChange={(e) => updateNewSubassemblyField('id', e.target.value)}
-                        />
-                      </div>
-                      <div>
-                        <label className="label">Name</label>
-                        <input
-                          className="field"
-                          value={newSubassemblyForm.name}
-                          onChange={(e) => updateNewSubassemblyField('name', e.target.value)}
-                        />
-                      </div>
-                      <div>
-                        <label className="label">Auto-add Qty</label>
-                        <input
-                          className="field"
-                          value={newSubassemblyQty}
-                          onChange={(e) => setNewSubassemblyQty(e.target.value)}
-                        />
-                      </div>
-                      <div style={{ gridColumn: '1 / -1' }}>
-                        <label className="label">Notes</label>
-                        <textarea
-                          className="textarea"
-                          rows={3}
-                          value={newSubassemblyForm.notes}
-                          onChange={(e) => updateNewSubassemblyField('notes', e.target.value)}
-                        />
-                      </div>
-                    </div>
-
-                    <div className="btn-row" style={{ marginTop: 18 }}>
-                      <button
-                        type="button"
-                        className="btn btn-primary"
-                        disabled={builderSaving}
-                        onClick={() => void handleCreateSubassemblyInline()}
-                      >
-                        {builderSaving ? 'Saving...' : 'Create Subassembly'}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-secondary"
-                        onClick={() => setShowNewSubassemblyForm(false)}
-                      >
-                        Close
-                      </button>
-                    </div>
-                  </div>
-                </section>
-              )}
-
-              {builderMessage && <div className="message" style={{ marginBottom: 18 }}>{builderMessage}</div>}
-
-              <div className="section-stack" style={{ gap: 18 }}>
-                <section className="card" style={{ boxShadow: 'none' }}>
-                  <div className="card-header">
-                    <h3 className="card-title">Direct Parts</h3>
-                    <div className="card-subtitle">Type the part number instead of scrolling a long list.</div>
-                  </div>
-                  <div className="card-body">
-                    <form onSubmit={handleAddPart}>
-                      <div
-                        style={{
-                          display: 'grid',
-                          gridTemplateColumns: 'minmax(280px, 1fr) 140px auto',
-                          gap: '14px',
-                          alignItems: 'end',
-                        }}
-                      >
-                        <div>
-                          <label className="label">Part</label>
-                          <input
-                            className="field"
-                            list="parts-list"
-                            value={partLookup}
-                            onChange={(e) => {
-                              const value = e.target.value
-                              setPartLookup(value)
-                              const match = findPartByLookup(value)
-                              setPartIdToAdd(match?.id || '')
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                          <span
+                            style={{
+                              display: 'inline-block',
+                              padding: '3px 10px',
+                              borderRadius: 999,
+                              fontSize: '0.75rem',
+                              fontWeight: 700,
+                              background: getCategoryStyle(selectedSku.category).pill,
+                              border: `1px solid ${getCategoryStyle(selectedSku.category).border}`,
+                              color: getCategoryStyle(selectedSku.category).text,
                             }}
-                            placeholder="Type part number or description"
-                          />
-                          <datalist id="parts-list">
-                            {parts.map((part) => (
-                              <option key={part.id} value={part.part_number}>
-                                {part.description}
-                              </option>
-                            ))}
-                          </datalist>
+                          >
+                            {selectedSku.category || 'Uncategorized'}
+                          </span>
                         </div>
-
-                        <div>
-                          <label className="label">Qty</label>
-                          <input
-                            className="field"
-                            value={partQtyToAdd}
-                            onChange={(e) => setPartQtyToAdd(e.target.value)}
-                            placeholder="1"
-                          />
-                        </div>
-
-                        <button type="button" className="btn btn-secondary" onClick={openNewPartForSku}>
-                          New Part
-                        </button>
                       </div>
 
-                      <div className="btn-row" style={{ marginTop: 18 }}>
-                        <button type="submit" disabled={addingRelation} className="btn btn-primary">
-                          Add Part
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          style={{ fontSize: '0.82rem' }}
+                          onClick={() => openSkuModalEdit(selectedSku)}
+                        >
+                          ✏ Edit SKU
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          style={{ fontSize: '0.82rem' }}
+                          onClick={() => void duplicateSkuWithBom(selectedSku)}
+                          disabled={duplicateBusyId === selectedSku.id}
+                        >
+                          {duplicateBusyId === selectedSku.id ? 'Duplicating...' : 'Duplicate'}
                         </button>
                       </div>
-                    </form>
-
-                    <div style={{ marginTop: 18 }}>
-                      {selectedSkuParts.length === 0 ? (
-                        <div className="empty">No direct parts attached yet.</div>
-                      ) : (
-                        <div className="table-wrap">
-                          <table className="table">
-                            <thead>
-                              <tr>
-                                <th style={{ width: 120 }}>Preview</th>
-                                <th>Part</th>
-                                <th>Qty</th>
-                                <th></th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {selectedSkuParts.map((row) => {
-                                const fullPart = parts.find((part) => part.id === row.part_id)
-
-                                return (
-                                  <tr key={row.id}>
-                                    <td>
-                                      <DxfPartPreview
-                                        dxfFile={fullPart?.dxf_file || null}
-                                        partNumber={row.part_number}
-                                        size="tiny"
-                                        isTube={fullPart?.part_type === 'tube'}
-                                        tubeFallback={false}
-                                      />
-                                    </td>
-                                    <td>
-                                      <div style={{ fontWeight: 700 }}>{row.part_number}</div>
-                                      {row.part_description && (
-                                        <div style={{ color: 'var(--muted)', fontSize: '0.88rem' }}>
-                                          {row.part_description}
-                                        </div>
-                                      )}
-                                    </td>
-                                    <td>
-                                      <input
-                                        className="field-sm"
-                                        defaultValue={row.qty}
-                                        onBlur={(e) => void handleUpdateSkuPartQty(row.id, Number(e.target.value))}
-                                      />
-                                    </td>
-                                    <td>
-                                      <button
-                                        type="button"
-                                        className="btn btn-danger"
-                                        onClick={() => void handleDeleteSkuPart(row.id)}
-                                      >
-                                        Remove
-                                      </button>
-                                    </td>
-                                  </tr>
-                                )
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
-                      )}
                     </div>
                   </div>
-                </section>
+                </div>
 
-                <section className="card" style={{ boxShadow: 'none' }}>
+                {(relationMessage || builderMessage) && (
+                  <div className="message">{relationMessage || builderMessage}</div>
+                )}
+
+                {/* ── Sub-Assemblies Section ── */}
+                <section className="card">
                   <div className="card-header">
-                    <h3 className="card-title">Subassemblies</h3>
-                    <div className="card-subtitle">
-                      Parent subassemblies with indented child parts underneath.
-                    </div>
+                    <h3 className="card-title">Sub-Assemblies</h3>
                   </div>
                   <div className="card-body">
+                    {/* Add existing subassembly */}
                     <form onSubmit={handleAddSubassembly}>
                       <div
                         style={{
                           display: 'grid',
-                          gridTemplateColumns: 'minmax(280px, 1fr) 140px auto',
-                          gap: '14px',
+                          gridTemplateColumns: 'minmax(0, 1fr) 100px auto',
+                          gap: 10,
                           alignItems: 'end',
+                          marginBottom: 10,
                         }}
                       >
                         <div>
-                          <label className="label">Subassembly</label>
+                          <label className="label" style={{ fontSize: '0.78rem' }}>Add Existing Sub-assembly</label>
                           <input
                             className="field"
                             list="subassembly-list"
@@ -1737,19 +1720,16 @@ export default function SkusPage() {
                               const match = findSubassemblyByLookup(value)
                               setSubassemblyIdToAdd(match?.id || '')
                             }}
-                            placeholder="Type subassembly ID or name"
+                            placeholder="Type sub-assembly ID or name"
                           />
                           <datalist id="subassembly-list">
                             {subassemblies.map((sa) => (
-                              <option key={sa.id} value={sa.id}>
-                                {sa.name}
-                              </option>
+                              <option key={sa.id} value={sa.id}>{sa.name}</option>
                             ))}
                           </datalist>
                         </div>
-
                         <div>
-                          <label className="label">Qty</label>
+                          <label className="label" style={{ fontSize: '0.78rem' }}>Qty</label>
                           <input
                             className="field"
                             value={subassemblyQtyToAdd}
@@ -1757,307 +1737,1063 @@ export default function SkusPage() {
                             placeholder="1"
                           />
                         </div>
-
-                        <button type="button" className="btn btn-secondary" onClick={openNewSubassemblyBuilder}>
-                          New Subassembly
-                        </button>
-                      </div>
-
-                      <div className="btn-row" style={{ marginTop: 18 }}>
-                        <button type="submit" disabled={addingRelation} className="btn btn-primary">
-                          Add Subassembly
+                        <button type="submit" disabled={addingRelation} className="btn btn-primary" style={{ fontSize: '0.82rem' }}>
+                          ＋ Add
                         </button>
                       </div>
                     </form>
 
-                    <div style={{ marginTop: 18 }}>
-                      {selectedSkuSubassemblies.length === 0 ? (
-                        <div className="empty">No subassemblies attached yet.</div>
-                      ) : (
-                        <div className="section-stack" style={{ gap: 14 }}>
-                          {selectedSkuSubassemblies.map((row) => {
-                            const isExpanded = expandedSubassemblyId === row.sub_assembly_id
-                            const subRows = subassemblyPartMap[row.sub_assembly_id] ?? []
+                    <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+                      <button type="button" className="btn btn-secondary" style={{ fontSize: '0.82rem' }} onClick={openSaModalNew}>
+                        ＋ New Sub-assembly
+                      </button>
+                    </div>
 
-                            return (
+                    {selectedSkuSubassemblies.length === 0 ? (
+                      <div className="empty">No sub-assemblies attached yet.</div>
+                    ) : (
+                      <div className="section-stack" style={{ gap: 10 }}>
+                        {selectedSkuSubassemblies.map((row) => {
+                          const isExpanded = expandedSubassemblyId === row.sub_assembly_id
+                          const subRows = subassemblyPartMap[row.sub_assembly_id] ?? []
+                          const fullSa = subassemblies.find((s) => s.id === row.sub_assembly_id)
+
+                          return (
+                            <div
+                              key={row.id}
+                              style={{
+                                border: '1px solid var(--border)',
+                                borderRadius: 10,
+                                background: 'rgba(255,255,255,0.02)',
+                              }}
+                            >
+                              {/* Sub-assembly header row */}
                               <div
-                                key={row.id}
                                 style={{
-                                  border: '1px solid var(--border)',
-                                  borderRadius: 14,
-                                  background: 'rgba(255,255,255,0.02)',
-                                  padding: 14,
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 10,
+                                  padding: '10px 14px',
+                                  flexWrap: 'wrap',
                                 }}
                               >
-                                <div
+                                <button
+                                  type="button"
                                   style={{
-                                    display: 'grid',
-                                    gridTemplateColumns: 'minmax(200px, 1fr) 120px auto auto',
-                                    gap: 10,
-                                    alignItems: 'center',
+                                    background: 'none',
+                                    border: 'none',
+                                    cursor: 'pointer',
+                                    color: 'var(--muted)',
+                                    padding: 0,
+                                    fontSize: '1rem',
+                                    lineHeight: 1,
+                                  }}
+                                  onClick={() => {
+                                    setExpandedSubassemblyId(isExpanded ? '' : row.sub_assembly_id)
+                                    if (!subassemblyPartMap[row.sub_assembly_id]) {
+                                      void loadSubassemblyParts(row.sub_assembly_id)
+                                    }
                                   }}
                                 >
-                                  <div>
-                                    <div style={{ fontWeight: 800 }}>{row.sub_assembly_id}</div>
-                                    <div style={{ color: 'var(--muted)' }}>{row.sub_assembly_name || 'No name'}</div>
-                                  </div>
+                                  {isExpanded ? '▾' : '▸'}
+                                </button>
 
-                                  <div>
-                                    <label className="label">Qty</label>
-                                    <input
-                                      className="field"
-                                      defaultValue={row.qty}
-                                      onBlur={(e) => void handleUpdateSkuSubassemblyQty(row.id, Number(e.target.value))}
-                                    />
-                                  </div>
-
-                                  <button
-                                    type="button"
-                                    className="btn btn-secondary"
-                                    onClick={() => {
-                                      setExpandedSubassemblyId(isExpanded ? '' : row.sub_assembly_id)
-                                      if (!subassemblyPartMap[row.sub_assembly_id]) {
-                                        void loadSubassemblyParts(row.sub_assembly_id)
-                                      }
+                                {/* Sub-assembly thumbnail if available */}
+                                {row.image_file && (
+                                  <img
+                                    src={supabase.storage.from(SUB_IMAGE_BUCKET).getPublicUrl(row.image_file).data.publicUrl}
+                                    alt={row.sub_assembly_name}
+                                    style={{
+                                      width: 40,
+                                      height: 40,
+                                      objectFit: 'cover',
+                                      borderRadius: 6,
+                                      border: '1px solid var(--border)',
+                                      flexShrink: 0,
                                     }}
-                                  >
-                                    {isExpanded ? 'Hide Parts' : 'Edit Parts'}
-                                  </button>
+                                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                                  />
+                                )}
 
-                                  <button
-                                    type="button"
-                                    className="btn btn-danger"
-                                    onClick={() => void handleDeleteSkuSubassembly(row.id)}
-                                  >
-                                    Remove
-                                  </button>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>
+                                    {row.sub_assembly_name || row.sub_assembly_id}
+                                  </div>
+                                  <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>
+                                    {row.sub_assembly_id}
+                                  </div>
                                 </div>
 
-                                {isExpanded && (
-                                  <div
+                                <span style={{ fontSize: '0.82rem', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+                                  ×{row.qty}
+                                </span>
+
+                                {(row.requires_weld || fullSa?.requires_weld) && (
+                                  <span
                                     style={{
-                                      marginTop: 18,
-                                      marginLeft: 18,
-                                      paddingLeft: 18,
-                                      borderLeft: '3px solid rgba(255,255,255,0.12)',
+                                      fontSize: '0.7rem',
+                                      fontWeight: 700,
+                                      background: 'rgba(245,158,11,0.15)',
+                                      border: '1px solid rgba(245,158,11,0.35)',
+                                      color: '#fde68a',
+                                      borderRadius: 4,
+                                      padding: '2px 6px',
+                                      whiteSpace: 'nowrap',
                                     }}
                                   >
-                                    <div
-                                      style={{
-                                        background: 'rgba(255,255,255,0.03)',
-                                        border: '1px solid var(--border)',
-                                        borderRadius: 12,
-                                        padding: 14,
-                                      }}
-                                    >
-                                      <div
-                                        style={{
-                                          display: 'grid',
-                                          gridTemplateColumns: 'minmax(260px, 1fr) 120px auto',
-                                          gap: 10,
-                                          alignItems: 'end',
-                                          marginBottom: 14,
-                                        }}
-                                      >
-                                        <div>
-                                          <label className="label">Add Part Inside Subassembly</label>
-                                          <input
-                                            className="field"
-                                            list={`subassembly-parts-list-${row.sub_assembly_id}`}
-                                            value={subassemblyPartLookup[row.sub_assembly_id] || ''}
-                                            onChange={(e) => {
-                                              const value = e.target.value
-                                              setSubassemblyPartLookup((prev) => ({
-                                                ...prev,
-                                                [row.sub_assembly_id]: value,
-                                              }))
-                                              const match = findPartByLookup(value)
-                                              setSubassemblyDraftPartId((prev) => ({
-                                                ...prev,
-                                                [row.sub_assembly_id]: match?.id || '',
-                                              }))
-                                            }}
-                                            placeholder="Type part number or description"
-                                          />
-                                          <datalist id={`subassembly-parts-list-${row.sub_assembly_id}`}>
-                                            {parts.map((part) => (
-                                              <option key={part.id} value={part.part_number}>
-                                                {part.description}
-                                              </option>
-                                            ))}
-                                          </datalist>
-                                        </div>
-
-                                        <div>
-                                          <label className="label">Qty</label>
-                                          <input
-                                            className="field"
-                                            value={subassemblyDraftQty[row.sub_assembly_id] || '1'}
-                                            onChange={(e) =>
-                                              setSubassemblyDraftQty((prev) => ({
-                                                ...prev,
-                                                [row.sub_assembly_id]: e.target.value,
-                                              }))
-                                            }
-                                          />
-                                        </div>
-
-                                        <div className="btn-row" style={{ justifyContent: 'flex-end' }}>
-                                          <button
-                                            type="button"
-                                            className="btn btn-secondary"
-                                            onClick={() => openNewPartForSubassembly(row.sub_assembly_id)}
-                                          >
-                                            New Part
-                                          </button>
-                                          <button
-                                            type="button"
-                                            className="btn btn-primary"
-                                            onClick={() => void handleAddPartToAttachedSubassembly(row.sub_assembly_id)}
-                                          >
-                                            Add
-                                          </button>
-                                        </div>
-                                      </div>
-
-                                      {subRows.length === 0 ? (
-                                        <div className="empty">No parts inside this subassembly yet.</div>
-                                      ) : (
-                                        <div className="table-wrap">
-                                          <table className="table">
-                                            <thead>
-                                              <tr>
-                                                <th style={{ width: 120 }}>Preview</th>
-                                                <th>Part</th>
-                                                <th>Qty per Subassembly</th>
-                                                <th></th>
-                                              </tr>
-                                            </thead>
-                                            <tbody>
-                                              {subRows.map((subRow) => {
-                                                const fullPart = parts.find((part) => part.id === subRow.part_id)
-
-                                                return (
-                                                  <tr key={subRow.id}>
-                                                    <td>
-                                                      <DxfPartPreview
-                                                        dxfFile={fullPart?.dxf_file || null}
-                                                        partNumber={subRow.part_number}
-                                                        size="tiny"
-                                                        isTube={fullPart?.part_type === 'tube'}
-                                                        tubeFallback={false}
-                                                      />
-                                                    </td>
-                                                    <td>
-                                                      <div style={{ fontWeight: 700 }}>{subRow.part_number}</div>
-                                                      {subRow.part_description && (
-                                                        <div style={{ color: 'var(--muted)', fontSize: '0.88rem' }}>
-                                                          {subRow.part_description}
-                                                        </div>
-                                                      )}
-                                                    </td>
-                                                    <td>
-                                                      <input
-                                                        className="field-sm"
-                                                        defaultValue={subRow.qty}
-                                                        onBlur={(e) =>
-                                                          void handleUpdateSubassemblyPartQty(
-                                                            row.sub_assembly_id,
-                                                            subRow.id,
-                                                            Number(e.target.value)
-                                                          )
-                                                        }
-                                                      />
-                                                    </td>
-                                                    <td>
-                                                      <button
-                                                        type="button"
-                                                        className="btn btn-danger"
-                                                        onClick={() =>
-                                                          void handleDeleteSubassemblyPart(
-                                                            row.sub_assembly_id,
-                                                            subRow.id
-                                                          )
-                                                        }
-                                                      >
-                                                        Remove
-                                                      </button>
-                                                    </td>
-                                                  </tr>
-                                                )
-                                              })}
-                                            </tbody>
-                                          </table>
-                                        </div>
-                                      )}
-                                    </div>
-                                  </div>
+                                    🔧 requires weld
+                                  </span>
                                 )}
+
+                                <button
+                                  type="button"
+                                  className="btn btn-secondary"
+                                  style={{ fontSize: '0.75rem', padding: '4px 8px' }}
+                                  onClick={() => openSaModalEdit(fullSa ?? { id: row.sub_assembly_id, name: row.sub_assembly_name, requires_weld: row.requires_weld })}
+                                >
+                                  ✏
+                                </button>
+
+                                <button
+                                  type="button"
+                                  className="btn btn-danger"
+                                  style={{ fontSize: '0.75rem', padding: '4px 8px' }}
+                                  onClick={() => void handleDeleteSkuSubassembly(row.id)}
+                                >
+                                  ✕
+                                </button>
                               </div>
-                            )
-                          })}
-                        </div>
-                      )}
-                    </div>
+
+                              {/* Expanded: sub-assembly parts */}
+                              {isExpanded && (
+                                <div
+                                  style={{
+                                    borderTop: '1px solid var(--border)',
+                                    padding: '12px 14px',
+                                    background: 'rgba(255,255,255,0.02)',
+                                  }}
+                                >
+                                  {/* Add part to sub-assembly */}
+                                  <div
+                                    style={{
+                                      display: 'grid',
+                                      gridTemplateColumns: 'minmax(0, 1fr) 80px auto auto',
+                                      gap: 8,
+                                      alignItems: 'end',
+                                      marginBottom: 10,
+                                    }}
+                                  >
+                                    <div>
+                                      <label className="label" style={{ fontSize: '0.75rem' }}>Add Part</label>
+                                      <div style={{ display: 'flex', gap: 6 }}>
+                                        <input
+                                          className="field"
+                                          list={`subassembly-parts-list-${row.sub_assembly_id}`}
+                                          value={subassemblyPartLookup[row.sub_assembly_id] || ''}
+                                          onChange={(e) => {
+                                            const value = e.target.value
+                                            setSubassemblyPartLookup((prev) => ({ ...prev, [row.sub_assembly_id]: value }))
+                                            const match = findPartByLookup(value)
+                                            setSubassemblyDraftPartId((prev) => ({ ...prev, [row.sub_assembly_id]: match?.id || '' }))
+                                          }}
+                                          placeholder="Part number or desc"
+                                          style={{ flex: 1, minWidth: 0 }}
+                                        />
+                                        <datalist id={`subassembly-parts-list-${row.sub_assembly_id}`}>
+                                          {parts.map((part) => (
+                                            <option key={part.id} value={part.part_number}>{part.description}</option>
+                                          ))}
+                                        </datalist>
+                                        <button
+                                          type="button"
+                                          className="btn btn-secondary"
+                                          style={{ whiteSpace: 'nowrap', fontSize: '0.75rem' }}
+                                          onClick={() => setPartPickerOpenFor(row.sub_assembly_id)}
+                                        >
+                                          Browse
+                                        </button>
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <label className="label" style={{ fontSize: '0.75rem' }}>Qty</label>
+                                      <input
+                                        className="field"
+                                        value={subassemblyDraftQty[row.sub_assembly_id] || '1'}
+                                        onChange={(e) =>
+                                          setSubassemblyDraftQty((prev) => ({ ...prev, [row.sub_assembly_id]: e.target.value }))
+                                        }
+                                      />
+                                    </div>
+                                    <button
+                                      type="button"
+                                      className="btn btn-primary"
+                                      style={{ fontSize: '0.75rem' }}
+                                      onClick={() => void handleAddPartToAttachedSubassembly(row.sub_assembly_id)}
+                                    >
+                                      ＋ Add
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn btn-secondary"
+                                      style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}
+                                      onClick={() => openPartModalNew('subassembly', row.sub_assembly_id)}
+                                    >
+                                      ＋ New Part
+                                    </button>
+                                  </div>
+
+                                  {subRows.length === 0 ? (
+                                    <div className="empty">No parts inside this sub-assembly yet.</div>
+                                  ) : (
+                                    <div className="table-wrap">
+                                      <table className="table">
+                                        <thead>
+                                          <tr>
+                                            <th></th>
+                                            <th>Part #</th>
+                                            <th>Description</th>
+                                            <th>Qty</th>
+                                            <th></th>
+                                            <th></th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {subRows.map((subRow) => {
+                                            const fullPart = parts.find((p) => p.id === subRow.part_id)
+                                            return (
+                                              <tr key={subRow.id}>
+                                                <td style={{ width: 36, padding: '4px 6px' }}>
+                                                  <DxfPartPreview
+                                                    dxfFile={subRow.dxf_file}
+                                                    partNumber={subRow.part_number}
+                                                    size="tiny"
+                                                    isTube={subRow.part_type === 'tube'}
+                                                    tubeFallback={false}
+                                                  />
+                                                </td>
+                                                <td style={{ fontWeight: 700, fontFamily: 'monospace', fontSize: '0.83rem' }}>
+                                                  {subRow.part_number}
+                                                </td>
+                                                <td style={{ fontSize: '0.83rem', color: 'var(--text-2)' }}>
+                                                  {subRow.part_description}
+                                                </td>
+                                                <td>
+                                                  <input
+                                                    className="field-sm"
+                                                    defaultValue={subRow.qty}
+                                                    onBlur={(e) =>
+                                                      void handleUpdateSubassemblyPartQty(
+                                                        row.sub_assembly_id,
+                                                        subRow.id,
+                                                        Number(e.target.value)
+                                                      )
+                                                    }
+                                                    style={{ width: 52 }}
+                                                  />
+                                                </td>
+                                                <td>
+                                                  <button
+                                                    type="button"
+                                                    className="btn btn-secondary"
+                                                    style={{ fontSize: '0.72rem', padding: '3px 7px' }}
+                                                    onClick={() => { if (fullPart) openPartModalEdit(fullPart) }}
+                                                  >
+                                                    ✏
+                                                  </button>
+                                                </td>
+                                                <td>
+                                                  <button
+                                                    type="button"
+                                                    className="btn btn-danger"
+                                                    style={{ fontSize: '0.72rem', padding: '3px 7px' }}
+                                                    onClick={() => void handleDeleteSubassemblyPart(row.sub_assembly_id, subRow.id)}
+                                                  >
+                                                    ✕
+                                                  </button>
+                                                </td>
+                                              </tr>
+                                            )
+                                          })}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
                   </div>
                 </section>
 
-                {relationMessage && <div className="message">{relationMessage}</div>}
-              </div>
-            </>
-          )}
-        </div>
-      </section>
-
-      {selectedSkuId && (
-        <section className="card">
-          <div className="card-header">
-            <h2 className="card-title">Exploded Preview</h2>
-            <div className="card-subtitle">Fully exploded total parts for the selected SKU.</div>
-          </div>
-
-          <div className="card-body">
-            {fullExplosion.length === 0 ? (
-              <div className="empty">No exploded parts yet.</div>
-            ) : (
-              <div className="table-wrap">
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th style={{ width: 120 }}>Preview</th>
-                      <th>Part #</th>
-                      <th>Description</th>
-                      <th>Total Qty</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {fullExplosion.map((row) => {
-                      const fullPart = parts.find((part) => part.id === row.part_id)
-
-                      return (
-                        <tr key={row.part_id}>
-                          <td>
-                            <DxfPartPreview
-                              dxfFile={fullPart?.dxf_file || null}
-                              partNumber={row.part_number}
-                              size="tiny"
-                              isTube={fullPart?.part_type === 'tube'}
-                              tubeFallback={false}
+                {/* ── Direct Parts Section ── */}
+                <section className="card">
+                  <div className="card-header">
+                    <h3 className="card-title">Direct Parts</h3>
+                  </div>
+                  <div className="card-body">
+                    <form onSubmit={handleAddPart}>
+                      <div
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'minmax(0, 1fr) 80px auto auto',
+                          gap: 10,
+                          alignItems: 'end',
+                          marginBottom: 10,
+                        }}
+                      >
+                        <div>
+                          <label className="label" style={{ fontSize: '0.78rem' }}>Add Existing Part</label>
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <input
+                              className="field"
+                              list="parts-list"
+                              value={partLookup}
+                              onChange={(e) => {
+                                const value = e.target.value
+                                setPartLookup(value)
+                                const match = findPartByLookup(value)
+                                setPartIdToAdd(match?.id || '')
+                              }}
+                              placeholder="Type part number or description"
+                              style={{ flex: 1, minWidth: 0 }}
                             />
-                          </td>
-                          <td>{row.part_number}</td>
-                          <td>{row.description}</td>
-                          <td>{row.qty}</td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
+                            <datalist id="parts-list">
+                              {parts.map((part) => (
+                                <option key={part.id} value={part.part_number}>{part.description}</option>
+                              ))}
+                            </datalist>
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              style={{ whiteSpace: 'nowrap', fontSize: '0.75rem' }}
+                              onClick={() => setPartPickerOpenFor('sku')}
+                            >
+                              Browse
+                            </button>
+                          </div>
+                        </div>
+                        <div>
+                          <label className="label" style={{ fontSize: '0.78rem' }}>Qty</label>
+                          <input
+                            className="field"
+                            value={partQtyToAdd}
+                            onChange={(e) => setPartQtyToAdd(e.target.value)}
+                            placeholder="1"
+                          />
+                        </div>
+                        <button type="submit" disabled={addingRelation} className="btn btn-primary" style={{ fontSize: '0.82rem' }}>
+                          ＋ Add
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          style={{ fontSize: '0.82rem', whiteSpace: 'nowrap' }}
+                          onClick={() => openPartModalNew('sku')}
+                        >
+                          ＋ New Part
+                        </button>
+                      </div>
+                    </form>
+
+                    {selectedSkuParts.length === 0 ? (
+                      <div className="empty">No direct parts attached yet.</div>
+                    ) : (
+                      <div className="table-wrap">
+                        <table className="table">
+                          <thead>
+                            <tr>
+                              <th></th>
+                              <th>Part #</th>
+                              <th>Description</th>
+                              <th>Qty</th>
+                              <th>Est. Cost</th>
+                              <th></th>
+                              <th></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {selectedSkuParts.map((row) => {
+                              const fullPart = parts.find((p) => p.id === row.part_id)
+                              const lineCost = calcPartLineCost(row.part_id, row.qty)
+
+                              return (
+                                <tr key={row.id}>
+                                  <td style={{ width: 36, padding: '4px 6px' }}>
+                                    <DxfPartPreview
+                                      dxfFile={row.dxf_file}
+                                      partNumber={row.part_number}
+                                      size="tiny"
+                                      isTube={row.part_type === 'tube'}
+                                      tubeFallback={false}
+                                    />
+                                  </td>
+                                  <td style={{ fontWeight: 700, fontFamily: 'monospace', fontSize: '0.83rem' }}>
+                                    {row.part_number}
+                                  </td>
+                                  <td>
+                                    <div style={{ fontSize: '0.83rem', color: 'var(--text-2)' }}>{row.part_description}</div>
+                                    {fullPart?.weight_lbs != null && (
+                                      <div style={{ fontSize: '0.72rem', color: 'var(--muted)' }}>{fullPart.weight_lbs} lb/ea</div>
+                                    )}
+                                  </td>
+                                  <td>
+                                    <input
+                                      className="field-sm"
+                                      defaultValue={row.qty}
+                                      onBlur={(e) => void handleUpdateSkuPartQty(row.id, Number(e.target.value))}
+                                      style={{ width: 52 }}
+                                    />
+                                  </td>
+                                  <td style={{ whiteSpace: 'nowrap', fontSize: '0.83rem' }}>
+                                    {lineCost != null ? (
+                                      <span style={{ color: 'var(--success)', fontWeight: 600 }}>${lineCost.toFixed(2)}</span>
+                                    ) : (
+                                      <span style={{ color: 'var(--muted)' }}>—</span>
+                                    )}
+                                  </td>
+                                  <td>
+                                    <button
+                                      type="button"
+                                      className="btn btn-secondary"
+                                      style={{ fontSize: '0.72rem', padding: '3px 7px' }}
+                                      onClick={() => { if (fullPart) openPartModalEdit(fullPart) }}
+                                    >
+                                      ✏
+                                    </button>
+                                  </td>
+                                  <td>
+                                    <button
+                                      type="button"
+                                      className="btn btn-danger"
+                                      style={{ fontSize: '0.72rem', padding: '3px 7px' }}
+                                      onClick={() => void handleDeleteSkuPart(row.id)}
+                                    >
+                                      ✕
+                                    </button>
+                                  </td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </section>
+
+                {/* ── BOM Explosion ── */}
+                {fullExplosion.length > 0 && (
+                  <section className="card">
+                    <div className="card-header">
+                      <h3 className="card-title">BOM Explosion</h3>
+                      <div className="card-subtitle">Fully exploded total parts for this SKU — includes cost summary.</div>
+                    </div>
+                    <div className="card-body">
+                      <div className="table-wrap">
+                        <table className="table">
+                          <thead>
+                            <tr>
+                              <th></th>
+                              <th>Part #</th>
+                              <th>Description</th>
+                              <th style={{ textAlign: 'center' }}>Total Qty</th>
+                              <th style={{ textAlign: 'right' }}>Weight (lbs)</th>
+                              <th style={{ textAlign: 'right' }}>Mat Cost</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {fullExplosion.map((row) => {
+                              const lineCost = calcPartLineCost(row.part_id, row.qty)
+                              const totalWeight = row.weight_lbs != null ? row.weight_lbs * row.qty : null
+                              return (
+                                <tr key={row.part_id}>
+                                  <td style={{ width: 36, padding: '4px 6px' }}>
+                                    <DxfPartPreview
+                                      dxfFile={row.dxf_file}
+                                      partNumber={row.part_number}
+                                      size="tiny"
+                                      isTube={row.part_type === 'tube'}
+                                      tubeFallback={false}
+                                    />
+                                  </td>
+                                  <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>{row.part_number}</td>
+                                  <td>{row.description}</td>
+                                  <td style={{ fontWeight: 700, textAlign: 'center' }}>{row.qty}</td>
+                                  <td style={{ textAlign: 'right', fontSize: '0.83rem', color: 'var(--text-2)' }}>
+                                    {totalWeight != null ? totalWeight.toFixed(3) : <span style={{ color: 'var(--muted)' }}>—</span>}
+                                  </td>
+                                  <td style={{ textAlign: 'right', fontSize: '0.83rem' }}>
+                                    {lineCost != null
+                                      ? <span style={{ color: 'var(--success)', fontWeight: 600 }}>${lineCost.toFixed(2)}</span>
+                                      : <span style={{ color: 'var(--muted)' }}>—</span>
+                                    }
+                                  </td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                          {/* Totals row */}
+                          <tfoot>
+                            <tr style={{ borderTop: '2px solid var(--border)' }}>
+                              <td colSpan={3} style={{ fontWeight: 700, fontSize: '0.83rem', paddingTop: 8 }}>
+                                Material subtotal
+                              </td>
+                              <td />
+                              <td style={{ textAlign: 'right', fontWeight: 700, fontSize: '0.83rem', paddingTop: 8 }}>
+                                {(() => {
+                                  const totalW = fullExplosion.reduce((sum, r) =>
+                                    r.weight_lbs != null ? sum + r.weight_lbs * r.qty : sum, 0)
+                                  return totalW > 0 ? totalW.toFixed(3) : '—'
+                                })()}
+                              </td>
+                              <td style={{ textAlign: 'right', fontWeight: 700, fontSize: '0.83rem', paddingTop: 8, color: 'var(--success)' }}>
+                                {matEstCost != null ? `$${matEstCost.toFixed(2)}` : '—'}
+                              </td>
+                            </tr>
+                            {selectedSku.bolt_kit_cost != null && (
+                              <tr>
+                                <td colSpan={5} style={{ fontSize: '0.8rem', color: 'var(--muted)', paddingTop: 4 }}>Bolt kit</td>
+                                <td style={{ textAlign: 'right', fontSize: '0.8rem', paddingTop: 4 }}>
+                                  ${selectedSku.bolt_kit_cost.toFixed(2)}
+                                </td>
+                              </tr>
+                            )}
+                            {selectedSku.packaging_cost != null && (
+                              <tr>
+                                <td colSpan={5} style={{ fontSize: '0.8rem', color: 'var(--muted)', paddingTop: 4 }}>Packaging</td>
+                                <td style={{ textAlign: 'right', fontSize: '0.8rem', paddingTop: 4 }}>
+                                  ${selectedSku.packaging_cost.toFixed(2)}
+                                </td>
+                              </tr>
+                            )}
+                            {selectedSku.labor_cost_per_unit != null && (
+                              <tr>
+                                <td colSpan={5} style={{ fontSize: '0.8rem', color: 'var(--muted)', paddingTop: 4 }}>Labor</td>
+                                <td style={{ textAlign: 'right', fontSize: '0.8rem', paddingTop: 4 }}>
+                                  ${selectedSku.labor_cost_per_unit.toFixed(2)}
+                                </td>
+                              </tr>
+                            )}
+                            {totalUnitCost != null && (
+                              <tr style={{ borderTop: '1px solid var(--border)' }}>
+                                <td colSpan={5} style={{ fontWeight: 800, fontSize: '0.88rem', paddingTop: 6 }}>
+                                  Grand Total (per unit)
+                                </td>
+                                <td style={{ textAlign: 'right', fontWeight: 800, fontSize: '0.95rem', paddingTop: 6, color: 'var(--accent)' }}>
+                                  ${totalUnitCost.toFixed(2)}
+                                </td>
+                              </tr>
+                            )}
+                          </tfoot>
+                        </table>
+                      </div>
+                    </div>
+                  </section>
+                )}
+
+
               </div>
             )}
           </div>
-        </section>
+        </div>
+      </div>
+
+      {/* ── SKU Modal ──────────────────────────────────────────────────────────── */}
+      {skuModalOpen && (
+        <Modal onClose={() => setSkuModalOpen(false)}>
+          <h2 style={{ margin: '0 0 18px', fontSize: '1.15rem', fontWeight: 800 }}>
+            {skuModalIsEdit ? 'Edit SKU' : '＋ New SKU'}
+          </h2>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+            <div>
+              <label className="label">SKU ID *</label>
+              <input
+                className="field"
+                value={skuForm.id}
+                onChange={(e) => setSkuForm((prev) => ({ ...prev, id: e.target.value }))}
+                placeholder="44307"
+                disabled={skuModalIsEdit}
+              />
+            </div>
+
+            <div>
+              <label className="label">Description *</label>
+              <input
+                className="field"
+                value={skuForm.description}
+                onChange={(e) => setSkuForm((prev) => ({ ...prev, description: e.target.value }))}
+                placeholder="Rock Rail Step"
+              />
+            </div>
+
+            <div>
+              <label className="label">Category</label>
+              <select
+                className="select"
+                value={skuForm.category}
+                onChange={(e) => setSkuForm((prev) => ({ ...prev, category: e.target.value }))}
+              >
+                {CATEGORY_OPTIONS.map((opt) => (
+                  <option key={opt} value={opt}>{opt}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="label">Bolt Kit Cost ($)</label>
+              <input
+                className="field"
+                type="number"
+                step="0.01"
+                min="0"
+                value={skuForm.bolt_kit_cost}
+                onChange={(e) => setSkuForm((prev) => ({ ...prev, bolt_kit_cost: e.target.value }))}
+                placeholder="0.00"
+              />
+            </div>
+
+            <div>
+              <label className="label">Packaging Cost ($)</label>
+              <input
+                className="field"
+                type="number"
+                step="0.01"
+                min="0"
+                value={skuForm.packaging_cost}
+                onChange={(e) => setSkuForm((prev) => ({ ...prev, packaging_cost: e.target.value }))}
+                placeholder="0.00"
+              />
+            </div>
+
+            <div>
+              <label className="label">Labor Cost ($)</label>
+              <input
+                className="field"
+                type="number"
+                step="0.01"
+                min="0"
+                value={skuForm.labor_cost_per_unit}
+                onChange={(e) => setSkuForm((prev) => ({ ...prev, labor_cost_per_unit: e.target.value }))}
+                placeholder="0.00"
+              />
+            </div>
+
+            <div style={{ gridColumn: '1 / -1' }}>
+              <label className="label">Notes</label>
+              <textarea
+                className="textarea"
+                value={skuForm.notes}
+                onChange={(e) => setSkuForm((prev) => ({ ...prev, notes: e.target.value }))}
+                rows={3}
+                placeholder="Optional notes"
+              />
+            </div>
+          </div>
+
+          {message && <div className="message" style={{ marginTop: 12 }}>{message}</div>}
+
+          <div className="btn-row" style={{ marginTop: 18 }}>
+            <button type="button" className="btn btn-primary" disabled={saving} onClick={() => void saveSkuModal()}>
+              {saving ? 'Saving...' : 'Save SKU'}
+            </button>
+            <button type="button" className="btn btn-secondary" onClick={() => setSkuModalOpen(false)}>
+              Cancel
+            </button>
+            {skuModalIsEdit && (
+              <button type="button" className="btn btn-danger" onClick={() => void handleDeleteSku()}>
+                Delete
+              </button>
+            )}
+          </div>
+        </Modal>
       )}
-    </div>
+
+      {/* ── Part Modal ─────────────────────────────────────────────────────────── */}
+      {partModalOpen && (
+        <Modal onClose={() => setPartModalOpen(false)}>
+          <h2 style={{ margin: '0 0 18px', fontSize: '1.15rem', fontWeight: 800 }}>
+            {partModalIsEdit ? 'Edit Part' : '＋ New Part'}
+          </h2>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+            <div>
+              <label className="label">Part ID *</label>
+              <input
+                className="field"
+                value={partForm.id}
+                onChange={(e) => setPartForm((prev) => ({ ...prev, id: e.target.value }))}
+                disabled={partModalIsEdit}
+                placeholder="P-001"
+              />
+            </div>
+
+            <div>
+              <label className="label">Part Number *</label>
+              <input
+                className="field"
+                value={partForm.part_number}
+                onChange={(e) => setPartForm((prev) => ({ ...prev, part_number: e.target.value }))}
+                placeholder="GRV-44307-001"
+              />
+            </div>
+
+            <div style={{ gridColumn: '1 / -1' }}>
+              <label className="label">Description *</label>
+              <input
+                className="field"
+                value={partForm.description}
+                onChange={(e) => setPartForm((prev) => ({ ...prev, description: e.target.value }))}
+                placeholder="Main bracket"
+              />
+            </div>
+
+            <div>
+              <label className="label">Part Type</label>
+              <select
+                className="select"
+                value={partForm.part_type}
+                onChange={(e) =>
+                  setPartForm((prev) => ({
+                    ...prev,
+                    part_type: e.target.value as 'tube' | 'sheet',
+                    material_id: '',
+                  }))
+                }
+              >
+                <option value="sheet">Sheet</option>
+                <option value="tube">Tube</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="label">Material</label>
+              <select
+                className="select"
+                value={partForm.material_id}
+                onChange={(e) => setPartForm((prev) => ({ ...prev, material_id: e.target.value }))}
+              >
+                <option value="">
+                  {partModalIsEdit ? '— keep current —' : 'Select material'}
+                </option>
+                {selectedMaterialsFiltered.map((m) => (
+                  <option key={m.id} value={m.id}>{m.name}</option>
+                ))}
+              </select>
+            </div>
+
+            {partForm.part_type === 'tube' ? (
+              <div>
+                <label className="label">Cut Length (in) *</label>
+                <input
+                  className="field"
+                  type="number"
+                  step="0.01"
+                  value={partForm.cut_length}
+                  onChange={(e) => setPartForm((prev) => ({ ...prev, cut_length: e.target.value }))}
+                  placeholder="12.5"
+                />
+              </div>
+            ) : (
+              <div>
+                <label className="label">DXF File</label>
+                <input
+                  className="field"
+                  value={partForm.dxf_file}
+                  onChange={(e) => setPartForm((prev) => ({ ...prev, dxf_file: e.target.value }))}
+                  placeholder="part.dxf"
+                />
+              </div>
+            )}
+
+            {partForm.part_type === 'tube' ? (
+              // Tubes: weight is derived — show a live computed preview, no manual entry
+              (() => {
+                const mat = materials.find((m) => m.id === partForm.material_id)
+                const len = partForm.cut_length.trim() !== '' ? Number(partForm.cut_length) : null
+                const computed =
+                  mat?.unit_weight_lbs && mat?.stock_length_in && len != null && !isNaN(len)
+                    ? (len / mat.stock_length_in) * mat.unit_weight_lbs
+                    : null
+                return (
+                  <div>
+                    <label className="label">Weight (auto-calculated)</label>
+                    <div
+                      style={{
+                        padding: '8px 11px',
+                        background: 'var(--panel)',
+                        border: '1px solid var(--border)',
+                        borderRadius: 'var(--radius-sm)',
+                        fontSize: '0.84rem',
+                        color: computed != null ? 'var(--text)' : 'var(--muted)',
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      {computed != null ? (
+                        <>
+                          <span style={{ fontWeight: 700 }}>{computed.toFixed(3)} lbs</span>
+                          <span style={{ color: 'var(--muted)', marginLeft: 8, fontSize: '0.78rem' }}>
+                            ({partForm.cut_length}&Prime; ÷ {mat!.stock_length_in}&Prime; stock × {mat!.unit_weight_lbs} lbs/stick)
+                          </span>
+                        </>
+                      ) : (
+                        'Enter cut length and select material to calculate'
+                      )}
+                    </div>
+                  </div>
+                )
+              })()
+            ) : (
+              <div>
+                <label className="label">Weight (lbs)</label>
+                <input
+                  className="field"
+                  type="number"
+                  step="0.001"
+                  value={partForm.weight_lbs}
+                  onChange={(e) => setPartForm((prev) => ({ ...prev, weight_lbs: e.target.value }))}
+                  placeholder="0.5"
+                />
+              </div>
+            )}
+
+            {/* Manufacturing stages */}
+            <div style={{ gridColumn: '1 / -1' }}>
+              <label className="label" style={{ marginBottom: 8, display: 'block' }}>Manufacturing Stages</label>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {STAGE_FIELDS.map(({ key, label }) => (
+                  <label
+                    key={key}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      padding: '5px 10px',
+                      border: `1px solid ${partForm[key as keyof typeof partForm] ? 'var(--accent-border)' : 'var(--border)'}`,
+                      borderRadius: 6,
+                      cursor: 'pointer',
+                      background: partForm[key as keyof typeof partForm] ? 'var(--accent-soft)' : 'var(--panel-2)',
+                      fontSize: '0.82rem',
+                      userSelect: 'none',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!!partForm[key as keyof typeof partForm]}
+                      onChange={(e) => setPartForm((prev) => ({ ...prev, [key]: e.target.checked }))}
+                      style={{ accentColor: 'var(--accent)' }}
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ gridColumn: '1 / -1' }}>
+              <label className="label">Notes</label>
+              <textarea
+                className="textarea"
+                rows={3}
+                value={partForm.notes}
+                onChange={(e) => setPartForm((prev) => ({ ...prev, notes: e.target.value }))}
+                placeholder="Optional notes"
+              />
+            </div>
+
+            {/* Create mode: attach section */}
+            {!partModalIsEdit && (
+              <div
+                style={{
+                  gridColumn: '1 / -1',
+                  padding: 14,
+                  background: 'var(--panel-2)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 8,
+                }}
+              >
+                <div className="label" style={{ marginBottom: 10 }}>Attach to:</div>
+                <div style={{ display: 'flex', gap: 16, marginBottom: 10 }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: '0.88rem' }}>
+                    <input
+                      type="radio"
+                      checked={partAttachMode === 'sku'}
+                      onChange={() => setPartAttachMode('sku')}
+                      style={{ accentColor: 'var(--accent)' }}
+                    />
+                    This SKU directly
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: '0.88rem' }}>
+                    <input
+                      type="radio"
+                      checked={partAttachMode === 'subassembly'}
+                      onChange={() => setPartAttachMode('subassembly')}
+                      style={{ accentColor: 'var(--accent)' }}
+                    />
+                    Inside sub-assembly
+                  </label>
+                </div>
+
+                {partAttachMode === 'subassembly' && (
+                  <div style={{ marginBottom: 10 }}>
+                    <select
+                      className="select"
+                      value={partAttachSubassemblyId}
+                      onChange={(e) => setPartAttachSubassemblyId(e.target.value)}
+                    >
+                      <option value="">Select sub-assembly</option>
+                      {selectedSkuSubassemblies.map((row) => (
+                        <option key={row.sub_assembly_id} value={row.sub_assembly_id}>
+                          {row.sub_assembly_name || row.sub_assembly_id}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <label className="label" style={{ margin: 0 }}>Qty:</label>
+                  <input
+                    className="field"
+                    style={{ width: 80 }}
+                    value={partAttachQty}
+                    onChange={(e) => setPartAttachQty(e.target.value)}
+                    placeholder="1"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {builderMessage && <div className="message" style={{ marginTop: 12 }}>{builderMessage}</div>}
+
+          <div className="btn-row" style={{ marginTop: 18 }}>
+            <button type="button" className="btn btn-primary" disabled={builderSaving} onClick={() => void savePartModal()}>
+              {builderSaving ? 'Saving...' : partModalIsEdit ? 'Save Part' : 'Create Part'}
+            </button>
+            <button type="button" className="btn btn-secondary" onClick={() => setPartModalOpen(false)}>
+              Cancel
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* ── Sub-Assembly Modal ─────────────────────────────────────────────────── */}
+      {saModalOpen && (
+        <Modal onClose={() => setSaModalOpen(false)}>
+          <h2 style={{ margin: '0 0 18px', fontSize: '1.15rem', fontWeight: 800 }}>
+            {saModalIsEdit ? 'Edit Sub-assembly' : '＋ New Sub-assembly'}
+          </h2>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+            <div>
+              <label className="label">Sub-assembly ID *</label>
+              <input
+                className="field"
+                value={saForm.id}
+                onChange={(e) => setSaForm((prev) => ({ ...prev, id: e.target.value }))}
+                disabled={saModalIsEdit}
+                placeholder="SA-001"
+              />
+            </div>
+
+            <div>
+              <label className="label">Name *</label>
+              <input
+                className="field"
+                value={saForm.name}
+                onChange={(e) => setSaForm((prev) => ({ ...prev, name: e.target.value }))}
+                placeholder="Main Frame Assembly"
+              />
+            </div>
+
+            <div style={{ gridColumn: '1 / -1' }}>
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 10,
+                  cursor: 'pointer',
+                  padding: '10px 14px',
+                  border: `1px solid ${saForm.requires_weld ? 'var(--accent-border)' : 'var(--border)'}`,
+                  borderRadius: 8,
+                  background: saForm.requires_weld ? 'var(--accent-soft)' : 'var(--panel-2)',
+                  userSelect: 'none',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={saForm.requires_weld}
+                  onChange={(e) => setSaForm((prev) => ({ ...prev, requires_weld: e.target.checked }))}
+                  style={{ accentColor: 'var(--accent)', marginTop: 2, flexShrink: 0 }}
+                />
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: '0.88rem' }}>Requires Welding</div>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 2 }}>
+                    This sub-assembly gets welded together as a unit
+                  </div>
+                </div>
+              </label>
+            </div>
+
+            <div style={{ gridColumn: '1 / -1' }}>
+              <label className="label">Notes</label>
+              <textarea
+                className="textarea"
+                rows={3}
+                value={saForm.notes}
+                onChange={(e) => setSaForm((prev) => ({ ...prev, notes: e.target.value }))}
+                placeholder="Optional notes"
+              />
+            </div>
+
+            {/* Create mode: attach qty */}
+            {!saModalIsEdit && (
+              <div style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: 10 }}>
+                <label className="label" style={{ margin: 0, whiteSpace: 'nowrap' }}>Qty to attach to SKU:</label>
+                <input
+                  className="field"
+                  style={{ width: 80 }}
+                  value={saAttachQty}
+                  onChange={(e) => setSaAttachQty(e.target.value)}
+                  placeholder="1"
+                />
+              </div>
+            )}
+          </div>
+
+          {builderMessage && <div className="message" style={{ marginTop: 12 }}>{builderMessage}</div>}
+
+          <div className="btn-row" style={{ marginTop: 18 }}>
+            <button type="button" className="btn btn-primary" disabled={builderSaving} onClick={() => void saveSaModal()}>
+              {builderSaving ? 'Saving...' : saModalIsEdit ? 'Save Sub-assembly' : 'Create Sub-assembly'}
+            </button>
+            <button type="button" className="btn btn-secondary" onClick={() => setSaModalOpen(false)}>
+              Cancel
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* ── PartPickerModal ────────────────────────────────────────────────────── */}
+      {partPickerOpenFor !== null && (
+        <PartPickerModal
+          parts={parts}
+          onClose={() => setPartPickerOpenFor(null)}
+          onSelect={(part) => {
+            if (partPickerOpenFor === 'sku') {
+              setPartLookup(part.part_number)
+              setPartIdToAdd(part.id)
+            } else {
+              setSubassemblyPartLookup((prev) => ({ ...prev, [partPickerOpenFor]: part.part_number }))
+              setSubassemblyDraftPartId((prev) => ({ ...prev, [partPickerOpenFor]: part.id }))
+            }
+            setPartPickerOpenFor(null)
+          }}
+        />
+      )}
+    </>
   )
 }
