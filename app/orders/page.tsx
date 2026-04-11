@@ -367,7 +367,7 @@ export default function OrdersPage() {
   const [syncMessage, setSyncMessage] = useState('')
 
   // Table controls
-  const [channelFilter, setChannelFilter] = useState<'all' | 'shopify' | 'turn5'>('all')
+  const [channelFilter, setChannelFilter] = useState<'all' | 'shopify' | 'turn5' | 'ready'>('all')
   const [viewMode, setViewMode]     = useState<ViewMode>('by_order')
   const [sortDir, setSortDir]       = useState<SortDir>('asc')
   const [sortField, setSortField]   = useState<'date' | 'status'>('date')
@@ -388,6 +388,9 @@ export default function OrdersPage() {
   // Ship modal
   const [shippingOrderId, setShippingOrderId] = useState<string | null>(null)
   const [shippingCost, setShippingCost]       = useState('')
+
+  // Auto-allocate flash message (triggered from powder page)
+  const [autoMessage, setAutoMessage] = useState('')
 
   // Order history (lazy-loaded when section is opened)
   const [histOpen, setHistOpen]               = useState(false)
@@ -451,6 +454,29 @@ export default function OrdersPage() {
     setLoading(false)
   }
   useEffect(() => { void initialLoad() }, [])
+
+  // Show auto-allocate flash when arriving from powder page
+  useEffect(() => {
+    if (!loading && sessionStorage.getItem('garvin:auto_allocate') === 'true') {
+      sessionStorage.removeItem('garvin:auto_allocate')
+      const msg = 'Inventory updated from powder return — checking what\'s ready to ship...'
+      setAutoMessage(msg)
+      setTimeout(() => setAutoMessage(''), 5000)
+    }
+  }, [loading])
+
+  useEffect(() => {
+    const channel = supabase
+      .channel('orders-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
+        void loadOrders()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sku_inventory' }, () => {
+        void loadInventory()
+      })
+      .subscribe()
+    return () => { void supabase.removeChannel(channel) }
+  }, [])
 
   // Auto-run allocation once data is loaded so ready-to-ship status
   // is always current without needing to click "Allocate Stock"
@@ -602,6 +628,50 @@ export default function OrdersPage() {
     }))
     sessionStorage.setItem('garvin:orders_import', JSON.stringify(rows))
     router.push('/planner')
+  }
+
+  // ── Quick Batch (skip planner, go direct to /batches) ──────────────────────
+
+  function sendToBatch() {
+    const selected = orders.filter((o) => selectedIds.has(o.id))
+    const demand: Record<string, number> = {}
+    for (const order of selected) {
+      for (const line of order.order_lines) {
+        if (!line.sku_id) continue
+        demand[line.sku_id] = (demand[line.sku_id] ?? 0) + line.qty
+      }
+    }
+    const rows = Object.entries(demand).map(([skuId, qty]) => ({
+      skuId, qty: String(qty), skuLookup: skuId,
+    }))
+    sessionStorage.setItem('garvin:batch_import', JSON.stringify(rows))
+    window.location.href = '/batches'
+  }
+
+  // ── Packing slip ───────────────────────────────────────────────────────────
+
+  function printPackingSlip(orderId: string) {
+    const order = orders.find((o) => o.id === orderId)
+    if (!order) return
+    const lines = order.order_lines
+      .map((l) => {
+        const desc = l.description ?? skus.find((s) => s.id === l.sku_id)?.description ?? l.ss_sku
+        return `<tr><td style="padding:8px;border-bottom:1px solid #eee">${l.ss_sku}</td><td style="padding:8px;border-bottom:1px solid #eee">${desc}</td><td style="padding:8px;border-bottom:1px solid #eee;text-align:center">${l.qty}</td></tr>`
+      })
+      .join('')
+    const html = `<!DOCTYPE html><html><head><title>Packing Slip #${order.order_number}</title>
+  <style>body{font-family:sans-serif;padding:32px;color:#111}h1{margin:0 0 4px}p{margin:4px 0;color:#555}table{width:100%;border-collapse:collapse;margin-top:24px}th{text-align:left;padding:8px;border-bottom:2px solid #333;font-size:0.85rem;text-transform:uppercase;letter-spacing:.05em}@media print{body{padding:16px}}</style>
+  </head><body>
+  <h1>Packing Slip</h1>
+  <p>Order #${order.order_number}</p>
+  <p>${order.customer_name ?? ''}</p>
+  <p>Date: ${new Date().toLocaleDateString()}</p>
+  <table><thead><tr><th>SKU</th><th>Description</th><th>Qty</th></tr></thead><tbody>${lines}</tbody></table>
+  <p style="margin-top:32px;font-size:0.85rem;color:#999">Garvin Industries — Thank you for your order</p>
+  <script>window.onload=function(){window.print()}<\/script>
+  </body></html>`
+    const w = window.open('', '_blank')
+    if (w) { w.document.write(html); w.document.close() }
   }
 
   // ── Note editing ───────────────────────────────────────────────────────────
@@ -766,10 +836,10 @@ export default function OrdersPage() {
     })
   }, [dateSorted, sortField, sortDir, allocStatuses, skuBatchStatus])
 
-  const filtered = useMemo(() =>
-    sorted.filter((o) => channelFilter === 'all' || o.channel === channelFilter),
-    [sorted, channelFilter]
-  )
+  const filtered = useMemo(() => {
+    if (channelFilter === 'ready') return sorted.filter((o) => allocStatuses[o.id] === 'ready')
+    return sorted.filter((o) => channelFilter === 'all' || o.channel === channelFilter)
+  }, [sorted, channelFilter, allocStatuses])
 
   // Group-by-SKU data (depends on filtered)
   const skuGroups: Record<string, { sku_id: string; description: string; orders: Array<{ order: Order; qty: number }> }> = {}
@@ -908,6 +978,21 @@ export default function OrdersPage() {
         </div>
       </div>
 
+      {/* ── Auto-allocate flash message ──────────────────────────────────────── */}
+      {autoMessage && (
+        <div style={{
+          padding: '12px 20px',
+          background: 'rgba(34,197,94,0.12)',
+          border: '1px solid rgba(34,197,94,0.35)',
+          borderRadius: 10,
+          fontSize: '0.9rem',
+          color: 'var(--success)',
+          fontWeight: 600,
+        }}>
+          {autoMessage}
+        </div>
+      )}
+
       {/* ── Ready to Ship banner ─────────────────────────────────────────────── */}
       {allocated && readyCount > 0 && (
         <div style={{
@@ -989,6 +1074,21 @@ export default function OrdersPage() {
                   {tab.label} ({tab.count})
                 </button>
               ))}
+              {allocated && (
+                <button
+                  onClick={() => setChannelFilter(channelFilter === 'ready' ? 'all' : 'ready')}
+                  style={{
+                    background: channelFilter === 'ready' ? 'var(--success)' : 'var(--panel-2)',
+                    border: `1px solid ${channelFilter === 'ready' ? 'var(--success)' : 'var(--border)'}`,
+                    borderRadius: 20, padding: '4px 14px',
+                    fontSize: '0.82rem', fontWeight: 600,
+                    color: channelFilter === 'ready' ? '#fff' : 'var(--text-2)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  🟢 Ready ({readyCount})
+                </button>
+              )}
             </div>
           </div>
 
@@ -1043,6 +1143,9 @@ export default function OrdersPage() {
             </span>
             <button className="btn btn-primary" style={{ height: 30, fontSize: '0.8rem' }} onClick={sendToPlanner}>
               📋 Send to Build Planner
+            </button>
+            <button className="btn btn-secondary" style={{ height: 30, fontSize: '0.8rem' }} onClick={sendToBatch}>
+              ⚡ Quick Batch
             </button>
             <button className="btn btn-secondary" style={{ height: 30, fontSize: '0.8rem' }} onClick={() => setSelectedIds(new Set())}>
               Clear Selection
@@ -1100,6 +1203,9 @@ export default function OrdersPage() {
                       </div>
                       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                         <button className="btn btn-secondary" style={{ height: 32 }} onClick={() => setShippingOrderId(null)}>Cancel</button>
+                        <button className="btn btn-secondary" style={{ height: 32 }} onClick={() => printPackingSlip(shippingOrderId)}>
+                          🖨 Print Slip
+                        </button>
                         <button className="btn btn-primary" style={{ height: 32, background: 'var(--success)', borderColor: 'var(--success)' }}
                           onClick={() => markShipped(shippingOrderId)}>
                           ✓ Confirm Ship
@@ -1316,11 +1422,19 @@ export default function OrdersPage() {
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
                                   {/* Production status: shows for any SKU in a batch */}
                                   {topBatch && (
-                                    <span style={{
-                                      background: BATCH_STATUS_STYLE[topBatch.status]?.bg,
-                                      color: BATCH_STATUS_STYLE[topBatch.status]?.color,
-                                      borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700,
-                                    }}>
+                                    <span
+                                      title={topBatch.batchName}
+                                      style={{
+                                        background: BATCH_STATUS_STYLE[topBatch.status]?.bg,
+                                        color: BATCH_STATUS_STYLE[topBatch.status]?.color,
+                                        borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700,
+                                        cursor: 'pointer',
+                                      }}
+                                      onClick={() => {
+                                        sessionStorage.setItem('garvin:open_batch', topBatch.batchId)
+                                        window.location.href = '/batches'
+                                      }}
+                                    >
                                       {BATCH_STATUS_STYLE[topBatch.status]?.label}
                                     </span>
                                   )}
