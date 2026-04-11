@@ -607,6 +607,7 @@ export default function BatchesPage() {
       partId: string
       partNumber: string
       description: string | null
+      dxfFile: string | null
       qty: number
       done: boolean
     }>
@@ -693,6 +694,7 @@ export default function BatchesPage() {
         partId: part.id,
         partNumber: part.part_number,
         description: part.description,
+        dxfFile: part.dxf_file,
         qty: totalQty,
         done: comps.has(`${part.id}:laser`) || comps.has(`${part.id}:sheet_bend`),
       })
@@ -1238,14 +1240,6 @@ export default function BatchesPage() {
                           type="button"
                           className="btn btn-secondary"
                           style={{ fontSize: '0.82rem' }}
-                          onClick={() => exportBatchTubeXlsx(workItems)}
-                        >
-                          &#x1F4CA; Export Tube XLSX
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-secondary"
-                          style={{ fontSize: '0.82rem' }}
                           onClick={() => exportBatchCypCut(workItems)}
                         >
                           &#x1F532; Export CypCut XLSX
@@ -1416,39 +1410,54 @@ export default function BatchesPage() {
                         )
                       })}
 
-                      {/* Sheet parts groups */}
+                      {/* Sheet parts groups — card grid with DXF previews */}
                       {sheetGroups.length > 0 && sheetGroups.map((sg) => (
                         <div key={sg.materialId} style={{ marginBottom: 28, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
-                          <div style={{ background: 'var(--panel-2)', borderBottom: '1px solid var(--border)', padding: '10px 16px', borderLeft: '4px solid var(--muted)' }}>
+                          <div style={{ background: 'var(--panel-2)', borderBottom: '1px solid var(--border)', padding: '10px 16px', borderLeft: '4px solid #60a5fa' }}>
                             <div style={{ fontWeight: 800, fontSize: '1rem' }}>{sg.materialName}</div>
                             <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 2 }}>
-                              {sg.parts.reduce((s, p) => s + p.qty, 0)} pieces needed
+                              {sg.parts.reduce((s, p) => s + p.qty, 0)} pieces needed · {sg.parts.length} part{sg.parts.length !== 1 ? 's' : ''}
                             </div>
                           </div>
-                          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                            <thead>
-                              <tr style={{ background: 'var(--panel-2)' }}>
-                                <th style={{ textAlign: 'left', padding: '6px 16px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', width: 20 }}></th>
-                                <th style={{ textAlign: 'left', padding: '6px 8px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', width: 90 }}>Part #</th>
-                                <th style={{ textAlign: 'left', padding: '6px 8px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Description</th>
-                                <th style={{ textAlign: 'center', padding: '6px 8px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', width: 80 }}>Pieces Needed</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {sg.parts.map((p) => (
-                                <tr key={p.partId} style={{ borderTop: '1px solid var(--border)', background: p.done ? 'rgba(34,197,94,0.06)' : 'transparent', opacity: p.done ? 0.6 : 1 }}>
-                                  <td style={{ padding: '8px 8px 8px 16px', fontSize: '1rem', textAlign: 'center', verticalAlign: 'middle' }}>{p.done ? '☑' : '☐'}</td>
-                                  <td style={{ padding: '8px', fontFamily: 'monospace', fontWeight: 700, fontSize: '0.82rem', verticalAlign: 'middle' }}>{p.partNumber}</td>
-                                  <td style={{ padding: '8px', fontSize: '0.85rem', verticalAlign: 'middle', textDecoration: p.done ? 'line-through' : 'none', color: p.done ? 'var(--muted)' : 'var(--text-1)' }}>
-                                    {p.description
-                                      ? p.description.length > 42 ? p.description.slice(0, 42) + '\u2026' : p.description
-                                      : '\u2014'}
-                                  </td>
-                                  <td style={{ padding: '8px', textAlign: 'center', fontWeight: 700, fontSize: '0.88rem', verticalAlign: 'middle' }}>{p.qty} pieces needed</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
+                          <div style={{ padding: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 10 }}>
+                            {sg.parts.map((p) => (
+                              <div key={p.partId} style={{
+                                border: `1px solid ${p.done ? 'rgba(34,197,94,0.35)' : 'var(--border)'}`,
+                                borderRadius: 8,
+                                background: p.done ? 'rgba(34,197,94,0.06)' : 'var(--panel)',
+                                overflow: 'hidden',
+                                opacity: p.done ? 0.7 : 1,
+                              }}>
+                                {/* DXF preview */}
+                                <div style={{ height: 130, background: 'rgba(0,0,0,0.15)' }}>
+                                  <DxfPartPreview
+                                    dxfFile={p.dxfFile}
+                                    partNumber={p.partNumber}
+                                    size="fill"
+                                    isTube={false}
+                                    tubeFallback={false}
+                                  />
+                                </div>
+                                {/* Info */}
+                                <div style={{ padding: '8px 10px' }}>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 4 }}>
+                                    <span style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: '0.78rem', color: 'var(--accent)' }}>{p.partNumber}</span>
+                                    <span style={{ fontWeight: 800, fontSize: '0.88rem', color: p.done ? 'var(--success)' : 'var(--text-1)', whiteSpace: 'nowrap' }}>
+                                      {p.done ? '✓' : `×${p.qty}`}
+                                    </span>
+                                  </div>
+                                  {p.description && (
+                                    <div style={{ fontSize: '0.72rem', color: 'var(--text-2)', marginTop: 3, lineHeight: 1.3 }}>
+                                      {p.description.length > 38 ? p.description.slice(0, 38) + '…' : p.description}
+                                    </div>
+                                  )}
+                                  {p.done && (
+                                    <div style={{ fontSize: '0.68rem', color: 'var(--success)', marginTop: 4, fontWeight: 700 }}>✓ Done</div>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
                         </div>
                       ))}
                     </div>
