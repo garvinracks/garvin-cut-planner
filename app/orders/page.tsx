@@ -370,6 +370,7 @@ export default function OrdersPage() {
   const [channelFilter, setChannelFilter] = useState<'all' | 'shopify' | 'turn5'>('all')
   const [viewMode, setViewMode]     = useState<ViewMode>('by_order')
   const [sortDir, setSortDir]       = useState<SortDir>('asc')
+  const [sortField, setSortField]   = useState<'date' | 'status'>('date')
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
@@ -676,18 +677,14 @@ export default function OrdersPage() {
 
   // ── Derived data ─────────────────────────────────────────────────────────────
 
-  const sorted = useMemo(() =>
+  // Date-sorted base (used as tiebreaker for status sort too)
+  const dateSorted = useMemo(() =>
     [...orders].sort((a, b) => {
       const ta = new Date(a.order_date ?? 0).getTime()
       const tb = new Date(b.order_date ?? 0).getTime()
       return sortDir === 'asc' ? ta - tb : tb - ta
     }),
     [orders, sortDir]
-  )
-
-  const filtered = useMemo(() =>
-    sorted.filter((o) => channelFilter === 'all' || o.channel === channelFilter),
-    [sorted, channelFilter]
   )
 
   const lastSynced = orders.reduce<string | null>((max, o) => {
@@ -713,24 +710,6 @@ export default function OrdersPage() {
     }
   }
   const demandRows = Object.values(demandMap).sort((a, b) => b.qty - a.qty)
-
-  // Group-by-SKU data
-  const skuGroups: Record<string, { sku_id: string; description: string; orders: Array<{ order: Order; qty: number }> }> = {}
-  for (const order of filtered) {
-    for (const line of order.order_lines) {
-      if (!line.sku_id) continue
-      if (!skuGroups[line.sku_id]) {
-        const sku = skus.find((s) => s.id === line.sku_id)
-        skuGroups[line.sku_id] = { sku_id: line.sku_id, description: sku?.description ?? '', orders: [] }
-      }
-      skuGroups[line.sku_id].orders.push({ order, qty: line.qty })
-    }
-  }
-  const skuGroupList = Object.values(skuGroups).sort((a, b) => {
-    const qa = a.orders.reduce((s, r) => s + r.qty, 0)
-    const qb = b.orders.reduce((s, r) => s + r.qty, 0)
-    return qb - qa
-  })
 
   const readyCount     = Object.values(allocStatuses).filter((s) => s === 'ready').length
   const buildCount     = Object.values(allocStatuses).filter((s) => s === 'build_needed').length
@@ -759,6 +738,56 @@ export default function OrdersPage() {
   }
 
   const STATUS_PRIORITY: Record<string, number> = { in_progress: 3, at_powder: 2, planned: 1 }
+
+  // Status column sort: higher = more actionable / further along
+  const STATUS_SORT_PRIORITY: Record<string, number> = {
+    ready: 6, at_powder: 5, in_progress: 4, planned: 3, partial: 2, build_needed: 1, unmatched: 0,
+  }
+
+  function getStatusSortKey(order: Order): number {
+    const alloc = allocStatuses[order.id]
+    if (alloc === 'ready') return STATUS_SORT_PRIORITY.ready
+    const prodStatuses = order.order_lines
+      .filter((l) => l.sku_id && skuBatchStatus[l.sku_id])
+      .map((l) => skuBatchStatus[l.sku_id!].status)
+    if (prodStatuses.includes('at_powder'))   return STATUS_SORT_PRIORITY.at_powder
+    if (prodStatuses.includes('in_progress')) return STATUS_SORT_PRIORITY.in_progress
+    if (prodStatuses.includes('planned'))     return STATUS_SORT_PRIORITY.planned
+    if (alloc === 'partial')      return STATUS_SORT_PRIORITY.partial
+    if (alloc === 'build_needed') return STATUS_SORT_PRIORITY.build_needed
+    return STATUS_SORT_PRIORITY.unmatched
+  }
+
+  const sorted = useMemo(() => {
+    if (sortField !== 'status') return dateSorted
+    return [...dateSorted].sort((a, b) => {
+      const diff = getStatusSortKey(b) - getStatusSortKey(a)
+      return sortDir === 'asc' ? -diff : diff
+    })
+  }, [dateSorted, sortField, sortDir, allocStatuses, skuBatchStatus])
+
+  const filtered = useMemo(() =>
+    sorted.filter((o) => channelFilter === 'all' || o.channel === channelFilter),
+    [sorted, channelFilter]
+  )
+
+  // Group-by-SKU data (depends on filtered)
+  const skuGroups: Record<string, { sku_id: string; description: string; orders: Array<{ order: Order; qty: number }> }> = {}
+  for (const order of filtered) {
+    for (const line of order.order_lines) {
+      if (!line.sku_id) continue
+      if (!skuGroups[line.sku_id]) {
+        const sku = skus.find((s) => s.id === line.sku_id)
+        skuGroups[line.sku_id] = { sku_id: line.sku_id, description: sku?.description ?? '', orders: [] }
+      }
+      skuGroups[line.sku_id].orders.push({ order, qty: line.qty })
+    }
+  }
+  const skuGroupList = Object.values(skuGroups).sort((a, b) => {
+    const qa = a.orders.reduce((s, r) => s + r.qty, 0)
+    const qb = b.orders.reduce((s, r) => s + r.qty, 0)
+    return qb - qa
+  })
 
   // ── History derived ──────────────────────────────────────────────────────────
 
@@ -1122,14 +1151,25 @@ export default function OrdersPage() {
                       </th>
                       <th
                         style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
-                        onClick={() => setSortDir((d) => d === 'asc' ? 'desc' : 'asc')}
+                        onClick={() => {
+                          if (sortField === 'date') setSortDir((d) => d === 'asc' ? 'desc' : 'asc')
+                          else { setSortField('date'); setSortDir('asc') }
+                        }}
                       >
-                        Date {sortDir === 'asc' ? '↑' : '↓'}
+                        Date {sortField === 'date' ? (sortDir === 'asc' ? '↑' : '↓') : <span style={{ color: 'var(--muted)', opacity: 0.4 }}>↕</span>}
                       </th>
                       <th>SKU</th>
                       <th style={{ textAlign: 'center' }}>Qty</th>
                       <th>Customer</th>
-                      <th>Status</th>
+                      <th
+                        style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
+                        onClick={() => {
+                          if (sortField === 'status') setSortDir((d) => d === 'asc' ? 'desc' : 'asc')
+                          else { setSortField('status'); setSortDir('desc') }
+                        }}
+                      >
+                        Status {sortField === 'status' ? (sortDir === 'desc' ? '↑' : '↓') : <span style={{ color: 'var(--muted)', opacity: 0.4 }}>↕</span>}
+                      </th>
                       <th style={{ minWidth: 180 }}>Notes</th>
                     </tr>
                   </thead>
