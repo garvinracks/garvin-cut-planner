@@ -74,6 +74,7 @@ type MaterialRecord = {
   thickness: string | null
   unit_weight_lbs: number | null
   stock_length_in: number | null
+  scrap_rate: number | null
   qty_on_hand: number | null
 }
 
@@ -173,7 +174,7 @@ export default function BatchesPage() {
       supabase.from('sku_sub_assemblies').select('sku_id, sub_assembly_id, qty'),
       supabase.from('sub_assembly_parts').select('sub_assembly_id, part_id, qty'),
       supabase.from('sub_assemblies').select('id, name, requires_weld, image_file'),
-      supabase.from('materials').select('id, material_type, tube_od, tube_wall, thickness, unit_weight_lbs, stock_length_in, qty_on_hand'),
+      supabase.from('materials').select('id, material_type, tube_od, tube_wall, thickness, unit_weight_lbs, stock_length_in, scrap_rate, qty_on_hand'),
       supabase.from('material_price_logs').select('material_id, price').order('date_purchased', { ascending: false }),
     ])
     setBatches((batchData ?? []) as BuildBatch[])
