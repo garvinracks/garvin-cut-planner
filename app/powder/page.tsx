@@ -70,10 +70,6 @@ export default function PowderPage() {
   const [message, setMessage] = useState('')
   const [saving, setSaving]   = useState(false)
 
-  // Debug: all batches regardless of status (so we can see what the DB actually has)
-  const [allBatchesDebug, setAllBatchesDebug] = useState<Array<{ id: string; name: string; status: string; powder_batch_id: string | null }>>([])
-  const [debugOpen, setDebugOpen] = useState(false)
-
   // "Record return" flow
   const [returnMode, setReturnMode]         = useState(false)
   const [returnSelected, setReturnSelected] = useState<Set<string>>(new Set())
@@ -107,11 +103,6 @@ export default function PowderPage() {
       supabase.from('sku_sub_assemblies').select('sku_id, sub_assembly_id, qty'),
       supabase.from('sub_assembly_parts').select('sub_assembly_id, part_id, qty'),
       supabase.from('parts').select('id, weight_lbs'),
-      // Diagnostic: fetch ALL batches so we can see real DB status
-      supabase.from('build_batches')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(20),
     ])
     setBuildBatches((bbData ?? []) as BuildBatch[])
     setBatchLines((blData ?? []) as BuildBatchLine[])
@@ -120,7 +111,6 @@ export default function PowderPage() {
     setSkuSubs((ssData ?? []) as SkuSubAssembly[])
     setSubParts((sapData ?? []) as SubAssemblyPart[])
     setParts((partData ?? []) as Part[])
-    setAllBatchesDebug((allBbData ?? []) as any[])
     setLoading(false)
   }
 
@@ -268,59 +258,6 @@ export default function PowderPage() {
         </button>
       </div>
 
-      {/* ── Debug panel ─────────────────────────────────────────────────────────── */}
-      <div style={{ border: '1px solid rgba(234,179,8,0.4)', borderRadius: 8, overflow: 'hidden' }}>
-        <button
-          onClick={() => setDebugOpen((v) => !v)}
-          style={{ width: '100%', textAlign: 'left', padding: '8px 14px', background: 'rgba(234,179,8,0.08)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text)' }}
-        >
-          <span style={{ fontSize: '0.75rem', color: '#facc15', fontWeight: 700, textTransform: 'uppercase' }}>🔍 Debug — All Batches in DB</span>
-          <span style={{ fontSize: '0.75rem', color: 'var(--muted)', marginLeft: 'auto' }}>{debugOpen ? '▲ hide' : '▼ show'}</span>
-        </button>
-        {debugOpen && (
-          <div style={{ padding: '10px 14px', fontSize: '0.8rem' }}>
-            <div style={{ marginBottom: 6, color: 'var(--muted)' }}>
-              Showing last 20 batches (all statuses). The filter on this page only loads <code>at_powder</code> and <code>complete</code>.
-            </div>
-            {allBatchesDebug.length === 0 ? (
-              <div style={{ color: 'var(--danger)' }}>No batches returned — possible RLS issue or empty table.</div>
-            ) : (
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'monospace' }}>
-                <thead>
-                  <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                    <th style={{ textAlign: 'left', padding: '4px 8px', color: 'var(--muted)' }}>Name</th>
-                    <th style={{ textAlign: 'left', padding: '4px 8px', color: 'var(--muted)' }}>Status (DB)</th>
-                    <th style={{ textAlign: 'left', padding: '4px 8px', color: 'var(--muted)' }}>powder_batch_id</th>
-                    <th style={{ textAlign: 'left', padding: '4px 8px', color: 'var(--muted)' }}>Visible here?</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {allBatchesDebug.map((b) => {
-                    const visible = (b.status === 'at_powder' || b.status === 'complete') && !b.powder_batch_id
-                    const inMainList = b.status === 'at_powder' || b.status === 'complete'
-                    return (
-                      <tr key={b.id} style={{ borderBottom: '1px solid var(--border)', background: visible ? 'rgba(34,197,94,0.06)' : 'transparent' }}>
-                        <td style={{ padding: '4px 8px' }}>{b.name}</td>
-                        <td style={{ padding: '4px 8px' }}>
-                          <span style={{ color: b.status === 'at_powder' ? '#a78bfa' : b.status === 'complete' ? 'var(--success)' : b.status === 'in_progress' ? '#facc15' : 'var(--muted)', fontWeight: 700 }}>
-                            {b.status}
-                          </span>
-                        </td>
-                        <td style={{ padding: '4px 8px', color: b.powder_batch_id ? 'var(--warning)' : 'var(--muted)' }}>
-                          {b.powder_batch_id ?? '—'}
-                        </td>
-                        <td style={{ padding: '4px 8px', color: visible ? 'var(--success)' : 'var(--muted)' }}>
-                          {visible ? '✓ yes (At Coater)' : inMainList ? '⚠ loaded but has powder_batch_id' : '✕ wrong status'}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            )}
-          </div>
-        )}
-      </div>
 
       {message && (
         <div
