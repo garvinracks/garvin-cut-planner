@@ -9,6 +9,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createBrowserClient } from '@/lib/supabase'
 import DxfPartPreview from '@/components/DxfPartPreview'
+import { downloadXlsx } from '@/lib/xlsx'
 
 const SUB_IMAGE_BUCKET = 'subassembly-images'
 
@@ -138,6 +139,7 @@ export default function BatchesPage() {
   const [message, setMessage]         = useState('')
   const [activeBatch, setActiveBatch] = useState<BuildBatch | null>(null)
   const [batchCompletionCounts, setBatchCompletionCounts] = useState<Record<string, number>>({})
+  const [batchTotalOps, setBatchTotalOps] = useState<Record<string, number>>({})
   const [batchViewTab, setBatchViewTab] = useState<'progress' | 'cutlist'>('progress')
 
   // Per-part/sub-assembly completions for the active batch: Set<"id:stageKey">
@@ -205,6 +207,42 @@ export default function BatchesPage() {
     }
     setBatchCompletionCounts(counts)
 
+    // Compute total expected operations per batch for the progress bar
+    const totalOps: Record<string, number> = {}
+    for (const batch of loadedBatches) {
+      const bLines = (lineData ?? []) as Array<{batch_id: string; sku_id: string; qty: number; id: string}>
+      const batchBLines = bLines.filter((l: any) => l.batch_id === batch.id)
+      const uniqueOps = new Set<string>()
+      for (const line of batchBLines) {
+        // Direct parts
+        const directParts = (spData ?? []) as Array<{sku_id: string; part_id: string; qty: number}>
+        for (const sp of directParts.filter((s: any) => s.sku_id === line.sku_id)) {
+          const part = (partData ?? []).find((p: any) => p.id === sp.part_id)
+          if (!part) continue
+          for (const stage of STAGES) {
+            if ((part as any)[stage.partKey]) uniqueOps.add(`${sp.part_id}:${stage.stageKey}`)
+          }
+        }
+        // SA parts
+        const skuSubsList = (ssData ?? []) as Array<{sku_id: string; sub_assembly_id: string; qty: number}>
+        const subPartsList = (sapData ?? []) as Array<{sub_assembly_id: string; part_id: string; qty: number}>
+        const subAssembliesList = (saData ?? []) as Array<{id: string; name: string; requires_weld: boolean}>
+        for (const ss of skuSubsList.filter((s: any) => s.sku_id === line.sku_id)) {
+          for (const sap of subPartsList.filter((s: any) => s.sub_assembly_id === ss.sub_assembly_id)) {
+            const part = (partData ?? []).find((p: any) => p.id === sap.part_id)
+            if (!part) continue
+            for (const stage of STAGES) {
+              if ((part as any)[stage.partKey]) uniqueOps.add(`${sap.part_id}:${stage.stageKey}`)
+            }
+          }
+          const sa = subAssembliesList.find((s: any) => s.id === ss.sub_assembly_id)
+          if (sa?.requires_weld) uniqueOps.add(`${ss.sub_assembly_id}:weld`)
+        }
+      }
+      totalOps[batch.id] = uniqueOps.size
+    }
+    setBatchTotalOps(totalOps)
+
     // Auto-open a batch if sessionStorage has a pending open request
     try {
       const openBatchId = sessionStorage.getItem('garvin:open_batch')
@@ -224,6 +262,9 @@ export default function BatchesPage() {
       .from('batch_part_completions')
       .select('part_id, stage_key')
       .eq('batch_id', batchId)
+    if (data === null) {
+      setSaveError('⚠️ The batch_part_completions table is missing. Run the SQL migration in your Supabase dashboard to enable progress saving.')
+    }
     const s: CompletionSet = new Set((data ?? []).map((r: any) => `${r.part_id}:${r.stage_key}`))
     setCompletions(s)
     setLoadingCompletions(false)
@@ -403,6 +444,9 @@ export default function BatchesPage() {
     }
 
     setSavingKeys((prev) => { const next = new Set(prev); next.delete(key); return next })
+    if (checked && activeBatch?.status === 'planned') {
+      await updateStatus(activeBatch, 'in_progress')
+    }
     if (activeBatch) await syncBatchStageFlags(activeBatch, newCompletions, workItems, subAssemblyGroupsForBatch)
   }
 
@@ -558,11 +602,11 @@ export default function BatchesPage() {
   interface SheetCutListGroup {
     materialId: string
     materialName: string
+    thickness: string | null
     parts: Array<{
       partId: string
       partNumber: string
       description: string | null
-      weightLbs: number | null
       qty: number
       done: boolean
     }>
@@ -628,26 +672,27 @@ export default function BatchesPage() {
       return aOd - bOd
     })
 
-    // --- Sheet groups ---
+    // --- Sheet groups (grouped by material + thickness) ---
     const sheetGroupMap = new Map<string, SheetCutListGroup>()
     for (const { part, totalQty } of wItems.values()) {
       if (part.part_type !== 'sheet') continue
       const mat = materials.find(
         (m) => m.material_type === 'sheet' && m.thickness === part.material
       )
-      const matId = mat?.id ?? `__no_mat_sheet__${part.material ?? '?'}`
+      // Group key: combine material field + thickness so different thicknesses get separate groups
+      const groupKey = `${part.material ?? '__none__'}::${mat?.thickness ?? '__none__'}`
       const matName = mat
-        ? (mat.thickness ? `Sheet ${mat.thickness}"` : `Sheet material`)
+        ? (mat.thickness ? `${part.material ?? 'Sheet'} — ${mat.thickness}"` : `${part.material ?? 'Sheet material'}`)
         : `${part.material ?? 'Sheet'} (no material record)`
+      const thickness = mat?.thickness ?? null
 
-      if (!sheetGroupMap.has(matId)) {
-        sheetGroupMap.set(matId, { materialId: matId, materialName: matName, parts: [] })
+      if (!sheetGroupMap.has(groupKey)) {
+        sheetGroupMap.set(groupKey, { materialId: groupKey, materialName: matName, thickness, parts: [] })
       }
-      sheetGroupMap.get(matId)!.parts.push({
+      sheetGroupMap.get(groupKey)!.parts.push({
         partId: part.id,
         partNumber: part.part_number,
         description: part.description,
-        weightLbs: part.weight_lbs ?? null,
         qty: totalQty,
         done: comps.has(`${part.id}:laser`) || comps.has(`${part.id}:sheet_bend`),
       })
@@ -761,25 +806,24 @@ export default function BatchesPage() {
       html += `</div>`
     }
 
-    if (sheetGroups.length > 0) {
+    for (const sg of sheetGroups) {
+      const totalPieces = sg.parts.reduce((s, p) => s + p.qty, 0)
       html += `<div class="material-group">
-<div class="material-header"><div class="material-name">Sheet Parts</div></div>
+<div class="material-header">
+  <div class="material-name">${sg.materialName}</div>
+  <div class="material-stats">${totalPieces} pieces needed</div>
+</div>
 <table>
-<thead><tr><th style="width:90px">Part #</th><th>Description</th><th style="width:90px">Material</th><th style="width:70px;text-align:right">Wt/pc</th><th style="width:40px;text-align:center">Qty</th><th style="width:80px;text-align:right">Total Wt</th></tr></thead>
+<thead><tr><th style="width:90px">Part #</th><th>Description</th><th style="width:100px;text-align:center">Pieces Needed</th></tr></thead>
 <tbody>`
-      for (const sg of sheetGroups) {
-        for (const p of sg.parts) {
-          const rowClass = p.done ? ' class="done-row"' : ''
-          const desc = (p.description ?? '').length > 42 ? (p.description ?? '').slice(0, 42) + '\u2026' : (p.description ?? '\u2014')
-          html += `<tr${rowClass}>
+      for (const p of sg.parts) {
+        const rowClass = p.done ? ' class="done-row"' : ''
+        const desc = (p.description ?? '').length > 42 ? (p.description ?? '').slice(0, 42) + '\u2026' : (p.description ?? '\u2014')
+        html += `<tr${rowClass}>
   <td class="mono">${p.partNumber}</td>
   <td>${desc}</td>
-  <td>${sg.materialName}</td>
-  <td style="text-align:right">${p.weightLbs != null ? p.weightLbs.toFixed(2) + ' lb' : '\u2014'}</td>
-  <td style="text-align:center">${p.qty}&times;</td>
-  <td style="text-align:right">${p.weightLbs != null ? (p.weightLbs * p.qty).toFixed(2) + ' lb' : '\u2014'}</td>
+  <td style="text-align:center">${p.qty} pieces needed</td>
 </tr>`
-        }
       }
       html += `</tbody></table></div>`
     }
@@ -787,6 +831,41 @@ export default function BatchesPage() {
     html += `<script>window.onload=function(){window.print()}<\/script></body></html>`
     const w = window.open('', '_blank')
     if (w) { w.document.write(html); w.document.close() }
+  }
+
+  function exportBatchCypCut(wItems: Map<string, { part: Part; totalQty: number; subAssemblyId: string | null }>) {
+    const sheetParts = Array.from(wItems.entries())
+      .filter(([, wi]) => wi.part.part_type === 'sheet')
+    if (sheetParts.length === 0) { alert('No sheet parts in this batch.'); return }
+    downloadXlsx(
+      `cypcut-${activeBatch?.name ?? 'batch'}.xlsx`,
+      'PartsDefinition',
+      sheetParts.map(([, wi]) => ({
+        PartName: `[${wi.part.material ?? ''}] ${wi.part.part_number}`,
+        Amount: Math.ceil(wi.totalQty * 1.05),
+        FilePath: wi.part.dxf_file ?? '',
+      }))
+    )
+  }
+
+  function exportBatchTubeXlsx(wItems: Map<string, { part: Part; totalQty: number; subAssemblyId: string | null }>) {
+    const tubeParts = Array.from(wItems.entries())
+      .filter(([, wi]) => wi.part.part_type === 'tube')
+    if (tubeParts.length === 0) { alert('No tube parts in this batch.'); return }
+    downloadXlsx(
+      `tube-cut-list-${activeBatch?.name ?? 'batch'}.xlsx`,
+      'TubeCutList',
+      tubeParts.map(([, wi]) => ({
+        material:     wi.part.material,
+        tube_od:      wi.part.tube_od,
+        tube_wall:    wi.part.tube_wall,
+        part_number:  wi.part.part_number,
+        description:  wi.part.description,
+        qty:          wi.totalQty,
+        cut_length_in: wi.part.cut_length,
+        total_length_in: wi.part.cut_length ? wi.part.cut_length * wi.totalQty : null,
+      }))
+    )
   }
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -1153,8 +1232,24 @@ export default function BatchesPage() {
                   {batchViewTab === 'cutlist' ? (
                     /* ── Cut List View ────────────────────────────────────────── */
                     <div>
-                      {/* Print button */}
-                      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
+                      {/* Cut list action buttons */}
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          style={{ fontSize: '0.82rem' }}
+                          onClick={() => exportBatchTubeXlsx(workItems)}
+                        >
+                          &#x1F4CA; Export Tube XLSX
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          style={{ fontSize: '0.82rem' }}
+                          onClick={() => exportBatchCypCut(workItems)}
+                        >
+                          &#x1F532; Export CypCut XLSX
+                        </button>
                         <button
                           type="button"
                           className="btn btn-secondary"
@@ -1322,12 +1417,12 @@ export default function BatchesPage() {
                       })}
 
                       {/* Sheet parts groups */}
-                      {sheetGroups.length > 0 && (
-                        <div style={{ marginBottom: 28, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+                      {sheetGroups.length > 0 && sheetGroups.map((sg) => (
+                        <div key={sg.materialId} style={{ marginBottom: 28, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
                           <div style={{ background: 'var(--panel-2)', borderBottom: '1px solid var(--border)', padding: '10px 16px', borderLeft: '4px solid var(--muted)' }}>
-                            <div style={{ fontWeight: 800, fontSize: '1rem' }}>Sheet Parts</div>
+                            <div style={{ fontWeight: 800, fontSize: '1rem' }}>{sg.materialName}</div>
                             <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 2 }}>
-                              {sheetGroups.reduce((s, g) => s + g.parts.reduce((ps, p) => ps + p.qty, 0), 0)} total pieces
+                              {sg.parts.reduce((s, p) => s + p.qty, 0)} pieces needed
                             </div>
                           </div>
                           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -1336,36 +1431,26 @@ export default function BatchesPage() {
                                 <th style={{ textAlign: 'left', padding: '6px 16px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', width: 20 }}></th>
                                 <th style={{ textAlign: 'left', padding: '6px 8px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', width: 90 }}>Part #</th>
                                 <th style={{ textAlign: 'left', padding: '6px 8px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Description</th>
-                                <th style={{ textAlign: 'left', padding: '6px 8px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', width: 100 }}>Material</th>
-                                <th style={{ textAlign: 'right', padding: '6px 8px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', width: 70 }}>Wt/pc</th>
-                                <th style={{ textAlign: 'center', padding: '6px 8px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', width: 44 }}>Qty</th>
-                                <th style={{ textAlign: 'right', padding: '6px 16px 6px 8px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', width: 80 }}>Total Wt</th>
+                                <th style={{ textAlign: 'center', padding: '6px 8px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', width: 80 }}>Pieces Needed</th>
                               </tr>
                             </thead>
                             <tbody>
-                              {sheetGroups.map((sg) =>
-                                sg.parts.map((p) => (
-                                  <tr key={p.partId} style={{ borderTop: '1px solid var(--border)', background: p.done ? 'rgba(34,197,94,0.06)' : 'transparent', opacity: p.done ? 0.6 : 1 }}>
-                                    <td style={{ padding: '8px 8px 8px 16px', fontSize: '1rem', textAlign: 'center', verticalAlign: 'middle' }}>{p.done ? '☑' : '☐'}</td>
-                                    <td style={{ padding: '8px', fontFamily: 'monospace', fontWeight: 700, fontSize: '0.82rem', verticalAlign: 'middle' }}>{p.partNumber}</td>
-                                    <td style={{ padding: '8px', fontSize: '0.85rem', verticalAlign: 'middle', textDecoration: p.done ? 'line-through' : 'none', color: p.done ? 'var(--muted)' : 'var(--text-1)' }}>
-                                      {p.description
-                                        ? p.description.length > 42 ? p.description.slice(0, 42) + '\u2026' : p.description
-                                        : '\u2014'}
-                                    </td>
-                                    <td style={{ padding: '8px', fontSize: '0.82rem', color: 'var(--muted)', verticalAlign: 'middle' }}>{sg.materialName}</td>
-                                    <td style={{ padding: '8px', textAlign: 'right', fontFamily: 'monospace', fontSize: '0.82rem', verticalAlign: 'middle' }}>{p.weightLbs != null ? p.weightLbs.toFixed(2) + ' lb' : '\u2014'}</td>
-                                    <td style={{ padding: '8px', textAlign: 'center', fontWeight: 700, fontSize: '0.88rem', verticalAlign: 'middle' }}>{p.qty}&times;</td>
-                                    <td style={{ padding: '8px 16px 8px 8px', textAlign: 'right', fontFamily: 'monospace', fontSize: '0.82rem', color: 'var(--muted)', verticalAlign: 'middle' }}>
-                                      {p.weightLbs != null ? (p.weightLbs * p.qty).toFixed(2) + ' lb' : '\u2014'}
-                                    </td>
-                                  </tr>
-                                ))
-                              )}
+                              {sg.parts.map((p) => (
+                                <tr key={p.partId} style={{ borderTop: '1px solid var(--border)', background: p.done ? 'rgba(34,197,94,0.06)' : 'transparent', opacity: p.done ? 0.6 : 1 }}>
+                                  <td style={{ padding: '8px 8px 8px 16px', fontSize: '1rem', textAlign: 'center', verticalAlign: 'middle' }}>{p.done ? '☑' : '☐'}</td>
+                                  <td style={{ padding: '8px', fontFamily: 'monospace', fontWeight: 700, fontSize: '0.82rem', verticalAlign: 'middle' }}>{p.partNumber}</td>
+                                  <td style={{ padding: '8px', fontSize: '0.85rem', verticalAlign: 'middle', textDecoration: p.done ? 'line-through' : 'none', color: p.done ? 'var(--muted)' : 'var(--text-1)' }}>
+                                    {p.description
+                                      ? p.description.length > 42 ? p.description.slice(0, 42) + '\u2026' : p.description
+                                      : '\u2014'}
+                                  </td>
+                                  <td style={{ padding: '8px', textAlign: 'center', fontWeight: 700, fontSize: '0.88rem', verticalAlign: 'middle' }}>{p.qty} pieces needed</td>
+                                </tr>
+                              ))}
                             </tbody>
                           </table>
                         </div>
-                      )}
+                      ))}
                     </div>
                   ) : (
                   /* ── Progress Table View ──────────────────────────────────── */
@@ -1458,8 +1543,8 @@ export default function BatchesPage() {
                                   {activeStages.map(({ stageKey, partKey }) => {
                                     if (!part[partKey as keyof Part]) return <td key={stageKey} style={{ borderLeft: '1px solid var(--border)', background: 'rgba(0,0,0,0.03)' }} />
                                     const done = completions.has(`${part.id}:${stageKey}`)
-                                    const blocked = stageKey === 'weld' && STAGES.some((s) => {
-                                      if (s.stageKey === 'weld') return false
+                                    const stageIdx = STAGES.findIndex((s) => s.stageKey === stageKey)
+                                    const blocked = stageIdx > 0 && STAGES.slice(0, stageIdx).some((s) => {
                                       if (!part[s.partKey as keyof Part]) return false
                                       return !completions.has(`${part.id}:${s.stageKey}`)
                                     })
@@ -1538,8 +1623,8 @@ export default function BatchesPage() {
                                   {activeStages.map(({ stageKey, partKey }) => {
                                     if (!part[partKey as keyof Part]) return <td key={stageKey} style={{ borderLeft: '1px solid var(--border)', background: 'rgba(0,0,0,0.03)' }} />
                                     const done = completions.has(`${part.id}:${stageKey}`)
-                                    const blocked = stageKey === 'weld' && STAGES.some((s) => {
-                                      if (s.stageKey === 'weld') return false
+                                    const stageIdx = STAGES.findIndex((s) => s.stageKey === stageKey)
+                                    const blocked = stageIdx > 0 && STAGES.slice(0, stageIdx).some((s) => {
                                       if (!part[s.partKey as keyof Part]) return false
                                       return !completions.has(`${part.id}:${s.stageKey}`)
                                     })
@@ -1722,27 +1807,33 @@ export default function BatchesPage() {
                   {batches.map((batch) => {
                     const ss = STATUS_STYLE[batch.status]
                     const skuCount = lines.filter((l) => l.batch_id === batch.id).length
-                    const completions = batchCompletionCounts[batch.id] ?? 0
-                    let progressCell: React.ReactNode
-                    if (batch.status === 'planned') {
-                      progressCell = <span style={{ color: 'var(--muted)', fontSize: '0.78rem' }}>Not started</span>
-                    } else if (batch.status === 'complete') {
-                      progressCell = <span style={{ color: 'var(--success)', fontWeight: 700, fontSize: '0.78rem' }}>✓ Done</span>
-                    } else if (batch.status === 'at_powder') {
-                      progressCell = <span style={{ color: '#a78bfa', fontWeight: 700, fontSize: '0.78rem' }}>🎨 Powder</span>
-                    } else {
-                      progressCell = (
-                        <span style={{ background: 'rgba(234,179,8,0.18)', color: '#facc15', borderRadius: 12, padding: '2px 9px', fontSize: '0.76rem', fontWeight: 700 }}>
-                          {completions} ✓
-                        </span>
-                      )
-                    }
+                    const done = batchCompletionCounts[batch.id] ?? 0
+                    const total = batchTotalOps[batch.id] ?? 0
+                    const pct = total > 0 ? Math.round((done / total) * 100) : (batch.status === 'complete' ? 100 : 0)
                     return (
                       <tr key={batch.id} style={{ cursor: 'pointer' }} onClick={() => { setActiveBatch(batch); setView('detail') }}>
                         <td style={{ fontWeight: 700 }}>{batch.name}</td>
                         <td><span style={{ background: ss.bg, color: ss.color, borderRadius: 20, padding: '2px 10px', fontSize: '0.76rem', fontWeight: 700 }}>{ss.label}</span></td>
                         <td>{skuCount}</td>
-                        <td>{progressCell}</td>
+                        <td style={{ minWidth: 120 }}>
+                          {batch.status === 'complete' ? (
+                            <span style={{ color: 'var(--success)', fontSize: '0.8rem', fontWeight: 700 }}>✓ Done</span>
+                          ) : batch.status === 'at_powder' ? (
+                            <span style={{ color: '#a78bfa', fontSize: '0.8rem', fontWeight: 700 }}>🎨 At Powder</span>
+                          ) : batch.status === 'planned' ? (
+                            <span style={{ color: 'var(--muted)', fontSize: '0.8rem' }}>Not started</span>
+                          ) : (
+                            <div>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                                <span style={{ fontSize: '0.72rem', color: 'var(--muted)' }}>{done}/{total} ops</span>
+                                <span style={{ fontSize: '0.72rem', fontWeight: 700, color: pct === 100 ? 'var(--success)' : 'var(--accent)' }}>{pct}%</span>
+                              </div>
+                              <div style={{ height: 6, background: 'var(--panel-2)', borderRadius: 3, overflow: 'hidden' }}>
+                                <div style={{ height: '100%', width: `${pct}%`, background: pct === 100 ? 'var(--success)' : 'var(--accent)', borderRadius: 3, transition: 'width 0.3s ease' }} />
+                              </div>
+                            </div>
+                          )}
+                        </td>
                         <td>{fmtDate(batch.created_at)}</td>
                         <td>{fmtDate(batch.completed_at)}</td>
                       </tr>
