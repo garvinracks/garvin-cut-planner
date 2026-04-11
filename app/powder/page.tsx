@@ -252,6 +252,9 @@ export default function PowderPage() {
             When parts come back from the coater, record the invoice cost to mark them complete.
           </p>
         </div>
+        <button className="btn btn-secondary" onClick={() => void loadAll()} style={{ alignSelf: 'flex-start' }}>
+          ↻ Refresh
+        </button>
       </div>
 
       {message && (
