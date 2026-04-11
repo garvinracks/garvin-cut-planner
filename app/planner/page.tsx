@@ -66,6 +66,8 @@ type ShopFloorStation = {
     part_id: string
     part_number: string
     description: string
+    dxf_file: string | null
+    part_type: 'tube' | 'sheet'
     qty: number
     step: number
     totalSteps: number
@@ -711,6 +713,8 @@ export default function PlannerPage() {
           part_id: part.id,
           part_number: row.part_number,
           description: row.description,
+          dxf_file: part.dxf_file,
+          part_type: part.part_type,
           qty: row.qty,
           step: 0,
           totalSteps: 0,
@@ -734,6 +738,8 @@ export default function PlannerPage() {
             part_id: part.id,
             part_number: row.part_number,
             description: row.description,
+            dxf_file: part.dxf_file,
+            part_type: part.part_type,
             qty: row.qty,
             step: op.step,
             totalSteps: ops.length,
@@ -1654,9 +1660,8 @@ export default function PlannerPage() {
                     <table className="table">
                       <thead>
                         <tr>
-                          <th>Part #</th>
-                          <th>Description</th>
-                          <th>Qty</th>
+                          <th style={{ width: 170 }}>Part</th>
+                          <th style={{ width: 50, textAlign: 'center' }}>Qty</th>
                           <th>Full Route</th>
                           <th>← Prev</th>
                           <th>Next →</th>
@@ -1665,18 +1670,20 @@ export default function PlannerPage() {
                       <tbody>
                         {station.parts.map((p) => (
                           <tr key={p.part_id}>
-                            <td style={{ fontWeight: 700 }}>{p.part_number}</td>
-                            <td>{p.description}</td>
-                            <td style={{ fontWeight: 700, color: 'var(--accent)' }}>{p.qty}</td>
-                            <td style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>{p.fullRoute}</td>
-                            <td>
+                            <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
+                              <DxfPartPreview dxfFile={p.dxf_file} partNumber={p.part_number} size="small" isTube={p.part_type === 'tube'} tubeFallback={false} />
+                              <div style={{ fontSize: '0.68rem', fontFamily: 'monospace', fontWeight: 700, color: 'var(--muted)', marginTop: 4 }}>{p.part_number}</div>
+                            </td>
+                            <td style={{ fontWeight: 700, color: 'var(--accent)', textAlign: 'center', verticalAlign: 'middle' }}>{p.qty}</td>
+                            <td style={{ fontSize: '0.8rem', color: 'var(--muted)', verticalAlign: 'middle' }}>{p.fullRoute}</td>
+                            <td style={{ verticalAlign: 'middle' }}>
                               {p.prevOp ? (
                                 <span style={{ fontSize: '0.78rem', color: 'var(--muted)' }}>{p.prevOp}</span>
                               ) : (
                                 <span style={{ fontSize: '0.75rem', color: 'var(--accent)', fontWeight: 600 }}>START</span>
                               )}
                             </td>
-                            <td>
+                            <td style={{ verticalAlign: 'middle' }}>
                               {p.nextOp ? (
                                 <span style={{
                                   background: 'var(--accent-soft)',
