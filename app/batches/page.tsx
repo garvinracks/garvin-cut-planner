@@ -147,6 +147,7 @@ export default function BatchesPage() {
   const [createRows, setCreateRows]   = useState([{ skuId: '', qty: '1', skuLookup: '' }])
   const [createDropdown, setCreateDropdown] = useState<number | null>(null)
   const [saving, setSaving]           = useState(false)
+  const [sendingToPowder, setSendingToPowder] = useState(false)
 
   // ── Load ─────────────────────────────────────────────────────────────────────
 
@@ -390,15 +391,19 @@ export default function BatchesPage() {
   }
 
   async function sendToPowder(batch: BuildBatch) {
+    setSendingToPowder(true)
+    setMessage('')
     const { error } = await supabase.from('build_batches').update({ status: 'at_powder' }).eq('id', batch.id)
     if (error) {
       setMessage(`Failed to send to powder: ${error.message}`)
+      setSendingToPowder(false)
       return
     }
     const updated = { ...batch, status: 'at_powder' as BatchStatus }
     setBatches((prev) => prev.map((b) => b.id === batch.id ? updated : b))
     setActiveBatch(updated)
-    router.push('/powder')
+    // Hard navigate so the powder page always reloads fresh
+    window.location.href = '/powder'
   }
 
   async function markCompleteWithCost(batch: BuildBatch) {
@@ -610,11 +615,12 @@ export default function BatchesPage() {
                 {activeBatch.status === 'in_progress' && (
                   <button
                     className="btn btn-secondary"
-                    style={{ fontSize: '0.8rem', background: 'rgba(167,139,250,0.15)', borderColor: 'rgba(167,139,250,0.4)', color: '#a78bfa' }}
+                    style={{ fontSize: '0.8rem', background: 'rgba(167,139,250,0.15)', borderColor: 'rgba(167,139,250,0.4)', color: '#a78bfa', opacity: sendingToPowder ? 0.6 : 1 }}
                     onClick={() => void sendToPowder(activeBatch)}
+                    disabled={sendingToPowder}
                     title="Mark this batch as sent to powder coater"
                   >
-                    🎨 Send to Powder
+                    {sendingToPowder ? '⏳ Sending…' : '🎨 Send to Powder'}
                   </button>
                 )}
                 {activeBatch.status === 'at_powder' && (

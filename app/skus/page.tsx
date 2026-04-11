@@ -1412,11 +1412,21 @@ export default function SkusPage() {
 
   function calcPartLineCost(partId: string, qty: number): number | null {
     const part = parts.find((p) => p.id === partId)
-    if (!part?.weight_lbs) return null
+    if (!part) return null
     const mat = findMaterialForPart(part)
-    if (!mat?.unit_weight_lbs) return null
+    if (!mat) return null
     const latestPrice = latestPriceByMaterialId[mat.id]
     if (!latestPrice) return null
+
+    if (part.part_type === 'tube') {
+      // Length-based: cost = qty × (cut_length / stock_length_in) × price_per_bar
+      // This works regardless of how unit_weight_lbs is entered (per bar vs per foot)
+      if (!part.cut_length || !mat.stock_length_in) return null
+      return qty * (part.cut_length / mat.stock_length_in) * latestPrice
+    }
+
+    // Sheet: weight-based with scrap rate
+    if (!part.weight_lbs || !mat.unit_weight_lbs) return null
     const costPerLb = latestPrice / mat.unit_weight_lbs
     const scrap = mat.scrap_rate ?? 0
     return qty * part.weight_lbs * costPerLb * (1 + scrap)
