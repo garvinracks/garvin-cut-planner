@@ -1381,6 +1381,7 @@ export default function OrdersPage() {
                                       <tbody>
                                         {order.order_lines.map((line) => {
                                           const lineSkuBatch = line.sku_id ? skuBatchStatus[line.sku_id] : null
+                                          const lineOnHand   = line.sku_id ? (inventory.find((i) => i.sku_id === line.sku_id)?.qty_on_hand ?? 0) : 0
                                           return (
                                             <tr key={line.id}>
                                               <td style={{ fontFamily: 'monospace', fontSize: '0.83rem', fontWeight: 600 }}>
@@ -1398,6 +1399,14 @@ export default function OrdersPage() {
                                                     borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700,
                                                   }}>
                                                     {BATCH_STATUS_STYLE[lineSkuBatch.status]?.label}
+                                                  </span>
+                                                ) : lineOnHand >= line.qty ? (
+                                                  <span style={{ background: 'rgba(34,197,94,0.15)', color: 'var(--success)', borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700 }}>
+                                                    ✓ In Stock ({lineOnHand})
+                                                  </span>
+                                                ) : lineOnHand > 0 ? (
+                                                  <span style={{ background: 'rgba(234,179,8,0.15)', color: 'var(--warning)', borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700 }}>
+                                                    {lineOnHand}/{line.qty} on hand
                                                   </span>
                                                 ) : (
                                                   <span style={{ color: 'var(--muted)', fontSize: '0.72rem' }}>—</span>
