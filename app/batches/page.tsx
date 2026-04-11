@@ -138,6 +138,7 @@ export default function BatchesPage() {
   const [message, setMessage]         = useState('')
   const [activeBatch, setActiveBatch] = useState<BuildBatch | null>(null)
   const [batchCompletionCounts, setBatchCompletionCounts] = useState<Record<string, number>>({})
+  const [batchViewTab, setBatchViewTab] = useState<'progress' | 'cutlist'>('progress')
 
   // Per-part/sub-assembly completions for the active batch: Set<"id:stageKey">
   const [completions, setCompletions] = useState<CompletionSet>(new Set())
@@ -506,6 +507,131 @@ export default function BatchesPage() {
     await loadAll()
   }
 
+  // ── Cut List helpers ──────────────────────────────────────────────────────────
+
+  interface CutListCut {
+    partId: string
+    partNumber: string
+    description: string | null
+    cutLengthIn: number | null
+    qty: number
+    requiresBend: boolean
+    saLabel: string | null
+    done: boolean
+  }
+
+  interface CutListGroup {
+    materialId: string
+    materialName: string
+    stockLengthIn: number | null
+    tubeOd: string | null
+    tubeWall: string | null
+    tubeShape: string | null
+    cuts: CutListCut[]
+  }
+
+  interface SheetCutListGroup {
+    materialId: string
+    materialName: string
+    parts: Array<{
+      partId: string
+      partNumber: string
+      description: string | null
+      weightLbs: number | null
+      qty: number
+      done: boolean
+    }>
+  }
+
+  function buildCutList(
+    wItems: Map<string, { part: Part; totalQty: number; subAssemblyId: string | null }>,
+    comps: CompletionSet,
+    saGroups: Map<string, { subAssembly: SubAssembly; items: Array<{ part: Part; totalQty: number }> }>
+  ): { tubeGroups: CutListGroup[]; sheetGroups: SheetCutListGroup[] } {
+    // --- Tube groups ---
+    const tubeGroupMap = new Map<string, CutListGroup>()
+
+    for (const { part, totalQty, subAssemblyId } of wItems.values()) {
+      if (part.part_type !== 'tube') continue
+
+      // Find matching material by tube_od + tube_wall
+      const mat = materials.find(
+        (m) => m.material_type === 'tube' && m.tube_od === part.tube_od && m.tube_wall === part.tube_wall
+      )
+      const matId = mat?.id ?? `__no_mat__${part.tube_od ?? '?'}x${part.tube_wall ?? '?'}`
+      const matName = mat
+        ? `${part.tube_od ?? '?'} × ${part.tube_wall ?? '?'} wall`
+        : `${part.tube_od ?? 'Unknown'} × ${part.tube_wall ?? '?'} (no material record)`
+
+      if (!tubeGroupMap.has(matId)) {
+        tubeGroupMap.set(matId, {
+          materialId: matId,
+          materialName: matName,
+          stockLengthIn: mat?.stock_length_in ?? null,
+          tubeOd: part.tube_od ?? null,
+          tubeWall: part.tube_wall ?? null,
+          tubeShape: null,
+          cuts: [],
+        })
+      }
+
+      const saLabel = subAssemblyId
+        ? (saGroups.get(subAssemblyId)?.subAssembly.name ?? null)
+        : null
+
+      tubeGroupMap.get(matId)!.cuts.push({
+        partId: part.id,
+        partNumber: part.part_number,
+        description: part.description,
+        cutLengthIn: part.cut_length ?? null,
+        qty: totalQty,
+        requiresBend: part.requires_tube_bend,
+        saLabel,
+        done: comps.has(`${part.id}:saw`),
+      })
+    }
+
+    // Sort cuts within each group: longest first
+    for (const grp of tubeGroupMap.values()) {
+      grp.cuts.sort((a, b) => (b.cutLengthIn ?? 0) - (a.cutLengthIn ?? 0))
+    }
+
+    // Sort groups by tube OD (parse numeric value)
+    const tubeGroups = Array.from(tubeGroupMap.values()).sort((a, b) => {
+      const aOd = parseFloat(a.tubeOd ?? '0') || 0
+      const bOd = parseFloat(b.tubeOd ?? '0') || 0
+      return aOd - bOd
+    })
+
+    // --- Sheet groups ---
+    const sheetGroupMap = new Map<string, SheetCutListGroup>()
+    for (const { part, totalQty } of wItems.values()) {
+      if (part.part_type !== 'sheet') continue
+      const mat = materials.find(
+        (m) => m.material_type === 'sheet' && m.thickness === part.material
+      )
+      const matId = mat?.id ?? `__no_mat_sheet__${part.material ?? '?'}`
+      const matName = mat
+        ? (mat.thickness ? `Sheet ${mat.thickness}"` : `Sheet material`)
+        : `${part.material ?? 'Sheet'} (no material record)`
+
+      if (!sheetGroupMap.has(matId)) {
+        sheetGroupMap.set(matId, { materialId: matId, materialName: matName, parts: [] })
+      }
+      sheetGroupMap.get(matId)!.parts.push({
+        partId: part.id,
+        partNumber: part.part_number,
+        description: part.description,
+        weightLbs: part.weight_lbs ?? null,
+        qty: totalQty,
+        done: comps.has(`${part.id}:laser`) || comps.has(`${part.id}:sheet_bend`),
+      })
+    }
+    const sheetGroups = Array.from(sheetGroupMap.values())
+
+    return { tubeGroups, sheetGroups }
+  }
+
   // ── SKU autocomplete ──────────────────────────────────────────────────────────
 
   function skuSuggestions(query: string) {
@@ -516,6 +642,126 @@ export default function BatchesPage() {
 
   function updateCreateRow(idx: number, field: 'skuId' | 'qty' | 'skuLookup', val: string) {
     setCreateRows((prev) => prev.map((r, i) => i === idx ? { ...r, [field]: val } : r))
+  }
+
+  // ── Print cut list ────────────────────────────────────────────────────────────
+
+  function printCutList(
+    tubeGroups: CutListGroup[],
+    sheetGroups: SheetCutListGroup[]
+  ) {
+    const batchName = activeBatch?.name ?? 'Batch'
+    let html = `<!DOCTYPE html><html><head><title>Cut List \u2014 ${batchName}</title>
+<style>
+  body { font-family: sans-serif; padding: 24px; color: #111; }
+  h1 { margin: 0 0 4px; font-size: 1.4rem; }
+  .subtitle { color: #666; font-size: 0.85rem; margin-bottom: 24px; }
+  .material-group { margin-bottom: 28px; page-break-inside: avoid; }
+  .material-header { background: #f0f0f0; padding: 8px 12px; border-left: 4px solid #333; margin-bottom: 8px; }
+  .material-name { font-weight: bold; font-size: 1rem; }
+  .material-stats { font-size: 0.8rem; color: #555; margin-top: 2px; }
+  .section-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: #888; font-weight: 700; padding: 4px 0 2px; border-bottom: 1px solid #ccc; margin: 10px 0 6px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; padding: 6px 8px; border-bottom: 2px solid #333; font-size: 0.78rem; text-transform: uppercase; }
+  td { padding: 5px 8px; border-bottom: 1px solid #ddd; font-size: 0.85rem; }
+  .mono { font-family: monospace; font-weight: bold; }
+  .bend-badge { background: #e0e0e0; border-radius: 3px; padding: 1px 5px; font-size: 0.72rem; }
+  .totals-row td { background: #f8f8f8; font-weight: bold; border-top: 2px solid #333; }
+  .done-row td { color: #888; text-decoration: line-through; }
+  .sa-label { font-size: 0.72rem; color: #888; }
+  @media print { body { padding: 12px; } }
+</style></head><body>
+<h1>Cut List \u2014 ${batchName}</h1>
+<div class="subtitle">Printed ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}</div>`
+
+    for (const grp of tubeGroups) {
+      const totalIn = grp.cuts.reduce((s, c) => s + (c.cutLengthIn ?? 0) * c.qty, 0)
+      const stockNeeded = grp.stockLengthIn
+        ? Math.ceil(totalIn / grp.stockLengthIn)
+        : null
+      const scrapIn = stockNeeded && grp.stockLengthIn
+        ? stockNeeded * grp.stockLengthIn - totalIn
+        : null
+      const totalPcs = grp.cuts.reduce((s, c) => s + c.qty, 0)
+
+      html += `<div class="material-group">
+<div class="material-header">
+  <div class="material-name">${grp.tubeOd ?? '?'} Tube \xd7 ${grp.tubeWall ?? '?'} wall</div>
+  <div class="material-stats">Stock: ${grp.stockLengthIn ? grp.stockLengthIn + '"' : 'unknown'} &nbsp;|&nbsp; ${totalPcs} pieces &nbsp;|&nbsp; ${totalIn.toFixed(1)}" total</div>
+</div>
+<div class="section-label">Cuts</div>
+<table>
+<thead><tr><th style="width:90px">Part #</th><th>Description</th><th style="width:40px;text-align:center">Qty</th><th style="width:60px;text-align:right">Length</th><th style="width:60px;text-align:right">Total</th><th style="width:50px"></th></tr></thead>
+<tbody>`
+      for (const c of grp.cuts) {
+        const rowClass = c.done ? ' class="done-row"' : ''
+        const desc = (c.description ?? '').length > 42 ? (c.description ?? '').slice(0, 42) + '\u2026' : (c.description ?? '\u2014')
+        html += `<tr${rowClass}>
+  <td class="mono">${c.partNumber}</td>
+  <td>${desc}${c.saLabel ? `<br><span class="sa-label">${c.saLabel}</span>` : ''}</td>
+  <td style="text-align:center">${c.qty}&times;</td>
+  <td style="text-align:right">${c.cutLengthIn != null ? c.cutLengthIn + '"' : '\u2014'}</td>
+  <td style="text-align:right">${c.cutLengthIn != null ? (c.cutLengthIn * c.qty) + '"' : '\u2014'}</td>
+  <td>${c.requiresBend ? '<span class="bend-badge">BEND</span>' : ''}</td>
+</tr>`
+      }
+      html += `</tbody>
+<tfoot><tr class="totals-row">
+  <td colspan="2">Total</td>
+  <td style="text-align:center">${totalPcs} pcs</td>
+  <td style="text-align:right" colspan="2">${totalIn.toFixed(1)}"</td>
+  <td></td>
+</tr></tfoot>
+</table>`
+      if (stockNeeded != null) {
+        html += `<div style="font-size:0.8rem;color:#555;margin-top:6px;padding:4px 0;">
+  Stock required: ${stockNeeded} \xd7 ${grp.stockLengthIn}" = ${(stockNeeded * (grp.stockLengthIn!)).toFixed(0)}" available &rarr; ${scrapIn?.toFixed(1)}" scrap
+</div>`
+      }
+
+      // Bends sub-section
+      const bendParts = grp.cuts.filter((c) => c.requiresBend)
+      if (bendParts.length > 0) {
+        html += `<div class="section-label">Bends</div>
+<table>
+<thead><tr><th style="width:90px">Part #</th><th>Description</th><th style="width:40px;text-align:center">Qty</th><th style="width:60px;text-align:right">Length</th></tr></thead>
+<tbody>`
+        for (const c of bendParts) {
+          const desc = (c.description ?? '').length > 42 ? (c.description ?? '').slice(0, 42) + '\u2026' : (c.description ?? '\u2014')
+          html += `<tr><td class="mono">${c.partNumber}</td><td>${desc}</td><td style="text-align:center">${c.qty}&times;</td><td style="text-align:right">${c.cutLengthIn != null ? c.cutLengthIn + '"' : '\u2014'}</td></tr>`
+        }
+        html += `</tbody></table>`
+      }
+
+      html += `</div>`
+    }
+
+    if (sheetGroups.length > 0) {
+      html += `<div class="material-group">
+<div class="material-header"><div class="material-name">Sheet Parts</div></div>
+<table>
+<thead><tr><th style="width:90px">Part #</th><th>Description</th><th style="width:90px">Material</th><th style="width:70px;text-align:right">Wt/pc</th><th style="width:40px;text-align:center">Qty</th><th style="width:80px;text-align:right">Total Wt</th></tr></thead>
+<tbody>`
+      for (const sg of sheetGroups) {
+        for (const p of sg.parts) {
+          const rowClass = p.done ? ' class="done-row"' : ''
+          const desc = (p.description ?? '').length > 42 ? (p.description ?? '').slice(0, 42) + '\u2026' : (p.description ?? '\u2014')
+          html += `<tr${rowClass}>
+  <td class="mono">${p.partNumber}</td>
+  <td>${desc}</td>
+  <td>${sg.materialName}</td>
+  <td style="text-align:right">${p.weightLbs != null ? p.weightLbs.toFixed(2) + ' lb' : '\u2014'}</td>
+  <td style="text-align:center">${p.qty}&times;</td>
+  <td style="text-align:right">${p.weightLbs != null ? (p.weightLbs * p.qty).toFixed(2) + ' lb' : '\u2014'}</td>
+</tr>`
+        }
+      }
+      html += `</tbody></table></div>`
+    }
+
+    html += `<script>window.onload=function(){window.print()}<\/script></body></html>`
+    const w = window.open('', '_blank')
+    if (w) { w.document.write(html); w.document.close() }
   }
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -658,6 +904,57 @@ export default function BatchesPage() {
       return Array.from(workItems.values()).some((w) => !!w.part[partKey as keyof Part])
     })
 
+    // ── Cut List data ────────────────────────────────────────────────────────────
+    const { tubeGroups, sheetGroups } = buildCutList(workItems, completions, subAssemblyGroups)
+
+    // ── Next Up banner ───────────────────────────────────────────────────────────
+    let nextUpText = ''
+    let nextUpIcon = ''
+    let nextUpColor = 'var(--warning)'
+    let nextUpBg = 'rgba(234,179,8,0.1)'
+    let nextUpBorder = 'rgba(234,179,8,0.3)'
+
+    if (activeBatch.status === 'in_progress') {
+      const tubeParts = Array.from(workItems.values()).filter((w) => w.part.part_type === 'tube')
+      const unsawedTubeParts = tubeParts.filter((w) => w.part.requires_saw && !completions.has(`${w.part.id}:saw`))
+      const unbentTubeParts = tubeParts.filter((w) => w.part.requires_tube_bend && !completions.has(`${w.part.id}:tube_bend`))
+      const sheetParts = Array.from(workItems.values()).filter((w) => w.part.part_type === 'sheet')
+      const unprocessedSheetParts = sheetParts.filter((w) =>
+        (w.part.requires_laser && !completions.has(`${w.part.id}:laser`)) ||
+        (w.part.requires_sheet_bend && !completions.has(`${w.part.id}:sheet_bend`))
+      )
+      const saWeldPending = Array.from(subAssemblyGroups.values()).filter(
+        ({ subAssembly }) => subAssembly.requires_weld && !completions.has(`${subAssembly.id}:weld`)
+      )
+      const finalWeldPending = Array.from(workItems.values()).filter(
+        (w) => w.part.requires_weld && !completions.has(`${w.part.id}:weld`)
+      )
+
+      if (unsawedTubeParts.length > 0) {
+        const matCount = new Set(unsawedTubeParts.map((w) => `${w.part.tube_od}x${w.part.tube_wall}`)).size
+        nextUpIcon = '✂\ufe0f'
+        nextUpText = `Cut ${unsawedTubeParts.length} tube part${unsawedTubeParts.length !== 1 ? 's' : ''} across ${matCount} material${matCount !== 1 ? 's' : ''}`
+      } else if (unbentTubeParts.length > 0) {
+        nextUpIcon = '\ud83d\udd04'
+        nextUpText = `Bend ${unbentTubeParts.length} tube part${unbentTubeParts.length !== 1 ? 's' : ''}`
+      } else if (unprocessedSheetParts.length > 0) {
+        nextUpIcon = '\ud83d\udccc'
+        nextUpText = `Process ${unprocessedSheetParts.length} sheet part${unprocessedSheetParts.length !== 1 ? 's' : ''}`
+      } else if (saWeldPending.length > 0) {
+        nextUpIcon = '\ud83d\udd25'
+        nextUpText = `Weld ${saWeldPending.length} sub-assembl${saWeldPending.length !== 1 ? 'ies' : 'y'}`
+      } else if (finalWeldPending.length > 0) {
+        nextUpIcon = '\ud83d\udd25'
+        nextUpText = `Final weld (${finalWeldPending.length} part${finalWeldPending.length !== 1 ? 's' : ''})`
+      } else if (totalOps > 0) {
+        nextUpIcon = '\u2705'
+        nextUpText = 'All parts complete \u2014 ready to send to powder'
+        nextUpColor = 'var(--success)'
+        nextUpBg = 'rgba(34,197,94,0.1)'
+        nextUpBorder = 'rgba(34,197,94,0.3)'
+      }
+    }
+
     return (
       <div className="section-stack">
         <style>{`
@@ -716,6 +1013,14 @@ export default function BatchesPage() {
           </div>
         </section>
 
+        {/* Next Up banner */}
+        {activeBatch.status === 'in_progress' && nextUpText && (
+          <div style={{ background: nextUpBg, border: `1px solid ${nextUpBorder}`, borderRadius: 8, padding: '10px 16px', color: nextUpColor, fontWeight: 600, fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: '1.1rem' }}>{nextUpIcon}</span>
+            <span>Next Up: {nextUpText}</span>
+          </div>
+        )}
+
         {/* at_powder banner */}
         {activeBatch.status === 'at_powder' && (
           <div style={{ background: 'rgba(167,139,250,0.12)', border: '1px solid rgba(167,139,250,0.35)', borderRadius: 8, padding: '14px 20px', color: '#a78bfa', fontWeight: 600 }}>
@@ -755,12 +1060,48 @@ export default function BatchesPage() {
         {/* Manufacturing checklist (in_progress only) */}
         {activeBatch.status === 'in_progress' && (
           <section className="card">
-            <div className="card-header">
+            <div className="card-header" style={{ flexWrap: 'wrap', gap: 12 }}>
               <div>
-                <h2 className="card-title">Manufacturing Progress</h2>
+                <h2 className="card-title">Manufacturing</h2>
                 <div className="card-subtitle">{doneOps} of {totalOps} operations complete</div>
               </div>
-              <div style={{ fontSize: '1.4rem', fontWeight: 800, color: allDone ? 'var(--success)' : 'var(--accent)' }}>{pct}%</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginLeft: 'auto', flexWrap: 'wrap' }}>
+                {/* View toggle tabs */}
+                <div style={{ display: 'flex', gap: 0, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+                  <button
+                    type="button"
+                    onClick={() => setBatchViewTab('progress')}
+                    style={{
+                      padding: '5px 14px',
+                      fontSize: '0.8rem',
+                      fontWeight: 600,
+                      border: 'none',
+                      borderRight: '1px solid var(--border)',
+                      cursor: 'pointer',
+                      background: batchViewTab === 'progress' ? 'var(--accent)' : 'var(--panel-2)',
+                      color: batchViewTab === 'progress' ? '#fff' : 'var(--text-2)',
+                    }}
+                  >
+                    &#x1F4CB; Progress
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBatchViewTab('cutlist')}
+                    style={{
+                      padding: '5px 14px',
+                      fontSize: '0.8rem',
+                      fontWeight: 600,
+                      border: 'none',
+                      cursor: 'pointer',
+                      background: batchViewTab === 'cutlist' ? 'var(--accent)' : 'var(--panel-2)',
+                      color: batchViewTab === 'cutlist' ? '#fff' : 'var(--text-2)',
+                    }}
+                  >
+                    &#x1F52A; Cut List
+                  </button>
+                </div>
+                <div style={{ fontSize: '1.4rem', fontWeight: 800, color: allDone ? 'var(--success)' : 'var(--accent)' }}>{pct}%</div>
+              </div>
             </div>
             <div className="card-body">
               {loadingCompletions ? (
@@ -774,6 +1115,226 @@ export default function BatchesPage() {
                     <div style={{ height: '100%', width: `${pct}%`, background: allDone ? 'var(--success)' : 'var(--accent)', borderRadius: 6, transition: 'width 0.25s' }} />
                   </div>
 
+                  {batchViewTab === 'cutlist' ? (
+                    /* ── Cut List View ────────────────────────────────────────── */
+                    <div>
+                      {/* Print button */}
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          style={{ fontSize: '0.82rem' }}
+                          onClick={() => printCutList(tubeGroups, sheetGroups)}
+                        >
+                          &#x1F5A8; Print Cut List
+                        </button>
+                      </div>
+
+                      {tubeGroups.length === 0 && sheetGroups.length === 0 && (
+                        <div className="empty">No parts with material info found in this batch.</div>
+                      )}
+
+                      {/* Tube material groups */}
+                      {tubeGroups.map((grp) => {
+                        const totalIn = grp.cuts.reduce((s, c) => s + (c.cutLengthIn ?? 0) * c.qty, 0)
+                        const totalPcs = grp.cuts.reduce((s, c) => s + c.qty, 0)
+                        const stockNeeded = grp.stockLengthIn && grp.stockLengthIn > 0
+                          ? Math.ceil(totalIn / grp.stockLengthIn)
+                          : null
+                        const scrapIn = stockNeeded && grp.stockLengthIn
+                          ? stockNeeded * grp.stockLengthIn - totalIn
+                          : null
+                        const bendParts = grp.cuts.filter((c) => c.requiresBend)
+                        return (
+                          <div key={grp.materialId} style={{ marginBottom: 28, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+                            {/* Material header */}
+                            <div style={{ background: 'var(--panel-2)', borderBottom: '1px solid var(--border)', padding: '10px 16px', borderLeft: '4px solid var(--accent)' }}>
+                              <div style={{ fontWeight: 800, fontSize: '1rem' }}>
+                                {grp.tubeOd ?? '?'} Tube &times; {grp.tubeWall ?? '?'} wall
+                              </div>
+                              <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 2, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                                <span>Stock: {grp.stockLengthIn ? grp.stockLengthIn + '"' : 'unknown'}</span>
+                                <span>{totalPcs} pieces</span>
+                                <span>{totalIn.toFixed(1)}" total</span>
+                                {stockNeeded != null && (
+                                  <span style={{ color: 'var(--accent)', fontWeight: 700 }}>
+                                    {stockNeeded} stock length{stockNeeded !== 1 ? 's' : ''} needed
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Cuts sub-section */}
+                            <div style={{ padding: '0 0 4px' }}>
+                              <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--muted)', padding: '8px 16px 4px', borderBottom: '1px solid var(--border)' }}>
+                                Cuts
+                              </div>
+                              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                                <thead>
+                                  <tr style={{ background: 'var(--panel-2)' }}>
+                                    <th style={{ textAlign: 'left', padding: '6px 16px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', width: 20 }}></th>
+                                    <th style={{ textAlign: 'left', padding: '6px 8px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', width: 90 }}>Part #</th>
+                                    <th style={{ textAlign: 'left', padding: '6px 8px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Description</th>
+                                    <th style={{ textAlign: 'center', padding: '6px 8px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', width: 44 }}>Qty</th>
+                                    <th style={{ textAlign: 'right', padding: '6px 8px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', width: 64 }}>Length</th>
+                                    <th style={{ textAlign: 'right', padding: '6px 8px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', width: 64 }}>Total</th>
+                                    <th style={{ padding: '6px 16px 6px 8px', width: 60 }}></th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {grp.cuts.map((cut) => (
+                                    <tr
+                                      key={cut.partId}
+                                      style={{
+                                        borderTop: '1px solid var(--border)',
+                                        background: cut.done ? 'rgba(34,197,94,0.06)' : 'transparent',
+                                        opacity: cut.done ? 0.6 : 1,
+                                      }}
+                                    >
+                                      <td style={{ padding: '8px 8px 8px 16px', fontSize: '1rem', textAlign: 'center', verticalAlign: 'middle' }}>
+                                        {cut.done ? '☑' : '☐'}
+                                      </td>
+                                      <td style={{ padding: '8px', fontFamily: 'monospace', fontWeight: 700, fontSize: '0.82rem', verticalAlign: 'middle', color: 'var(--text-1)' }}>
+                                        {cut.partNumber}
+                                      </td>
+                                      <td style={{ padding: '8px', fontSize: '0.85rem', verticalAlign: 'middle' }}>
+                                        <div style={{ textDecoration: cut.done ? 'line-through' : 'none', color: cut.done ? 'var(--muted)' : 'var(--text-1)' }}>
+                                          {cut.description
+                                            ? cut.description.length > 42
+                                              ? cut.description.slice(0, 42) + '\u2026'
+                                              : cut.description
+                                            : '\u2014'}
+                                        </div>
+                                        {cut.saLabel && (
+                                          <div style={{ fontSize: '0.72rem', color: '#a78bfa', marginTop: 1 }}>{cut.saLabel}</div>
+                                        )}
+                                      </td>
+                                      <td style={{ padding: '8px', textAlign: 'center', fontWeight: 700, fontSize: '0.88rem', verticalAlign: 'middle' }}>
+                                        {cut.qty}&times;
+                                      </td>
+                                      <td style={{ padding: '8px', textAlign: 'right', fontFamily: 'monospace', fontSize: '0.88rem', verticalAlign: 'middle' }}>
+                                        {cut.cutLengthIn != null ? cut.cutLengthIn + '"' : '\u2014'}
+                                      </td>
+                                      <td style={{ padding: '8px', textAlign: 'right', fontFamily: 'monospace', fontSize: '0.88rem', verticalAlign: 'middle', color: 'var(--muted)' }}>
+                                        {cut.cutLengthIn != null ? (cut.cutLengthIn * cut.qty) + '"' : '\u2014'}
+                                      </td>
+                                      <td style={{ padding: '8px 16px 8px 8px', verticalAlign: 'middle' }}>
+                                        {cut.requiresBend && (
+                                          <span style={{ background: 'rgba(234,179,8,0.18)', color: '#facc15', borderRadius: 4, padding: '1px 6px', fontSize: '0.7rem', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                                            &#x1F504; BEND
+                                          </span>
+                                        )}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                                <tfoot>
+                                  <tr style={{ borderTop: '2px solid var(--border)', background: 'var(--panel-2)' }}>
+                                    <td colSpan={3} style={{ padding: '7px 8px 7px 16px', fontWeight: 700, fontSize: '0.82rem', color: 'var(--muted)' }}>
+                                      Total: {totalPcs} pieces
+                                    </td>
+                                    <td style={{ textAlign: 'center', fontWeight: 700, fontSize: '0.82rem', padding: '7px 8px' }}>{totalPcs}&times;</td>
+                                    <td colSpan={2} style={{ textAlign: 'right', fontWeight: 700, fontFamily: 'monospace', fontSize: '0.88rem', padding: '7px 8px' }}>{totalIn.toFixed(1)}"</td>
+                                    <td style={{ padding: '7px 16px 7px 8px' }}></td>
+                                  </tr>
+                                </tfoot>
+                              </table>
+
+                              {/* Stock math */}
+                              {stockNeeded != null && grp.stockLengthIn && (
+                                <div style={{ padding: '8px 16px 10px', fontSize: '0.8rem', color: 'var(--muted)', borderTop: '1px solid var(--border)', display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                                  <span>
+                                    {stockNeeded} &times; {grp.stockLengthIn}" = {(stockNeeded * grp.stockLengthIn).toFixed(0)}" available
+                                  </span>
+                                  <span style={{ color: 'var(--warning)' }}>
+                                    {scrapIn != null && scrapIn > 0 ? `${scrapIn.toFixed(1)}" scrap` : 'No scrap'}
+                                  </span>
+                                  <span style={{ color: 'var(--accent)', fontWeight: 600 }}>
+                                    {(totalIn / grp.stockLengthIn).toFixed(2)} stock lengths used
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Bends sub-section */}
+                            {bendParts.length > 0 && (
+                              <div style={{ borderTop: '2px solid var(--border)' }}>
+                                <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#facc15', padding: '8px 16px 4px', background: 'rgba(234,179,8,0.06)', borderBottom: '1px solid var(--border)' }}>
+                                  &#x1F504; Bends
+                                </div>
+                                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                                  <tbody>
+                                    {bendParts.map((cut) => (
+                                      <tr key={`bend-${cut.partId}`} style={{ borderTop: '1px solid var(--border)' }}>
+                                        <td style={{ padding: '7px 8px 7px 16px', fontFamily: 'monospace', fontWeight: 700, fontSize: '0.82rem', width: 100 }}>{cut.partNumber}</td>
+                                        <td style={{ padding: '7px 8px', fontSize: '0.85rem', color: 'var(--text-2)' }}>
+                                          {cut.description
+                                            ? cut.description.length > 42 ? cut.description.slice(0, 42) + '\u2026' : cut.description
+                                            : '\u2014'}
+                                        </td>
+                                        <td style={{ padding: '7px 8px', textAlign: 'center', fontWeight: 700, width: 44 }}>{cut.qty}&times;</td>
+                                        <td style={{ padding: '7px 16px 7px 8px', textAlign: 'right', fontFamily: 'monospace', width: 64 }}>
+                                          {cut.cutLengthIn != null ? cut.cutLengthIn + '"' : '\u2014'}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+
+                      {/* Sheet parts groups */}
+                      {sheetGroups.length > 0 && (
+                        <div style={{ marginBottom: 28, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+                          <div style={{ background: 'var(--panel-2)', borderBottom: '1px solid var(--border)', padding: '10px 16px', borderLeft: '4px solid var(--muted)' }}>
+                            <div style={{ fontWeight: 800, fontSize: '1rem' }}>Sheet Parts</div>
+                            <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 2 }}>
+                              {sheetGroups.reduce((s, g) => s + g.parts.reduce((ps, p) => ps + p.qty, 0), 0)} total pieces
+                            </div>
+                          </div>
+                          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                            <thead>
+                              <tr style={{ background: 'var(--panel-2)' }}>
+                                <th style={{ textAlign: 'left', padding: '6px 16px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', width: 20 }}></th>
+                                <th style={{ textAlign: 'left', padding: '6px 8px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', width: 90 }}>Part #</th>
+                                <th style={{ textAlign: 'left', padding: '6px 8px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Description</th>
+                                <th style={{ textAlign: 'left', padding: '6px 8px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', width: 100 }}>Material</th>
+                                <th style={{ textAlign: 'right', padding: '6px 8px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', width: 70 }}>Wt/pc</th>
+                                <th style={{ textAlign: 'center', padding: '6px 8px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', width: 44 }}>Qty</th>
+                                <th style={{ textAlign: 'right', padding: '6px 16px 6px 8px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', width: 80 }}>Total Wt</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {sheetGroups.map((sg) =>
+                                sg.parts.map((p) => (
+                                  <tr key={p.partId} style={{ borderTop: '1px solid var(--border)', background: p.done ? 'rgba(34,197,94,0.06)' : 'transparent', opacity: p.done ? 0.6 : 1 }}>
+                                    <td style={{ padding: '8px 8px 8px 16px', fontSize: '1rem', textAlign: 'center', verticalAlign: 'middle' }}>{p.done ? '☑' : '☐'}</td>
+                                    <td style={{ padding: '8px', fontFamily: 'monospace', fontWeight: 700, fontSize: '0.82rem', verticalAlign: 'middle' }}>{p.partNumber}</td>
+                                    <td style={{ padding: '8px', fontSize: '0.85rem', verticalAlign: 'middle', textDecoration: p.done ? 'line-through' : 'none', color: p.done ? 'var(--muted)' : 'var(--text-1)' }}>
+                                      {p.description
+                                        ? p.description.length > 42 ? p.description.slice(0, 42) + '\u2026' : p.description
+                                        : '\u2014'}
+                                    </td>
+                                    <td style={{ padding: '8px', fontSize: '0.82rem', color: 'var(--muted)', verticalAlign: 'middle' }}>{sg.materialName}</td>
+                                    <td style={{ padding: '8px', textAlign: 'right', fontFamily: 'monospace', fontSize: '0.82rem', verticalAlign: 'middle' }}>{p.weightLbs != null ? p.weightLbs.toFixed(2) + ' lb' : '\u2014'}</td>
+                                    <td style={{ padding: '8px', textAlign: 'center', fontWeight: 700, fontSize: '0.88rem', verticalAlign: 'middle' }}>{p.qty}&times;</td>
+                                    <td style={{ padding: '8px 16px 8px 8px', textAlign: 'right', fontFamily: 'monospace', fontSize: '0.82rem', color: 'var(--muted)', verticalAlign: 'middle' }}>
+                                      {p.weightLbs != null ? (p.weightLbs * p.qty).toFixed(2) + ' lb' : '\u2014'}
+                                    </td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                  /* ── Progress Table View ──────────────────────────────────── */
+                  <>
                   {/* Part-first manufacturing checklist table */}
                   <div className="mfg-table-wrap" style={{ overflowX: 'auto' }}>
                     <table className="mfg-table" style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
@@ -962,6 +1523,8 @@ export default function BatchesPage() {
                         🎨 Send to Powder Coater →
                       </button>
                     </div>
+                  )}
+                  </>
                   )}
                 </>
               )}
