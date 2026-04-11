@@ -12,6 +12,7 @@ type SubAssembly = {
   name: string
   notes: string | null
   image_file: string | null
+  requires_weld: boolean
 }
 
 type Part = {
@@ -39,6 +40,7 @@ const emptySubassemblyForm = {
   id: '',
   name: '',
   notes: '',
+  requires_weld: false,
 }
 
 export default function SubassembliesPage() {
@@ -94,6 +96,7 @@ export default function SubassembliesPage() {
       name: r.name,
       notes: r.notes ?? null,
       image_file: r.image_file ?? null,
+      requires_weld: r.requires_weld ?? false,
     }))
     setItems(rows)
 
@@ -276,6 +279,7 @@ export default function SubassembliesPage() {
       id: item.id,
       name: item.name,
       notes: item.notes || '',
+      requires_weld: item.requires_weld,
     })
     setMessage('')
   }
@@ -286,6 +290,7 @@ export default function SubassembliesPage() {
       id: `${item.id}-COPY`,
       name: `${item.name} Copy`,
       notes: item.notes || '',
+      requires_weld: item.requires_weld,
     })
     setMessage('Duplicated into form. Save it, then add/edit parts as needed.')
   }
@@ -300,6 +305,7 @@ export default function SubassembliesPage() {
       id: newId,
       name: form.name.trim(),
       notes: form.notes.trim() || null,
+      requires_weld: form.requires_weld,
     }
 
     if (!payload.id || !payload.name) {
@@ -543,6 +549,21 @@ WITH CHECK (bucket_id = 'subassembly-images');`}
                   placeholder="Optional notes"
                 />
               </div>
+
+              <div style={{ gridColumn: '1 / -1' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', userSelect: 'none' }}>
+                  <input
+                    type="checkbox"
+                    checked={form.requires_weld}
+                    onChange={(e) => setForm((prev) => ({ ...prev, requires_weld: e.target.checked }))}
+                    style={{ width: 18, height: 18, accentColor: 'var(--accent)', cursor: 'pointer' }}
+                  />
+                  <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>Requires Welding</span>
+                  <span style={{ fontSize: '0.78rem', color: 'var(--muted)' }}>
+                    — shows a weld checkbox in the batch progress table after all parts are cut/bent
+                  </span>
+                </label>
+              </div>
             </div>
 
             <div className="btn-row" style={{ marginTop: 18 }}>
@@ -732,6 +753,13 @@ WITH CHECK (bucket_id = 'subassembly-images');`}
                         <div style={{ fontSize: '0.74rem', color: 'var(--muted)', marginTop: 3, lineHeight: 1.4, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
                           {item.name}
                         </div>
+                        {item.requires_weld && (
+                          <div style={{ marginTop: 5 }}>
+                            <span style={{ fontSize: '0.65rem', fontWeight: 700, background: 'rgba(234,179,8,0.15)', color: '#facc15', borderRadius: 4, padding: '1px 6px' }}>
+                              🔥 WELD
+                            </span>
+                          </div>
+                        )}
                       </div>
 
                       {/* ── Actions ── */}
