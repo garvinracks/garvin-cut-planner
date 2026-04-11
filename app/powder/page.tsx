@@ -205,25 +205,54 @@ export default function PowderPage() {
       return
     }
 
-    // Link selected build batches → this run, mark complete, store powder cost per line
+    // Link selected build batches → this run and mark them complete
     const selectedIds = Array.from(returnSelected)
     await supabase
       .from('build_batches')
       .update({ powder_batch_id: pb.id, status: 'complete', completed_at: todayIso })
       .in('id', selectedIds)
 
-    // Split powder cost proportionally across batch lines by weight
-    for (const batchId of selectedIds) {
-      const batchWeight = calcBatchWeight(batchId)
-      const batchLines  = batchLines.filter((l) => l.batch_id === batchId)
-      for (const line of batchLines) {
-        const lineWeight      = calcSkuWeight(line.sku_id) * line.qty
-        const linePowderCost  = totalWeight > 0 ? (lineWeight / totalWeight) * totalInvoice : 0
-        await supabase
-          .from('build_batch_lines')
-          .update({ powder_cost_snapshot: linePowderCost })
-          .eq('id', line.id)
+    // Collect all lines across selected batches
+    const selectedLines = batchLines.filter((l) => selectedIds.includes(l.batch_id))
+
+    // Split powder cost proportionally by weight and store per line
+    for (const line of selectedLines) {
+      const lineWeight     = calcSkuWeight(line.sku_id) * line.qty
+      const linePowderCost = totalWeight > 0 ? (lineWeight / totalWeight) * totalInvoice : 0
+      await supabase
+        .from('build_batch_lines')
+        .update({ powder_cost_snapshot: linePowderCost })
+        .eq('id', line.id)
+    }
+
+    // ── Add finished SKUs to inventory ────────────────────────────────────────
+    // Aggregate qty completed by SKU across all selected batches
+    const skuQtyFinished: Record<string, number> = {}
+    for (const line of selectedLines) {
+      skuQtyFinished[line.sku_id] = (skuQtyFinished[line.sku_id] ?? 0) + line.qty
+    }
+
+    // Fetch current on-hand for affected SKUs then upsert with incremented value
+    const skuIds = Object.keys(skuQtyFinished)
+    if (skuIds.length > 0) {
+      const { data: currentInv } = await supabase
+        .from('sku_inventory')
+        .select('sku_id, qty_on_hand')
+        .in('sku_id', skuIds)
+
+      const invMap: Record<string, number> = {}
+      for (const row of (currentInv ?? []) as { sku_id: string; qty_on_hand: number }[]) {
+        invMap[row.sku_id] = row.qty_on_hand
       }
+
+      await supabase.from('sku_inventory').upsert(
+        skuIds.map((skuId) => ({
+          sku_id:       skuId,
+          qty_on_hand:  (invMap[skuId] ?? 0) + skuQtyFinished[skuId],
+          updated_at:   todayIso,
+        })),
+        { onConflict: 'sku_id' }
+      )
     }
 
     const count = returnSelected.size
@@ -234,7 +263,7 @@ export default function PowderPage() {
     await loadAll()
     setSaving(false)
     setMessage(
-      `✓ ${count} batch${count !== 1 ? 'es' : ''} marked complete — powder coat recorded at ${fmtCost(costPerLb)}/lb.`
+      `✓ ${count} batch${count !== 1 ? 'es' : ''} marked complete — inventory updated, powder coat recorded at ${fmtCost(costPerLb)}/lb.`
     )
   }
 
