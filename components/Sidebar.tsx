@@ -128,16 +128,6 @@ function IconPowder() {
   )
 }
 
-function IconHistory() {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M8 3a5 5 0 1 0 5 5" />
-      <path d="M13 3v5h-5" />
-      <path d="M8 8V5" />
-    </svg>
-  )
-}
-
 // ── Nav config ────────────────────────────────────────────────────────────────
 
 const LINKS = [
@@ -146,7 +136,6 @@ const LINKS = [
   { href: '/inventory',     label: 'Inventory',      Icon: IconInventory,  group: 'Operations' },
   { href: '/batches',       label: 'Build Batches',  Icon: IconBatches,    group: 'Operations' },
   { href: '/powder',        label: 'Powder Coat',    Icon: IconPowder,     group: 'Operations' },
-  { href: '/orders/history', label: 'Order History', Icon: IconHistory,    group: 'Operations' },
   { href: '/jobs',          label: 'Saved Jobs',     Icon: IconJobs,       group: 'Operations' },
   { href: '/skus',          label: 'SKUs',           Icon: IconSKU,        group: 'Library'    },
   { href: '/subassemblies', label: 'Subassemblies',  Icon: IconSubassemblies, group: 'Library' },

@@ -32,6 +32,7 @@ type PartRecord = {
   tube_wall: string | null
   cut_length: number | null
   dxf_file: string | null
+  weight_lbs: number | null
 }
 
 type SkuPartRecord = {
@@ -79,9 +80,13 @@ type MaterialRecord = {
   name: string
   material_type: string
   material: string | null
+  thickness: string | null
   tube_od: string | null
   tube_wall: string | null
   stock_length_in: number | null
+  unit_weight_lbs: number | null
+  scrap_rate: number | null
+  qty_on_hand: number | null
 }
 
 type PriceLogRecord = {
@@ -280,12 +285,12 @@ export default function PlannerPage() {
       supabase.from('skus').select('id, description, category, active').order('id', { ascending: true }),
       supabase
         .from('parts')
-        .select('id, part_number, description, part_type, material, thickness, tube_od, tube_wall, cut_length, dxf_file'),
+        .select('id, part_number, description, part_type, material, thickness, tube_od, tube_wall, cut_length, dxf_file, weight_lbs'),
       supabase.from('sku_parts').select('sku_id, part_id, qty'),
       supabase.from('sku_sub_assemblies').select('sku_id, sub_assembly_id, qty'),
       supabase.from('sub_assembly_parts').select('sub_assembly_id, part_id, qty'),
       supabase.from('part_operations').select('part_id, step, operation, notes').order('step', { ascending: true }),
-      supabase.from('materials').select('id, name, material_type, material, tube_od, tube_wall, stock_length_in'),
+      supabase.from('materials').select('id, name, material_type, material, thickness, tube_od, tube_wall, stock_length_in, unit_weight_lbs, scrap_rate, qty_on_hand'),
       supabase.from('material_price_logs').select('id, material_id, price, date_purchased, order_number, supplier').order('date_purchased', { ascending: false }),
     ])
 
@@ -1456,6 +1461,133 @@ export default function PlannerPage() {
           )}
         </div>}
       </section>
+
+      {/* ── Sheet Material Estimate ── */}
+      {sheetRows.length > 0 && (
+        <section className="card">
+          <div className="card-header">
+            <h2 className="card-title">Sheet Material Estimate</h2>
+            <div className="card-subtitle">
+              Sheets required for this build, cross-referenced against on-hand stock.
+            </div>
+          </div>
+          <div className="card-body">
+            {(() => {
+              type SheetGroup = {
+                materialId: string
+                materialName: string
+                thickness: string | null
+                unitWeightLbs: number
+                stockQtyOnHand: number | null
+                scrapRate: number
+                totalPartsWeight: number
+              }
+              const groups = new Map<string, SheetGroup>()
+
+              for (const row of sheetRows) {
+                if (!row.weight_lbs) continue
+                // Match material by material name + thickness
+                const mat = materials.find(
+                  (m) =>
+                    m.material_type === 'sheet' &&
+                    (m.material ?? '').toLowerCase() === (row.material ?? '').toLowerCase() &&
+                    (m.thickness ?? '') === (row.thickness ?? '')
+                )
+                if (!mat || !mat.unit_weight_lbs) continue
+
+                const partWeight = row.weight_lbs * row.qty
+                const existing = groups.get(mat.id)
+                if (existing) {
+                  existing.totalPartsWeight += partWeight
+                } else {
+                  groups.set(mat.id, {
+                    materialId: mat.id,
+                    materialName: mat.name,
+                    thickness: mat.thickness ?? null,
+                    unitWeightLbs: mat.unit_weight_lbs,
+                    stockQtyOnHand: mat.qty_on_hand ?? null,
+                    scrapRate: mat.scrap_rate ?? 0.15,
+                    totalPartsWeight: partWeight,
+                  })
+                }
+              }
+
+              if (groups.size === 0) {
+                return (
+                  <div className="empty">
+                    No sheet parts with weight data found — add <code>weight_lbs</code> to parts on the Parts page, and make sure materials have <code>unit_weight_lbs</code> set.
+                  </div>
+                )
+              }
+
+              return (
+                <>
+                  <div className="table-wrap">
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>Material</th>
+                          <th style={{ textAlign: 'right' }}>Parts Weight (lbs)</th>
+                          <th style={{ textAlign: 'center' }}>Sheet Wt (lbs)</th>
+                          <th style={{ textAlign: 'center' }}>Utilization</th>
+                          <th style={{ textAlign: 'center' }}>Sheets Needed</th>
+                          <th style={{ textAlign: 'center' }}>In Stock</th>
+                          <th style={{ textAlign: 'center' }}>To Order</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Array.from(groups.values()).map((g) => {
+                          const utilization = 1 - g.scrapRate
+                          const sheetsNeeded = Math.ceil(g.totalPartsWeight / (g.unitWeightLbs * utilization))
+                          const inStock = g.stockQtyOnHand ?? 0
+                          const toOrder = Math.max(0, sheetsNeeded - inStock)
+                          return (
+                            <tr key={g.materialId}>
+                              <td>
+                                <div style={{ fontWeight: 700, fontSize: '0.85rem' }}>{g.materialName}</div>
+                                {g.thickness && (
+                                  <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>{g.thickness}&Prime; thick</div>
+                                )}
+                              </td>
+                              <td style={{ textAlign: 'right', fontFamily: 'monospace', fontSize: '0.83rem' }}>
+                                {g.totalPartsWeight.toFixed(2)}
+                              </td>
+                              <td style={{ textAlign: 'center', fontSize: '0.83rem', color: 'var(--text-2)' }}>
+                                {g.unitWeightLbs} lbs
+                              </td>
+                              <td style={{ textAlign: 'center', fontSize: '0.83rem', color: 'var(--text-2)' }}>
+                                {(utilization * 100).toFixed(0)}%
+                              </td>
+                              <td style={{ textAlign: 'center', fontWeight: 700 }}>
+                                {sheetsNeeded}
+                              </td>
+                              <td style={{ textAlign: 'center', fontSize: '0.83rem' }}>
+                                {g.stockQtyOnHand != null
+                                  ? <span style={{ color: inStock >= sheetsNeeded ? 'var(--success)' : 'var(--warning, #f59e0b)' }}>{inStock}</span>
+                                  : <span style={{ color: 'var(--muted)' }}>—</span>
+                                }
+                              </td>
+                              <td style={{ textAlign: 'center', fontWeight: 700 }}>
+                                {toOrder > 0
+                                  ? <span style={{ color: 'var(--danger, #ef4444)', fontWeight: 800 }}>{toOrder}</span>
+                                  : <span style={{ color: 'var(--success)' }}>✓</span>
+                                }
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: 8 }}>
+                    Sheets needed = ⌈ total parts weight ÷ (sheet weight × utilization) ⌉ · Utilization = 1 − scrap rate set on each material.
+                  </div>
+                </>
+              )
+            })()}
+          </div>
+        </section>
+      )}
 
       {/* ── Shop Floor View ── */}
       {shopFloorOpen && (tubeRows.length > 0 || sheetRows.length > 0) && (

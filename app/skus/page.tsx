@@ -285,7 +285,6 @@ export default function SkusPage() {
   const [search, setSearch] = useState('')
   const [duplicateBusyId, setDuplicateBusyId] = useState('')
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set())
-  const [buildQty, setBuildQty] = useState('1')
   const [addingRelation, setAddingRelation] = useState(false)
   const [relationMessage, setRelationMessage] = useState('')
   const [builderMessage, setBuilderMessage] = useState('')
@@ -2295,140 +2294,7 @@ export default function SkusPage() {
                   </section>
                 )}
 
-                {/* ── Sheet Material Estimate ── */}
-                {fullExplosion.some((r) => r.part_type === 'sheet') && (
-                  <section className="card">
-                    <div className="card-header">
-                      <h3 className="card-title">Sheet Material Estimate</h3>
-                      <div className="card-subtitle">
-                        Estimate how many sheets to order based on part weights and material utilization.
-                      </div>
-                    </div>
-                    <div className="card-body">
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18 }}>
-                        <label className="label" style={{ margin: 0, whiteSpace: 'nowrap' }}>Build quantity:</label>
-                        <input
-                          className="field"
-                          type="number"
-                          min="1"
-                          step="1"
-                          value={buildQty}
-                          onChange={(e) => setBuildQty(e.target.value)}
-                          style={{ width: 80 }}
-                        />
-                        <span style={{ fontSize: '0.82rem', color: 'var(--muted)' }}>units</span>
-                      </div>
 
-                      {(() => {
-                        const qty = Math.max(1, Number(buildQty) || 1)
-
-                        // Group sheet parts by material
-                        type SheetGroup = {
-                          materialId: string
-                          materialName: string
-                          thickness: string | null
-                          unitWeightLbs: number
-                          stockQtyOnHand: number | null
-                          scrapRate: number
-                          totalPartsWeight: number
-                        }
-                        const groups = new Map<string, SheetGroup>()
-
-                        for (const row of fullExplosion) {
-                          if (row.part_type !== 'sheet' || !row.weight_lbs) continue
-                          const partFull = parts.find((p) => p.id === row.part_id)
-                          if (!partFull) continue
-                          const mat = findMaterialForPart(partFull)
-                          if (!mat || !mat.unit_weight_lbs) continue
-
-                          const existing = groups.get(mat.id)
-                          const partWeight = row.weight_lbs * row.qty * qty
-                          if (existing) {
-                            existing.totalPartsWeight += partWeight
-                          } else {
-                            groups.set(mat.id, {
-                              materialId: mat.id,
-                              materialName: mat.name,
-                              thickness: mat.thickness,
-                              unitWeightLbs: mat.unit_weight_lbs,
-                              stockQtyOnHand: mat.qty_on_hand ?? null,
-                              scrapRate: mat.scrap_rate ?? 0.15,
-                              totalPartsWeight: partWeight,
-                            })
-                          }
-                        }
-
-                        if (groups.size === 0) {
-                          return <div className="empty">No sheet parts with weight data found.</div>
-                        }
-
-                        return (
-                          <div className="table-wrap">
-                            <table className="table">
-                              <thead>
-                                <tr>
-                                  <th>Material</th>
-                                  <th style={{ textAlign: 'right' }}>Parts Weight (lbs)</th>
-                                  <th style={{ textAlign: 'center' }}>Sheet Wt (lbs)</th>
-                                  <th style={{ textAlign: 'center' }}>Utilization</th>
-                                  <th style={{ textAlign: 'center' }}>Sheets Needed</th>
-                                  <th style={{ textAlign: 'center' }}>In Stock</th>
-                                  <th style={{ textAlign: 'center' }}>To Order</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {Array.from(groups.values()).map((g) => {
-                                  const utilization = 1 - g.scrapRate
-                                  const sheetsNeeded = Math.ceil(g.totalPartsWeight / (g.unitWeightLbs * utilization))
-                                  const inStock = g.stockQtyOnHand ?? 0
-                                  const toOrder = Math.max(0, sheetsNeeded - inStock)
-                                  return (
-                                    <tr key={g.materialId}>
-                                      <td>
-                                        <div style={{ fontWeight: 700, fontSize: '0.85rem' }}>{g.materialName}</div>
-                                        {g.thickness && (
-                                          <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>{g.thickness}&Prime; thick</div>
-                                        )}
-                                      </td>
-                                      <td style={{ textAlign: 'right', fontFamily: 'monospace', fontSize: '0.83rem' }}>
-                                        {g.totalPartsWeight.toFixed(2)}
-                                      </td>
-                                      <td style={{ textAlign: 'center', fontSize: '0.83rem', color: 'var(--text-2)' }}>
-                                        {g.unitWeightLbs} lbs
-                                      </td>
-                                      <td style={{ textAlign: 'center', fontSize: '0.83rem', color: 'var(--text-2)' }}>
-                                        {(utilization * 100).toFixed(0)}%
-                                      </td>
-                                      <td style={{ textAlign: 'center', fontWeight: 700 }}>
-                                        {sheetsNeeded}
-                                      </td>
-                                      <td style={{ textAlign: 'center', fontSize: '0.83rem' }}>
-                                        {g.stockQtyOnHand != null
-                                          ? <span style={{ color: inStock >= sheetsNeeded ? 'var(--success)' : 'var(--warning, #f59e0b)' }}>{inStock}</span>
-                                          : <span style={{ color: 'var(--muted)' }}>—</span>
-                                        }
-                                      </td>
-                                      <td style={{ textAlign: 'center', fontWeight: 700 }}>
-                                        {toOrder > 0
-                                          ? <span style={{ color: 'var(--danger, #ef4444)', fontWeight: 800 }}>{toOrder}</span>
-                                          : <span style={{ color: 'var(--success)' }}>✓</span>
-                                        }
-                                      </td>
-                                    </tr>
-                                  )
-                                })}
-                              </tbody>
-                            </table>
-                            <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: 8 }}>
-                              Sheets needed = ⌈ total parts weight ÷ (sheet weight × utilization rate) ⌉ ·
-                              Utilization = 1 − scrap rate set on each material.
-                            </div>
-                          </div>
-                        )
-                      })()}
-                    </div>
-                  </section>
-                )}
               </div>
             )}
           </div>

@@ -14,6 +14,7 @@ type PartRecord = {
   tube_wall: string | null
   cut_length: number | null
   dxf_file: string | null
+  weight_lbs: number | null
 }
 
 type SkuPartRecord = {
@@ -52,6 +53,7 @@ export type SheetResultRow = {
   description: string
   qty: number
   dxf_file: string | null
+  weight_lbs: number | null
 }
 
 export type PlannerResult = {
@@ -121,6 +123,7 @@ export function buildCutLists(args: {
         description: part.description,
         qty,
         dxf_file: part.dxf_file || null,
+        weight_lbs: part.weight_lbs ?? null,
       })
     }
   }

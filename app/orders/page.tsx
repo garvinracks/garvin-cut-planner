@@ -53,6 +53,87 @@ type AllocStatus = 'ready' | 'partial' | 'build_needed' | 'unmatched'
 type ViewMode = 'by_order' | 'by_sku'
 type SortDir = 'asc' | 'desc'
 
+// ── History-specific types ────────────────────────────────────────────────────
+
+type HistorySKU = {
+  id: string
+  description: string
+  bolt_kit_cost: number | null
+  packaging_cost: number | null
+  labor_cost_per_unit: number | null
+}
+
+type HistoryBatchLine = {
+  batch_id: string
+  sku_id: string
+  qty: number
+  mat_cost_snapshot: number | null
+}
+
+type HistoryBatch = {
+  id: string
+  name: string
+  status: string
+  completed_at: string | null
+  powder_batch_id: string | null
+}
+
+type PowderBatch = {
+  id: string
+  batch_name: string
+  total_cost: number
+  status: string
+}
+
+type CostBreakdown = {
+  revenue: number | null
+  shipping: number | null
+  matCost: number | null
+  matEstimated: boolean
+  boltKit: number | null
+  packaging: number | null
+  labor: number | null
+  totalCOGS: number | null
+  grossMargin: number | null
+  marginPct: number | null
+}
+
+type LineCost = {
+  line: OrderLine
+  sku: HistorySKU | null
+  revenue: number | null
+  matCost: number | null
+  matEstimated: boolean
+  powderRunName: string | null
+  boltKit: number | null
+  packaging: number | null
+  labor: number | null
+  lineCOGS: number | null
+  lineMargin: number | null
+}
+
+type SkuPerf = {
+  skuId: string
+  description: string
+  unitsSold: number
+  revenue: number | null
+  matCostTotal: number | null
+  boltKitTotal: number | null
+  packagingTotal: number | null
+  laborTotal: number | null
+  estCOGSTotal: number | null
+  estMarginTotal: number | null
+}
+
+type MonthTrend = {
+  key: string
+  label: string
+  orders: number
+  revenue: number | null
+  estCOGS: number | null
+  estMargin: number | null
+}
+
 // ── Category inference ────────────────────────────────────────────────────────
 
 const CATEGORY_ORDER = ['Racks', 'Ladders', 'Deflectors', 'Accessories', 'Uncategorized'] as const
@@ -95,6 +176,166 @@ const CH_STYLE: Record<string, { bg: string; text: string }> = {
   shopify: { bg: 'rgba(34,197,94,0.18)',  text: '#4ade80' },
   turn5:   { bg: 'rgba(245,158,11,0.18)', text: '#fbbf24' },
 }
+
+// ── History helper functions ──────────────────────────────────────────────────
+
+function histFmtMonthKey(iso: string) {
+  const d = new Date(iso)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}
+
+function histFmtMonthLabel(key: string) {
+  const [y, m] = key.split('-')
+  return new Date(Number(y), Number(m) - 1, 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
+}
+
+function histFmtCurrency(n: number | null) {
+  if (n == null) return '—'
+  return '$' + n.toFixed(2)
+}
+
+function histFmtPct(n: number | null) {
+  if (n == null) return '—'
+  return n.toFixed(1) + '%'
+}
+
+function calcLineCosts(
+  line: OrderLine,
+  skuMap: Map<string, HistorySKU>,
+  batchLines: HistoryBatchLine[],
+  batches: HistoryBatch[],
+  powderMap: Map<string, PowderBatch>,
+): LineCost {
+  const sku = line.sku_id ? (skuMap.get(line.sku_id) ?? null) : null
+  const revenue = line.unit_price != null ? line.unit_price * line.qty : null
+
+  let matCost: number | null = null
+  let matEstimated = false
+  let powderRunName: string | null = null
+
+  if (line.sku_id) {
+    const relevantBatchLines = batchLines.filter(
+      (bl) => bl.sku_id === line.sku_id && bl.mat_cost_snapshot != null
+    )
+    const completedBatches = batches
+      .filter((b) => b.status === 'complete' && b.completed_at != null)
+      .sort((a, b) => new Date(b.completed_at!).getTime() - new Date(a.completed_at!).getTime())
+
+    for (const batch of completedBatches) {
+      const bl = relevantBatchLines.find((l) => l.batch_id === batch.id)
+      if (bl && bl.mat_cost_snapshot != null && bl.qty > 0) {
+        matCost = (bl.mat_cost_snapshot / bl.qty) * line.qty
+        matEstimated = true
+        if (batch.powder_batch_id) {
+          const pb = powderMap.get(batch.powder_batch_id)
+          if (pb) powderRunName = pb.batch_name
+        }
+        break
+      }
+    }
+  }
+
+  const boltKit = sku?.bolt_kit_cost != null ? sku.bolt_kit_cost * line.qty : null
+  const packaging = sku?.packaging_cost != null ? sku.packaging_cost * line.qty : null
+  const labor = sku?.labor_cost_per_unit != null ? sku.labor_cost_per_unit * line.qty : null
+  const hasCOGS = matCost != null || boltKit != null || packaging != null || labor != null
+  const lineCOGS = hasCOGS ? (matCost ?? 0) + (boltKit ?? 0) + (packaging ?? 0) + (labor ?? 0) : null
+  const lineMargin = revenue != null && lineCOGS != null ? revenue - lineCOGS : null
+
+  return { line, sku, revenue, matCost, matEstimated, powderRunName, boltKit, packaging, labor, lineCOGS, lineMargin }
+}
+
+function calcOrderCosts(
+  order: Order,
+  skuMap: Map<string, HistorySKU>,
+  batchLines: HistoryBatchLine[],
+  batches: HistoryBatch[],
+  powderMap: Map<string, PowderBatch>,
+): CostBreakdown {
+  const lineCosts = order.order_lines.map((l) => calcLineCosts(l, skuMap, batchLines, batches, powderMap))
+
+  const revenue = lineCosts.some((lc) => lc.revenue != null)
+    ? lineCosts.reduce((s, lc) => s + (lc.revenue ?? 0), 0) : null
+  const shipping = order.shipping_cost
+  const matCost = lineCosts.some((lc) => lc.matCost != null)
+    ? lineCosts.reduce((s, lc) => s + (lc.matCost ?? 0), 0) : null
+  const matEstimated = lineCosts.some((lc) => lc.matEstimated)
+  const boltKit = lineCosts.some((lc) => lc.boltKit != null)
+    ? lineCosts.reduce((s, lc) => s + (lc.boltKit ?? 0), 0) : null
+  const packaging = lineCosts.some((lc) => lc.packaging != null)
+    ? lineCosts.reduce((s, lc) => s + (lc.packaging ?? 0), 0) : null
+  const labor = lineCosts.some((lc) => lc.labor != null)
+    ? lineCosts.reduce((s, lc) => s + (lc.labor ?? 0), 0) : null
+  const hasCOGS = matCost != null || shipping != null || boltKit != null || packaging != null || labor != null
+  const totalCOGS = hasCOGS
+    ? (matCost ?? 0) + (shipping ?? 0) + (boltKit ?? 0) + (packaging ?? 0) + (labor ?? 0) : null
+  const grossMargin = revenue != null && totalCOGS != null ? revenue - totalCOGS : null
+  const marginPct = grossMargin != null && revenue != null && revenue !== 0
+    ? (grossMargin / revenue) * 100 : null
+
+  return { revenue, shipping, matCost, matEstimated, boltKit, packaging, labor, totalCOGS, grossMargin, marginPct }
+}
+
+function aggregateSkuPerf(
+  orders: Order[],
+  skuMap: Map<string, HistorySKU>,
+  batchLines: HistoryBatchLine[],
+  batches: HistoryBatch[],
+  powderMap: Map<string, PowderBatch>,
+): SkuPerf[] {
+  const map = new Map<string, SkuPerf>()
+  for (const order of orders) {
+    for (const line of order.order_lines) {
+      if (!line.sku_id) continue
+      const lc = calcLineCosts(line, skuMap, batchLines, batches, powderMap)
+      const sku = skuMap.get(line.sku_id)
+      const desc = sku?.description ?? line.description ?? line.ss_sku ?? line.sku_id
+      if (!map.has(line.sku_id)) {
+        map.set(line.sku_id, { skuId: line.sku_id, description: desc, unitsSold: 0,
+          revenue: null, matCostTotal: null, boltKitTotal: null, packagingTotal: null,
+          laborTotal: null, estCOGSTotal: null, estMarginTotal: null })
+      }
+      const perf = map.get(line.sku_id)!
+      perf.unitsSold += line.qty
+      if (lc.revenue != null) perf.revenue = (perf.revenue ?? 0) + lc.revenue
+      if (lc.matCost != null) perf.matCostTotal = (perf.matCostTotal ?? 0) + lc.matCost
+      if (lc.boltKit != null) perf.boltKitTotal = (perf.boltKitTotal ?? 0) + lc.boltKit
+      if (lc.packaging != null) perf.packagingTotal = (perf.packagingTotal ?? 0) + lc.packaging
+      if (lc.labor != null) perf.laborTotal = (perf.laborTotal ?? 0) + lc.labor
+      const lineCOGS = (lc.matCost ?? 0) + (lc.boltKit ?? 0) + (lc.packaging ?? 0) + (lc.labor ?? 0)
+      if (lc.matCost != null || lc.boltKit != null || lc.packaging != null || lc.labor != null)
+        perf.estCOGSTotal = (perf.estCOGSTotal ?? 0) + lineCOGS
+      if (lc.lineMargin != null) perf.estMarginTotal = (perf.estMarginTotal ?? 0) + lc.lineMargin
+    }
+  }
+  return Array.from(map.values()).sort((a, b) => (b.revenue ?? 0) - (a.revenue ?? 0))
+}
+
+function buildMonthTrend(
+  orders: Order[],
+  skuMap: Map<string, HistorySKU>,
+  batchLines: HistoryBatchLine[],
+  batches: HistoryBatch[],
+  powderMap: Map<string, PowderBatch>,
+): MonthTrend[] {
+  const map = new Map<string, MonthTrend>()
+  for (const order of orders) {
+    const dateStr = order.shipped_at ?? order.order_date
+    if (!dateStr) continue
+    const key = histFmtMonthKey(dateStr)
+    const label = histFmtMonthLabel(key)
+    if (!map.has(key)) map.set(key, { key, label, orders: 0, revenue: null, estCOGS: null, estMargin: null })
+    const trend = map.get(key)!
+    trend.orders += 1
+    const costs = calcOrderCosts(order, skuMap, batchLines, batches, powderMap)
+    if (costs.revenue != null) trend.revenue = (trend.revenue ?? 0) + costs.revenue
+    if (costs.totalCOGS != null) trend.estCOGS = (trend.estCOGS ?? 0) + costs.totalCOGS
+    if (costs.grossMargin != null) trend.estMargin = (trend.estMargin ?? 0) + costs.grossMargin
+  }
+  return Array.from(map.values()).sort((a, b) => b.key.localeCompare(a.key)).slice(0, 6)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 const ALLOC_STYLE: Record<AllocStatus, { icon: string; label: string; color: string; bg: string }> = {
   ready:       { icon: '🟢', label: 'Ready to Ship', color: 'var(--success)',  bg: 'rgba(34,197,94,0.12)' },
@@ -146,6 +387,21 @@ export default function OrdersPage() {
   // Ship modal
   const [shippingOrderId, setShippingOrderId] = useState<string | null>(null)
   const [shippingCost, setShippingCost]       = useState('')
+
+  // Order history (lazy-loaded when section is opened)
+  const [histOpen, setHistOpen]               = useState(false)
+  const [histLoaded, setHistLoaded]           = useState(false)
+  const [histLoading, setHistLoading]         = useState(false)
+  const [histError, setHistError]             = useState<string | null>(null)
+  const [histOrders, setHistOrders]           = useState<Order[]>([])
+  const [histSkus, setHistSkus]               = useState<HistorySKU[]>([])
+  const [histBatchLines, setHistBatchLines]   = useState<HistoryBatchLine[]>([])
+  const [histBatches, setHistBatches]         = useState<HistoryBatch[]>([])
+  const [histPowderBatches, setHistPowderBatches] = useState<PowderBatch[]>([])
+  const [histMonthFilter, setHistMonthFilter] = useState('all')
+  const [histChannelFilter, setHistChannelFilter] = useState('all')
+  const [histSearch, setHistSearch]           = useState('')
+  const [histExpandedRows, setHistExpandedRows] = useState<Set<string>>(new Set())
 
   // ── Data loading ────────────────────────────────────────────────────────────
 
@@ -373,6 +629,45 @@ export default function OrdersPage() {
     await Promise.all([loadOrders(), loadInventory()])
   }
 
+  // ── History loading ─────────────────────────────────────────────────────────
+
+  async function loadHistory() {
+    setHistLoading(true)
+    setHistError(null)
+    try {
+      const [ordersRes, skusRes, batchLinesRes, batchesRes, powderRes] = await Promise.all([
+        supabase
+          .from('orders')
+          .select('id, order_number, channel, customer_name, order_date, shipped_at, shipping_cost, status, notes, order_lines(id, sku_id, ss_sku, description, qty, unit_price)')
+          .eq('status', 'shipped')
+          .order('shipped_at', { ascending: false }),
+        supabase.from('skus').select('id, description, bolt_kit_cost, packaging_cost, labor_cost_per_unit'),
+        supabase.from('build_batch_lines').select('batch_id, sku_id, qty, mat_cost_snapshot'),
+        supabase.from('build_batches').select('id, name, status, completed_at, powder_batch_id'),
+        supabase.from('powder_batches').select('id, batch_name, total_cost, status'),
+      ])
+      if (ordersRes.error) throw new Error(ordersRes.error.message)
+      if (skusRes.error) throw new Error(skusRes.error.message)
+      setHistOrders((ordersRes.data ?? []) as Order[])
+      setHistSkus((skusRes.data ?? []) as HistorySKU[])
+      setHistBatchLines((batchLinesRes.data ?? []) as HistoryBatchLine[])
+      setHistBatches((batchesRes.data ?? []) as HistoryBatch[])
+      setHistPowderBatches((powderRes.data ?? []) as PowderBatch[])
+      setHistLoaded(true)
+    } catch (e) {
+      setHistError(e instanceof Error ? e.message : 'Failed to load history')
+    } finally {
+      setHistLoading(false)
+    }
+  }
+
+  function toggleHistory() {
+    setHistOpen((v) => {
+      if (!v && !histLoaded) void loadHistory()
+      return !v
+    })
+  }
+
   // ── Derived data ─────────────────────────────────────────────────────────────
 
   const sorted = useMemo(() =>
@@ -458,6 +753,112 @@ export default function OrdersPage() {
   }
 
   const STATUS_PRIORITY: Record<string, number> = { in_progress: 3, at_powder: 2, planned: 1 }
+
+  // ── History derived ──────────────────────────────────────────────────────────
+
+  const histSkuMap = useMemo(() => {
+    const m = new Map<string, HistorySKU>()
+    for (const s of histSkus) m.set(s.id, s)
+    return m
+  }, [histSkus])
+
+  const histPowderMap = useMemo(() => {
+    const m = new Map<string, PowderBatch>()
+    for (const p of histPowderBatches) m.set(p.id, p)
+    return m
+  }, [histPowderBatches])
+
+  const histMonthOptions = useMemo(() => {
+    const keys = new Set<string>()
+    for (const o of histOrders) {
+      const d = o.shipped_at ?? o.order_date
+      if (d) keys.add(histFmtMonthKey(d))
+    }
+    return Array.from(keys).sort((a, b) => b.localeCompare(a))
+      .map((k) => ({ key: k, label: histFmtMonthLabel(k) }))
+  }, [histOrders])
+
+  const histChannels = useMemo(() => {
+    const s = new Set<string>()
+    for (const o of histOrders) if (o.channel) s.add(o.channel)
+    return Array.from(s).sort()
+  }, [histOrders])
+
+  const histFiltered = useMemo(() => {
+    return histOrders.filter((o) => {
+      if (histChannelFilter !== 'all' && o.channel !== histChannelFilter) return false
+      if (histMonthFilter !== 'all') {
+        const d = o.shipped_at ?? o.order_date
+        if (!d || histFmtMonthKey(d) !== histMonthFilter) return false
+      }
+      if (histSearch.trim()) {
+        const q = histSearch.toLowerCase()
+        if (!o.order_number.toLowerCase().includes(q) && !(o.customer_name?.toLowerCase().includes(q) ?? false))
+          return false
+      }
+      return true
+    })
+  }, [histOrders, histChannelFilter, histMonthFilter, histSearch])
+
+  const histCostsMap = useMemo(() => {
+    const m = new Map<string, CostBreakdown>()
+    for (const o of histFiltered)
+      m.set(o.id, calcOrderCosts(o, histSkuMap, histBatchLines, histBatches, histPowderMap))
+    return m
+  }, [histFiltered, histSkuMap, histBatchLines, histBatches, histPowderMap])
+
+  const histStats = useMemo(() => {
+    let totalRevenue = 0, hasRevenue = false
+    let totalShipping = 0, hasShipping = false
+    for (const c of histCostsMap.values()) {
+      if (c.revenue != null) { totalRevenue += c.revenue; hasRevenue = true }
+      if (c.shipping != null) { totalShipping += c.shipping; hasShipping = true }
+    }
+    const orderCount = histFiltered.length
+    return {
+      totalRevenue: hasRevenue ? totalRevenue : null,
+      orderCount,
+      avgOrderValue: hasRevenue && orderCount > 0 ? totalRevenue / orderCount : null,
+      totalShipping: hasShipping ? totalShipping : null,
+    }
+  }, [histFiltered, histCostsMap])
+
+  const histTotals = useMemo(() => {
+    let revenue = 0, shipping = 0, matCost = 0, boltKit = 0, packaging = 0, labor = 0, totalCOGS = 0, grossMargin = 0
+    let hasRevenue = false, hasShipping = false, hasMat = false, hasBolt = false, hasPkg = false, hasLabor = false, hasCOGS = false, hasMargin = false
+    for (const c of histCostsMap.values()) {
+      if (c.revenue != null) { revenue += c.revenue; hasRevenue = true }
+      if (c.shipping != null) { shipping += c.shipping; hasShipping = true }
+      if (c.matCost != null) { matCost += c.matCost; hasMat = true }
+      if (c.boltKit != null) { boltKit += c.boltKit; hasBolt = true }
+      if (c.packaging != null) { packaging += c.packaging; hasPkg = true }
+      if (c.labor != null) { labor += c.labor; hasLabor = true }
+      if (c.totalCOGS != null) { totalCOGS += c.totalCOGS; hasCOGS = true }
+      if (c.grossMargin != null) { grossMargin += c.grossMargin; hasMargin = true }
+    }
+    const marginPct = hasRevenue && hasMargin && revenue !== 0 ? (grossMargin / revenue) * 100 : null
+    return {
+      revenue: hasRevenue ? revenue : null,
+      shipping: hasShipping ? shipping : null,
+      matCost: hasMat ? matCost : null,
+      boltKit: hasBolt ? boltKit : null,
+      packaging: hasPkg ? packaging : null,
+      labor: hasLabor ? labor : null,
+      totalCOGS: hasCOGS ? totalCOGS : null,
+      grossMargin: hasMargin ? grossMargin : null,
+      marginPct,
+    }
+  }, [histCostsMap])
+
+  const histSkuPerf = useMemo(
+    () => aggregateSkuPerf(histFiltered, histSkuMap, histBatchLines, histBatches, histPowderMap),
+    [histFiltered, histSkuMap, histBatchLines, histBatches, histPowderMap]
+  )
+
+  const histMonthTrend = useMemo(
+    () => buildMonthTrend(histOrders, histSkuMap, histBatchLines, histBatches, histPowderMap),
+    [histOrders, histSkuMap, histBatchLines, histBatches, histPowderMap]
+  )
 
   // ─────────────────────────────────────────────────────────────────────────────
   return (
@@ -1145,6 +1546,347 @@ export default function OrdersPage() {
           </div>
         )}
       </section>
+
+      {/* ── Order History ─────────────────────────────────────────────────────── */}
+      <section className="card">
+        <div className="card-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+          <div>
+            <h2 className="card-title">Order History</h2>
+            <div className="card-subtitle">Shipped orders — revenue, COGS, and margin breakdown.</div>
+          </div>
+          <button type="button" className="btn btn-secondary" onClick={toggleHistory}>
+            {histOpen ? 'Collapse' : 'Expand'}
+          </button>
+        </div>
+
+        {histOpen && (
+          <div className="card-body">
+            {histLoading && <div className="empty">Loading history…</div>}
+            {histError && <div className="message" style={{ color: 'var(--danger)' }}>Error: {histError}</div>}
+
+            {!histLoading && !histError && histLoaded && (
+              <>
+                {/* Summary stat cards */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 20 }}>
+                  {[
+                    { label: 'Total Revenue',     value: histFmtCurrency(histStats.totalRevenue) },
+                    { label: 'Orders Shipped',    value: String(histStats.orderCount) },
+                    { label: 'Avg Order Value',   value: histFmtCurrency(histStats.avgOrderValue) },
+                    { label: 'Total Shipping Cost', value: histFmtCurrency(histStats.totalShipping) },
+                  ].map(({ label, value }) => (
+                    <div key={label} style={{ background: 'var(--panel-2)', borderRadius: 10, padding: '16px 20px', border: '1px solid var(--border)' }}>
+                      <div style={{ fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--muted)', marginBottom: 8 }}>{label}</div>
+                      <div style={{ fontSize: 24, fontWeight: 700 }}>{value}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Filters */}
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 20 }}>
+                  <div>
+                    <label className="label">Month</label>
+                    <select className="field" value={histMonthFilter} onChange={(e) => setHistMonthFilter(e.target.value)}>
+                      <option value="all">All Time</option>
+                      {histMonthOptions.map((opt) => (
+                        <option key={opt.key} value={opt.key}>{opt.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="label">Channel</label>
+                    <select className="field" value={histChannelFilter} onChange={(e) => setHistChannelFilter(e.target.value)}>
+                      <option value="all">All Channels</option>
+                      {histChannels.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </div>
+                  <div style={{ flex: 1, minWidth: 200 }}>
+                    <label className="label">Search</label>
+                    <input
+                      className="field"
+                      placeholder="Order # or customer name…"
+                      value={histSearch}
+                      onChange={(e) => setHistSearch(e.target.value)}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+                </div>
+
+                {/* Orders table */}
+                <div style={{ marginBottom: 28 }}>
+                  <div style={{ fontWeight: 700, marginBottom: 10 }}>
+                    Shipped Orders <span style={{ color: 'var(--muted)', fontWeight: 400, fontSize: '0.85rem' }}>({histFiltered.length})</span>
+                  </div>
+                  {histFiltered.length === 0 ? (
+                    <div className="empty">No shipped orders match your filters.</div>
+                  ) : (
+                    <div className="table-wrap">
+                      <table className="table">
+                        <thead>
+                          <tr>
+                            <th>Order #</th>
+                            <th>Customer</th>
+                            <th>Channel</th>
+                            <th>Shipped</th>
+                            <th>SKUs</th>
+                            <th style={{ textAlign: 'right' }}>Revenue</th>
+                            <th style={{ textAlign: 'right' }}>Shipping</th>
+                            <th style={{ textAlign: 'right' }}>Mat Cost</th>
+                            <th style={{ textAlign: 'right' }}>Bolt Kit</th>
+                            <th style={{ textAlign: 'right' }}>Packaging</th>
+                            <th style={{ textAlign: 'right' }}>Labor</th>
+                            <th style={{ textAlign: 'right' }}>Total COGS</th>
+                            <th style={{ textAlign: 'right' }}>Gross Margin</th>
+                            <th style={{ textAlign: 'right' }}>Margin %</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {histFiltered.map((order) => {
+                            const costs = histCostsMap.get(order.id)!
+                            const isExpanded = histExpandedRows.has(order.id)
+                            const skuList = order.order_lines
+                              .map((l) => {
+                                const sku = l.sku_id ? histSkuMap.get(l.sku_id) : null
+                                return sku?.description ?? l.description ?? l.ss_sku
+                              })
+                              .filter(Boolean).join(', ')
+                            const marginStyle = (n: number | null): React.CSSProperties =>
+                              n == null ? {} : { color: n >= 0 ? 'var(--success)' : 'var(--danger)', fontWeight: 600 }
+                            return (
+                              <>
+                                <tr
+                                  key={order.id}
+                                  onClick={() => setHistExpandedRows((prev) => {
+                                    const next = new Set(prev); next.has(order.id) ? next.delete(order.id) : next.add(order.id); return next
+                                  })}
+                                  style={{ cursor: 'pointer' }}
+                                >
+                                  <td style={{ fontWeight: 600, color: 'var(--accent)' }}>
+                                    {isExpanded ? '▾' : '▸'} {order.order_number}
+                                  </td>
+                                  <td>{order.customer_name ?? '—'}</td>
+                                  <td>
+                                    <span style={{ fontSize: 11, padding: '2px 7px', borderRadius: 10, background: 'var(--panel-2)', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>
+                                      {order.channel}
+                                    </span>
+                                  </td>
+                                  <td style={{ whiteSpace: 'nowrap', color: 'var(--text-2)' }}>
+                                    {formatDate(order.shipped_at)}
+                                  </td>
+                                  <td style={{ color: 'var(--text-2)', fontSize: 12, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {skuList || '—'}
+                                  </td>
+                                  <td style={{ textAlign: 'right', fontWeight: 600 }}>{histFmtCurrency(costs.revenue)}</td>
+                                  <td style={{ textAlign: 'right', color: 'var(--text-2)' }}>{histFmtCurrency(costs.shipping)}</td>
+                                  <td style={{ textAlign: 'right', color: 'var(--text-2)', fontStyle: costs.matEstimated ? 'italic' : undefined }}>{histFmtCurrency(costs.matCost)}</td>
+                                  <td style={{ textAlign: 'right', color: 'var(--text-2)' }}>{histFmtCurrency(costs.boltKit)}</td>
+                                  <td style={{ textAlign: 'right', color: 'var(--text-2)' }}>{histFmtCurrency(costs.packaging)}</td>
+                                  <td style={{ textAlign: 'right', color: 'var(--text-2)' }}>{histFmtCurrency(costs.labor)}</td>
+                                  <td style={{ textAlign: 'right' }}>{histFmtCurrency(costs.totalCOGS)}</td>
+                                  <td style={{ textAlign: 'right', ...marginStyle(costs.grossMargin) }}>{histFmtCurrency(costs.grossMargin)}</td>
+                                  <td style={{ textAlign: 'right', ...marginStyle(costs.marginPct) }}>{histFmtPct(costs.marginPct)}</td>
+                                </tr>
+                                {isExpanded && (
+                                  <tr key={order.id + '-exp'} style={{ background: 'var(--panel-2)' }}>
+                                    <td colSpan={14} style={{ padding: '0 16px 16px 32px' }}>
+                                      <HistLineBreakdown
+                                        order={order}
+                                        skuMap={histSkuMap}
+                                        batchLines={histBatchLines}
+                                        batches={histBatches}
+                                        powderMap={histPowderMap}
+                                      />
+                                    </td>
+                                  </tr>
+                                )}
+                              </>
+                            )
+                          })}
+                        </tbody>
+                        <tfoot>
+                          <tr style={{ fontWeight: 700, borderTop: '2px solid var(--border)' }}>
+                            <td colSpan={5} style={{ color: 'var(--text-2)' }}>Totals ({histFiltered.length} orders)</td>
+                            <td style={{ textAlign: 'right' }}>{histFmtCurrency(histTotals.revenue)}</td>
+                            <td style={{ textAlign: 'right' }}>{histFmtCurrency(histTotals.shipping)}</td>
+                            <td style={{ textAlign: 'right' }}>{histFmtCurrency(histTotals.matCost)}</td>
+                            <td style={{ textAlign: 'right' }}>{histFmtCurrency(histTotals.boltKit)}</td>
+                            <td style={{ textAlign: 'right' }}>{histFmtCurrency(histTotals.packaging)}</td>
+                            <td style={{ textAlign: 'right' }}>{histFmtCurrency(histTotals.labor)}</td>
+                            <td style={{ textAlign: 'right' }}>{histFmtCurrency(histTotals.totalCOGS)}</td>
+                            <td style={{ textAlign: 'right', color: (histTotals.grossMargin ?? 0) >= 0 ? 'var(--success)' : 'var(--danger)', fontWeight: 700 }}>{histFmtCurrency(histTotals.grossMargin)}</td>
+                            <td style={{ textAlign: 'right', color: (histTotals.marginPct ?? 0) >= 0 ? 'var(--success)' : 'var(--danger)', fontWeight: 700 }}>{histFmtPct(histTotals.marginPct)}</td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                {/* SKU Performance */}
+                <div style={{ marginBottom: 28 }}>
+                  <div style={{ fontWeight: 700, marginBottom: 10 }}>SKU Performance <span style={{ color: 'var(--muted)', fontWeight: 400, fontSize: '0.85rem' }}>— aggregated across filtered orders</span></div>
+                  {histSkuPerf.length === 0 ? (
+                    <div className="empty">No SKU data for the current filters.</div>
+                  ) : (
+                    <div className="table-wrap">
+                      <table className="table">
+                        <thead>
+                          <tr>
+                            <th>SKU</th>
+                            <th>Description</th>
+                            <th style={{ textAlign: 'right' }}>Units Sold</th>
+                            <th style={{ textAlign: 'right' }}>Revenue</th>
+                            <th style={{ textAlign: 'right' }}>Mat/Unit</th>
+                            <th style={{ textAlign: 'right' }}>Bolt Kit/Unit</th>
+                            <th style={{ textAlign: 'right' }}>Packaging/Unit</th>
+                            <th style={{ textAlign: 'right' }}>Labor/Unit</th>
+                            <th style={{ textAlign: 'right' }}>Est. COGS/Unit</th>
+                            <th style={{ textAlign: 'right' }}>Est. Margin/Unit</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {histSkuPerf.map((p) => {
+                            const matPU = p.matCostTotal != null && p.unitsSold > 0 ? p.matCostTotal / p.unitsSold : null
+                            const boltPU = p.boltKitTotal != null && p.unitsSold > 0 ? p.boltKitTotal / p.unitsSold : null
+                            const pkgPU = p.packagingTotal != null && p.unitsSold > 0 ? p.packagingTotal / p.unitsSold : null
+                            const laborPU = p.laborTotal != null && p.unitsSold > 0 ? p.laborTotal / p.unitsSold : null
+                            const cogsPU = p.estCOGSTotal != null && p.unitsSold > 0 ? p.estCOGSTotal / p.unitsSold : null
+                            const marginPU = p.estMarginTotal != null && p.unitsSold > 0 ? p.estMarginTotal / p.unitsSold : null
+                            const mStyle = (n: number | null): React.CSSProperties => n == null ? {} : { color: n >= 0 ? 'var(--success)' : 'var(--danger)' }
+                            return (
+                              <tr key={p.skuId}>
+                                <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{p.skuId}</td>
+                                <td>{p.description}</td>
+                                <td style={{ textAlign: 'right' }}>{p.unitsSold}</td>
+                                <td style={{ textAlign: 'right', fontWeight: 600 }}>{histFmtCurrency(p.revenue)}</td>
+                                <td style={{ textAlign: 'right', color: 'var(--text-2)', fontStyle: 'italic' }}>{histFmtCurrency(matPU)}</td>
+                                <td style={{ textAlign: 'right', color: 'var(--text-2)' }}>{histFmtCurrency(boltPU)}</td>
+                                <td style={{ textAlign: 'right', color: 'var(--text-2)' }}>{histFmtCurrency(pkgPU)}</td>
+                                <td style={{ textAlign: 'right', color: 'var(--text-2)' }}>{histFmtCurrency(laborPU)}</td>
+                                <td style={{ textAlign: 'right' }}>{histFmtCurrency(cogsPU)}</td>
+                                <td style={{ textAlign: 'right', ...mStyle(marginPU) }}>{histFmtCurrency(marginPU)}</td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                {/* Monthly Trend */}
+                <div>
+                  <div style={{ fontWeight: 700, marginBottom: 10 }}>Monthly Trend <span style={{ color: 'var(--muted)', fontWeight: 400, fontSize: '0.85rem' }}>— last 6 months, all orders</span></div>
+                  {histMonthTrend.length === 0 ? (
+                    <div className="empty">No monthly data available yet.</div>
+                  ) : (
+                    <>
+                      <div className="table-wrap">
+                        <table className="table">
+                          <thead>
+                            <tr>
+                              <th>Month</th>
+                              <th style={{ textAlign: 'right' }}>Orders</th>
+                              <th style={{ textAlign: 'right' }}>Revenue</th>
+                              <th style={{ textAlign: 'right' }}>Est. COGS</th>
+                              <th style={{ textAlign: 'right' }}>Est. Margin</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {histMonthTrend.map((t) => {
+                              const mStyle = (n: number | null): React.CSSProperties => n == null ? {} : { color: n >= 0 ? 'var(--success)' : 'var(--danger)' }
+                              return (
+                                <tr key={t.key}>
+                                  <td style={{ fontWeight: 600 }}>{t.label}</td>
+                                  <td style={{ textAlign: 'right' }}>{t.orders}</td>
+                                  <td style={{ textAlign: 'right', fontWeight: 600 }}>{histFmtCurrency(t.revenue)}</td>
+                                  <td style={{ textAlign: 'right', color: 'var(--text-2)' }}>{histFmtCurrency(t.estCOGS)}</td>
+                                  <td style={{ textAlign: 'right', ...mStyle(t.estMargin) }}>{histFmtCurrency(t.estMargin)}</td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: 8 }}>
+                        Mat cost is estimated from the most recent completed build batch snapshot per SKU.
+                      </div>
+                    </>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </section>
+    </div>
+  )
+}
+
+// ── Line breakdown sub-component ──────────────────────────────────────────────
+
+function HistLineBreakdown({
+  order,
+  skuMap,
+  batchLines,
+  batches,
+  powderMap,
+}: {
+  order: Order
+  skuMap: Map<string, HistorySKU>
+  batchLines: HistoryBatchLine[]
+  batches: HistoryBatch[]
+  powderMap: Map<string, PowderBatch>
+}) {
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+        Line Items
+      </div>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <thead>
+          <tr style={{ color: 'var(--muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            <th style={{ textAlign: 'left', paddingBottom: 4, fontWeight: 500 }}>SKU / Description</th>
+            <th style={{ textAlign: 'right', paddingBottom: 4, fontWeight: 500 }}>Qty</th>
+            <th style={{ textAlign: 'right', paddingBottom: 4, fontWeight: 500 }}>Unit Price</th>
+            <th style={{ textAlign: 'right', paddingBottom: 4, fontWeight: 500 }}>Revenue</th>
+            <th style={{ textAlign: 'right', paddingBottom: 4, fontWeight: 500 }}>Mat Cost</th>
+            <th style={{ textAlign: 'right', paddingBottom: 4, fontWeight: 500 }}>Powder Run</th>
+            <th style={{ textAlign: 'right', paddingBottom: 4, fontWeight: 500 }}>Bolt Kit</th>
+            <th style={{ textAlign: 'right', paddingBottom: 4, fontWeight: 500 }}>Packaging</th>
+            <th style={{ textAlign: 'right', paddingBottom: 4, fontWeight: 500 }}>Labor</th>
+            <th style={{ textAlign: 'right', paddingBottom: 4, fontWeight: 500 }}>Line COGS</th>
+            <th style={{ textAlign: 'right', paddingBottom: 4, fontWeight: 500 }}>Line Margin</th>
+          </tr>
+        </thead>
+        <tbody>
+          {order.order_lines.map((line) => {
+            const lc = calcLineCosts(line, skuMap, batchLines, batches, powderMap)
+            const lineMarginPct = lc.lineMargin != null && lc.revenue != null && lc.revenue !== 0
+              ? (lc.lineMargin / lc.revenue) * 100 : null
+            return (
+              <tr key={line.id} style={{ borderTop: '1px solid var(--border)' }}>
+                <td style={{ padding: '6px 0', color: 'var(--text)' }}>
+                  <div style={{ fontWeight: 500 }}>{lc.sku?.description ?? line.description ?? line.ss_sku}</div>
+                  {line.sku_id && <div style={{ fontSize: 11, color: 'var(--muted)', fontFamily: 'monospace' }}>{line.sku_id}</div>}
+                </td>
+                <td style={{ textAlign: 'right', color: 'var(--text-2)' }}>{line.qty}</td>
+                <td style={{ textAlign: 'right', color: 'var(--text-2)' }}>{histFmtCurrency(line.unit_price)}</td>
+                <td style={{ textAlign: 'right', fontWeight: 600 }}>{histFmtCurrency(lc.revenue)}</td>
+                <td style={{ textAlign: 'right', color: 'var(--text-2)', fontStyle: lc.matEstimated ? 'italic' : undefined }}>{histFmtCurrency(lc.matCost)}</td>
+                <td style={{ textAlign: 'right', color: 'var(--accent)', fontSize: 12 }}>{lc.powderRunName ?? '—'}</td>
+                <td style={{ textAlign: 'right', color: 'var(--text-2)' }}>{histFmtCurrency(lc.boltKit)}</td>
+                <td style={{ textAlign: 'right', color: 'var(--text-2)' }}>{histFmtCurrency(lc.packaging)}</td>
+                <td style={{ textAlign: 'right', color: 'var(--text-2)' }}>{histFmtCurrency(lc.labor)}</td>
+                <td style={{ textAlign: 'right' }}>{histFmtCurrency(lc.lineCOGS)}</td>
+                <td style={{ textAlign: 'right', color: lineMarginPct != null ? (lineMarginPct >= 0 ? 'var(--success)' : 'var(--danger)') : undefined, fontWeight: 600 }}>
+                  {histFmtCurrency(lc.lineMargin)}
+                  {lineMarginPct != null && <span style={{ fontSize: 11, marginLeft: 4, opacity: 0.8 }}>({histFmtPct(lineMarginPct)})</span>}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
     </div>
   )
 }
