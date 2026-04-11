@@ -233,6 +233,7 @@ export default function BatchesPage() {
             const part = (partData ?? []).find((p: any) => p.id === sap.part_id)
             if (!part) continue
             for (const stage of STAGES) {
+              if (stage.stageKey === 'weld') continue  // SA weld tracked at SA level
               if ((part as any)[stage.partKey]) uniqueOps.add(`${sap.part_id}:${stage.stageKey}`)
             }
           }
@@ -1023,10 +1024,14 @@ export default function BatchesPage() {
     }
 
     // Progress calculation from actual completions
-    // allWorkOps includes both part ops and sub-assembly weld ops
+    // allWorkOps includes both part ops and sub-assembly weld ops.
+    // Parts inside a sub-assembly don't get a per-part weld op — weld is
+    // tracked at the SA level only (via the SA Weld checkbox).
+    const saPartIds = new Set(Array.from(subAssemblyGroups.values()).flatMap(({ items }) => items.map(({ part }) => part.id)))
     const allWorkOps: Array<{ id: string; stageKey: string }> = []
     for (const { part } of workItems.values()) {
       for (const stage of STAGES) {
+        if (stage.stageKey === 'weld' && saPartIds.has(part.id)) continue
         if (part[stage.partKey as keyof Part]) allWorkOps.push({ id: part.id, stageKey: stage.stageKey })
       }
     }
@@ -1664,81 +1669,82 @@ export default function BatchesPage() {
                                 </div>
                               </td>
                             </tr>
-                            {/* Part rows */}
-                            {items.map(({ part, totalQty }) => {
-                              // For SA parts, weld is tracked at the SA level — skip per-part weld
-                              const rowAllDone = activeStages.every((s) => {
-                                if (s.stageKey === 'weld') return true // SA weld row handles this
-                                return !part[s.partKey as keyof Part] || completions.has(`${part.id}:${s.stageKey}`)
-                              })
-                              return (
-                                <tr key={`part-${part.id}`} style={{ borderBottom: '1px solid var(--border)', background: rowAllDone ? 'rgba(34,197,94,0.04)' : 'transparent' }}>
-                                  <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
-                                    <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small"
-                                      isTube={part.part_type === 'tube'} tubeFallback={true}
-                                      tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape="round" />
-                                    <div style={{ fontSize: '0.68rem', fontFamily: 'monospace', fontWeight: 700, color: 'var(--muted)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{part.part_number}</div>
-                                    {part.description && <div style={{ fontSize: '0.62rem', color: 'var(--muted)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>{part.description}</div>}
-                                  </td>
-                                  <td style={{ textAlign: 'center', fontWeight: 700, fontSize: '0.88rem', verticalAlign: 'middle', color: 'var(--muted)' }}>×{totalQty}</td>
-                                  {activeStages.map(({ stageKey, partKey }) => {
-                                    // Weld for SA parts is handled by the SA Weld row — show blank cell
-                                    if (stageKey === 'weld') return <td key={stageKey} style={{ borderLeft: '1px solid var(--border)', background: 'rgba(0,0,0,0.03)' }} />
-                                    if (!part[partKey as keyof Part]) return <td key={stageKey} style={{ borderLeft: '1px solid var(--border)', background: 'rgba(0,0,0,0.03)' }} />
-                                    const done = completions.has(`${part.id}:${stageKey}`)
-                                    const stageIdx = STAGES.findIndex((s) => s.stageKey === stageKey)
-                                    const blocked = stageIdx > 0 && STAGES.slice(0, stageIdx).some((s) => {
-                                      if (!part[s.partKey as keyof Part]) return false
-                                      return !completions.has(`${part.id}:${s.stageKey}`)
-                                    })
-                                    return (
-                                      <td key={stageKey} style={{ textAlign: 'center', verticalAlign: 'middle', borderLeft: '1px solid var(--border)', background: done ? 'rgba(34,197,94,0.1)' : 'transparent', padding: '4px' }}>
-                                        {savingKeys.has(`${part.id}:${stageKey}`) ? (
-                                          <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>⏳</span>
-                                        ) : (
-                                          <>
-                                        <input type="checkbox" checked={done} disabled={blocked}
-                                          onChange={(e) => handleToggle(activeBatch.id, part.id, stageKey, e.target.checked, workItems, subAssemblyGroups)}
-                                          title={blocked ? '⚠ Complete prior stages first' : undefined}
-                                          style={{ width: 18, height: 18, cursor: blocked ? 'not-allowed' : 'pointer', accentColor: 'var(--accent)', opacity: blocked ? 0.35 : 1 }} />
-                                        {blocked && <div style={{ fontSize: '0.6rem', color: 'var(--warning)', marginTop: 2 }}>⚠</div>}
-                                          </>
-                                        )}
-                                      </td>
-                                    )
-                                  })}
-                                </tr>
-                              )
-                            })}
-                            {/* SA weld row */}
-                            {subAssembly.requires_weld && (() => {
-                              const done = completions.has(`${saId}:weld`)
-                              const blocked = items.some((i) => STAGES.some((s) => {
+                            {/* Part rows — weld column is merged across all rows via rowspan on first part */}
+                            {(() => {
+                              const saWeldDone = completions.has(`${saId}:weld`)
+                              const saWeldBlocked = items.some((i) => STAGES.some((s) => {
                                 if (s.stageKey === 'weld') return false
                                 if (!i.part[s.partKey as keyof Part]) return false
                                 return !completions.has(`${i.part.id}:${s.stageKey}`)
                               }))
-                              return (
-                                <tr key={`sa-weld-${saId}`} style={{ borderBottom: '2px solid rgba(167,139,250,0.22)', background: done ? 'rgba(34,197,94,0.06)' : 'rgba(167,139,250,0.05)' }}>
-                                  <td colSpan={2} style={{ padding: '8px 12px', verticalAlign: 'middle' }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                      <span style={{ fontSize: '0.65rem', color: '#a78bfa', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', whiteSpace: 'nowrap' }}>SA Weld</span>
-                                      <span style={{ fontWeight: 700, fontSize: '0.88rem', color: done ? 'var(--muted)' : '#a78bfa', textDecoration: done ? 'line-through' : 'none' }}>Weld {subAssembly.name}</span>
-                                      {blocked && <span style={{ fontSize: '0.7rem', color: 'var(--warning)' }}>⚠ parts incomplete</span>}
-                                    </div>
-                                  </td>
-                                  {activeStages.map(({ stageKey }) => {
-                                    if (stageKey !== 'weld') return <td key={stageKey} style={{ borderLeft: '1px solid var(--border)', background: 'rgba(0,0,0,0.03)' }} />
-                                    return (
-                                      <td key={stageKey} style={{ textAlign: 'center', verticalAlign: 'middle', borderLeft: '1px solid var(--border)', background: done ? 'rgba(34,197,94,0.1)' : 'transparent', padding: '4px' }}>
-                                        <input type="checkbox" checked={done} disabled={blocked}
-                                          onChange={(e) => handleToggle(activeBatch.id, saId, 'weld', e.target.checked, workItems, subAssemblyGroups)}
-                                          style={{ width: 18, height: 18, cursor: blocked ? 'not-allowed' : 'pointer', accentColor: '#a78bfa', opacity: blocked ? 0.35 : 1 }} />
-                                      </td>
-                                    )
-                                  })}
-                                </tr>
-                              )
+                              const weldRowSpan = subAssembly.requires_weld ? items.length : undefined
+
+                              return items.map(({ part, totalQty }, partIndex) => {
+                                const rowAllDone = activeStages.every((s) => {
+                                  if (s.stageKey === 'weld') return true
+                                  return !part[s.partKey as keyof Part] || completions.has(`${part.id}:${s.stageKey}`)
+                                })
+                                return (
+                                  <tr key={`part-${part.id}`} style={{ borderBottom: '1px solid var(--border)', background: rowAllDone ? 'rgba(34,197,94,0.04)' : 'transparent' }}>
+                                    <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
+                                      <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small"
+                                        isTube={part.part_type === 'tube'} tubeFallback={true}
+                                        tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape="round" />
+                                      <div style={{ fontSize: '0.68rem', fontFamily: 'monospace', fontWeight: 700, color: 'var(--muted)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{part.part_number}</div>
+                                      {part.description && <div style={{ fontSize: '0.62rem', color: 'var(--muted)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>{part.description}</div>}
+                                    </td>
+                                    <td style={{ textAlign: 'center', fontWeight: 700, fontSize: '0.88rem', verticalAlign: 'middle', color: 'var(--muted)' }}>×{totalQty}</td>
+                                    {activeStages.map(({ stageKey, partKey }) => {
+                                      // Weld: merged cell on first row only; subsequent rows skip it
+                                      if (stageKey === 'weld') {
+                                        if (!subAssembly.requires_weld) {
+                                          return <td key={stageKey} style={{ borderLeft: '1px solid var(--border)', background: 'rgba(0,0,0,0.03)' }} />
+                                        }
+                                        if (partIndex > 0) return null  // covered by rowspan
+                                        return (
+                                          <td key={stageKey} rowSpan={weldRowSpan}
+                                            style={{ textAlign: 'center', verticalAlign: 'middle', borderLeft: '1px solid var(--border)', borderBottom: '2px solid rgba(167,139,250,0.22)', background: saWeldDone ? 'rgba(34,197,94,0.1)' : 'rgba(167,139,250,0.05)', padding: 8 }}>
+                                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5 }}>
+                                              <div style={{ fontSize: '0.62rem', color: '#a78bfa', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Weld SA</div>
+                                              {savingKeys.has(`${saId}:weld`) ? (
+                                                <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>⏳</span>
+                                              ) : (
+                                                <input type="checkbox" checked={saWeldDone} disabled={saWeldBlocked}
+                                                  onChange={(e) => handleToggle(activeBatch.id, saId, 'weld', e.target.checked, workItems, subAssemblyGroups)}
+                                                  title={saWeldBlocked ? '⚠ Complete prior stages first' : undefined}
+                                                  style={{ width: 20, height: 20, cursor: saWeldBlocked ? 'not-allowed' : 'pointer', accentColor: '#a78bfa', opacity: saWeldBlocked ? 0.35 : 1 }} />
+                                              )}
+                                              {saWeldBlocked && <div style={{ fontSize: '0.6rem', color: 'var(--warning)' }}>⚠</div>}
+                                            </div>
+                                          </td>
+                                        )
+                                      }
+                                      if (!part[partKey as keyof Part]) return <td key={stageKey} style={{ borderLeft: '1px solid var(--border)', background: 'rgba(0,0,0,0.03)' }} />
+                                      const done = completions.has(`${part.id}:${stageKey}`)
+                                      const stageIdx = STAGES.findIndex((s) => s.stageKey === stageKey)
+                                      const blocked = stageIdx > 0 && STAGES.slice(0, stageIdx).some((s) => {
+                                        if (!part[s.partKey as keyof Part]) return false
+                                        return !completions.has(`${part.id}:${s.stageKey}`)
+                                      })
+                                      return (
+                                        <td key={stageKey} style={{ textAlign: 'center', verticalAlign: 'middle', borderLeft: '1px solid var(--border)', background: done ? 'rgba(34,197,94,0.1)' : 'transparent', padding: '4px' }}>
+                                          {savingKeys.has(`${part.id}:${stageKey}`) ? (
+                                            <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>⏳</span>
+                                          ) : (
+                                            <>
+                                              <input type="checkbox" checked={done} disabled={blocked}
+                                                onChange={(e) => handleToggle(activeBatch.id, part.id, stageKey, e.target.checked, workItems, subAssemblyGroups)}
+                                                title={blocked ? '⚠ Complete prior stages first' : undefined}
+                                                style={{ width: 18, height: 18, cursor: blocked ? 'not-allowed' : 'pointer', accentColor: 'var(--accent)', opacity: blocked ? 0.35 : 1 }} />
+                                              {blocked && <div style={{ fontSize: '0.6rem', color: 'var(--warning)', marginTop: 2 }}>⚠</div>}
+                                            </>
+                                          )}
+                                        </td>
+                                      )
+                                    })}
+                                  </tr>
+                                )
+                              })
                             })()}
                           </>
                         ))}
