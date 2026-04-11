@@ -451,6 +451,12 @@ export default function OrdersPage() {
   }
   useEffect(() => { void initialLoad() }, [])
 
+  // Auto-run allocation once data is loaded so ready-to-ship status
+  // is always current without needing to click "Allocate Stock"
+  useEffect(() => {
+    if (!loading && orders.length > 0) runAllocation()
+  }, [loading])
+
   // ── ShipStation store setup ─────────────────────────────────────────────────
 
   async function loadSSStores() {
@@ -872,6 +878,35 @@ export default function OrdersPage() {
           </div>
         </div>
       </div>
+
+      {/* ── Ready to Ship banner ─────────────────────────────────────────────── */}
+      {allocated && readyCount > 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap',
+          padding: '14px 20px',
+          background: 'rgba(34,197,94,0.12)',
+          border: '1px solid rgba(34,197,94,0.35)',
+          borderRadius: 10,
+        }}>
+          <div style={{ fontSize: '1.6rem' }}>📦</div>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: '1.05rem', color: 'var(--success)' }}>
+              {readyCount} order{readyCount !== 1 ? 's' : ''} ready to ship
+            </div>
+            <div style={{ fontSize: '0.82rem', color: 'var(--text-2)', marginTop: 2 }}>
+              All items are in stock. Look for the 🟢 label on each order below.
+            </div>
+          </div>
+          {buildCount > 0 && (
+            <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
+              <div style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--danger)' }}>
+                {buildCount} need a build
+              </div>
+              <div style={{ fontSize: '0.78rem', color: 'var(--muted)' }}>insufficient inventory</div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Sync + filter bar ────────────────────────────────────────────────── */}
       <section className="card">
