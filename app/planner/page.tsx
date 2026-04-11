@@ -435,7 +435,7 @@ export default function PlannerPage() {
     }
     const batchRows = filledRows.map((r) => ({ skuId: r.skuId.trim(), qty: r.qty.trim(), skuLookup: r.skuLookup }))
     sessionStorage.setItem('garvin:batch_import', JSON.stringify(batchRows))
-    router.push('/batches')
+    window.location.href = '/batches'
   }
 
   function removeRow(index: number) {
@@ -882,7 +882,7 @@ export default function PlannerPage() {
                     className="btn btn-secondary"
                     title="Save current SKU quantities as a new build batch"
                   >
-                    📦 Save as Batch
+                    ⚡ Create Batch
                   </button>
                   <button type="button" onClick={handleGenerate} className="btn btn-primary">
                     Generate Cut Lists

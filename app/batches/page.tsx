@@ -137,10 +137,15 @@ export default function BatchesPage() {
   const [loading, setLoading]         = useState(true)
   const [message, setMessage]         = useState('')
   const [activeBatch, setActiveBatch] = useState<BuildBatch | null>(null)
+  const [batchCompletionCounts, setBatchCompletionCounts] = useState<Record<string, number>>({})
 
   // Per-part/sub-assembly completions for the active batch: Set<"id:stageKey">
   const [completions, setCompletions] = useState<CompletionSet>(new Set())
   const [loadingCompletions, setLoadingCompletions] = useState(false)
+
+  // Fulfills These Orders
+  const [batchOrders, setBatchOrders] = useState<Array<{id:string; order_number:string; customer_name:string|null; notes:string|null; order_date:string|null}>>([])
+  const [showBatchOrders, setShowBatchOrders] = useState(false)
 
   // Create form
   const [createName, setCreateName]   = useState('')
@@ -177,7 +182,8 @@ export default function BatchesPage() {
       supabase.from('materials').select('id, material_type, tube_od, tube_wall, thickness, unit_weight_lbs, stock_length_in, scrap_rate, qty_on_hand'),
       supabase.from('material_price_logs').select('material_id, price').order('date_purchased', { ascending: false }),
     ])
-    setBatches((batchData ?? []) as BuildBatch[])
+    const loadedBatches = (batchData ?? []) as BuildBatch[]
+    setBatches(loadedBatches)
     setLines((lineData ?? []) as BuildBatchLine[])
     setSkus((skuData ?? []) as SKU[])
     setParts((partData ?? []) as Part[])
@@ -187,6 +193,25 @@ export default function BatchesPage() {
     setSubAssemblies((saData ?? []) as SubAssembly[])
     setMaterials((matData ?? []) as MaterialRecord[])
     setPriceLogs((plData ?? []) as PriceLog[])
+
+    // Load completion counts for the batch list progress column
+    const { data: allComps } = await supabase.from('batch_part_completions').select('batch_id')
+    const counts: Record<string, number> = {}
+    for (const c of (allComps ?? [])) {
+      counts[(c as any).batch_id] = (counts[(c as any).batch_id] ?? 0) + 1
+    }
+    setBatchCompletionCounts(counts)
+
+    // Auto-open a batch if sessionStorage has a pending open request
+    try {
+      const openBatchId = sessionStorage.getItem('garvin:open_batch')
+      if (openBatchId) {
+        sessionStorage.removeItem('garvin:open_batch')
+        const target = loadedBatches.find((b) => b.id === openBatchId)
+        if (target) { setActiveBatch(target); setView('detail') }
+      }
+    } catch { /* ignore */ }
+
     setLoading(false)
   }
 
@@ -217,7 +242,29 @@ export default function BatchesPage() {
   }, [])
 
   useEffect(() => {
-    if (activeBatch) void loadCompletions(activeBatch.id)
+    if (!activeBatch) return
+    void loadCompletions(activeBatch.id)
+    // Load orders fulfilled by this batch
+    setBatchOrders([])
+    setShowBatchOrders(false)
+    const batchSkuIds = lines.filter((l) => l.batch_id === activeBatch.id).map((l) => l.sku_id)
+    if (batchSkuIds.length > 0) {
+      void (async () => {
+        const { data: orderLines } = await supabase
+          .from('order_lines')
+          .select('order_id, sku_id')
+          .in('sku_id', batchSkuIds)
+        if (orderLines && orderLines.length > 0) {
+          const orderIds = [...new Set((orderLines as Array<{order_id:string; sku_id:string}>).map((l) => l.order_id))]
+          const { data: ordersData } = await supabase
+            .from('orders')
+            .select('id, order_number, customer_name, notes, order_date')
+            .in('id', orderIds)
+            .eq('status', 'open')
+          setBatchOrders((ordersData ?? []) as any)
+        }
+      })()
+    }
   }, [activeBatch?.id])
 
   // ── Part helpers ──────────────────────────────────────────────────────────────
@@ -613,13 +660,21 @@ export default function BatchesPage() {
 
     return (
       <div className="section-stack">
-        <div className="page-header no-print">
+        <style>{`
+          @media (max-width: 640px) {
+            .mfg-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+            .mfg-table { min-width: 600px; }
+            .batch-detail-header { flex-direction: column !important; align-items: flex-start !important; }
+            .batch-action-bar { flex-wrap: wrap !important; gap: 8px !important; }
+          }
+        `}</style>
+        <div className="page-header no-print batch-detail-header">
           <div>
             <div className="kicker">Garvin Internal Tool</div>
             <h1 className="page-title">{activeBatch.name}</h1>
             <div className="page-subtitle">Build batch detail</div>
           </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <div className="batch-action-bar" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button className="btn btn-secondary" onClick={() => { setActiveBatch(null); setView('list') }}>← All Batches</button>
             <button className="btn btn-secondary" onClick={() => setView('traveler')}>🖨 Traveler</button>
           </div>
@@ -634,7 +689,7 @@ export default function BatchesPage() {
               <span style={{ background: ss.bg, color: ss.color, borderRadius: 20, padding: '4px 14px', fontWeight: 700, fontSize: '0.82rem' }}>{ss.label}</span>
               <span style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>Created {fmtDate(activeBatch.created_at)}</span>
               {activeBatch.completed_at && <span style={{ color: 'var(--success)', fontSize: '0.82rem' }}>Completed {fmtDate(activeBatch.completed_at)}</span>}
-              <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <div className="batch-action-bar" style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {activeBatch.status === 'planned' && (
                   <button className="btn btn-primary" onClick={() => updateStatus(activeBatch, 'in_progress')}>▶ Start Build</button>
                 )}
@@ -671,6 +726,32 @@ export default function BatchesPage() {
           </div>
         )}
 
+        {/* Fulfills These Orders */}
+        {batchOrders.length > 0 && (
+          <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', marginBottom: 16 }}>
+            <div style={{ background: 'var(--panel-2)', padding: '10px 16px', display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer' }}
+              onClick={() => setShowBatchOrders((v) => !v)}>
+              <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>📦 Fulfills {batchOrders.length} Open Order{batchOrders.length !== 1 ? 's' : ''}</span>
+              <span style={{ color: 'var(--muted)', fontSize: '0.8rem' }}>{showBatchOrders ? '▲ hide' : '▼ show'}</span>
+            </div>
+            {showBatchOrders && (
+              <div style={{ padding: '8px 16px 12px' }}>
+                {batchOrders.map((order) => (
+                  <div key={order.id} style={{ padding: '8px 0', borderBottom: '1px solid var(--border)', display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                    <span style={{ fontWeight: 700, fontFamily: 'monospace' }}>#{order.order_number}</span>
+                    <span style={{ color: 'var(--text-2)', fontSize: '0.85rem' }}>{order.customer_name ?? '—'}</span>
+                    {order.notes && (
+                      <span style={{ background: 'rgba(234,179,8,0.15)', color: 'var(--warning)', borderRadius: 6, padding: '1px 8px', fontSize: '0.78rem' }}>
+                        📝 {order.notes}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Manufacturing checklist (in_progress only) */}
         {activeBatch.status === 'in_progress' && (
           <section className="card">
@@ -694,8 +775,8 @@ export default function BatchesPage() {
                   </div>
 
                   {/* Part-first manufacturing checklist table */}
-                  <div style={{ overflowX: 'auto' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+                  <div className="mfg-table-wrap" style={{ overflowX: 'auto' }}>
+                    <table className="mfg-table" style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
                       <colgroup>
                         <col style={{ width: 170 }} />
                         <col style={{ width: 44 }} />
@@ -1019,17 +1100,33 @@ export default function BatchesPage() {
             <div className="table-wrap">
               <table className="table">
                 <thead>
-                  <tr><th>Name</th><th>Status</th><th>SKUs</th><th>Created</th><th>Completed</th></tr>
+                  <tr><th>Name</th><th>Status</th><th>SKUs</th><th>Progress</th><th>Created</th><th>Completed</th></tr>
                 </thead>
                 <tbody>
                   {batches.map((batch) => {
                     const ss = STATUS_STYLE[batch.status]
                     const skuCount = lines.filter((l) => l.batch_id === batch.id).length
+                    const completions = batchCompletionCounts[batch.id] ?? 0
+                    let progressCell: React.ReactNode
+                    if (batch.status === 'planned') {
+                      progressCell = <span style={{ color: 'var(--muted)', fontSize: '0.78rem' }}>Not started</span>
+                    } else if (batch.status === 'complete') {
+                      progressCell = <span style={{ color: 'var(--success)', fontWeight: 700, fontSize: '0.78rem' }}>✓ Done</span>
+                    } else if (batch.status === 'at_powder') {
+                      progressCell = <span style={{ color: '#a78bfa', fontWeight: 700, fontSize: '0.78rem' }}>🎨 Powder</span>
+                    } else {
+                      progressCell = (
+                        <span style={{ background: 'rgba(234,179,8,0.18)', color: '#facc15', borderRadius: 12, padding: '2px 9px', fontSize: '0.76rem', fontWeight: 700 }}>
+                          {completions} ✓
+                        </span>
+                      )
+                    }
                     return (
                       <tr key={batch.id} style={{ cursor: 'pointer' }} onClick={() => { setActiveBatch(batch); setView('detail') }}>
                         <td style={{ fontWeight: 700 }}>{batch.name}</td>
                         <td><span style={{ background: ss.bg, color: ss.color, borderRadius: 20, padding: '2px 10px', fontSize: '0.76rem', fontWeight: 700 }}>{ss.label}</span></td>
                         <td>{skuCount}</td>
+                        <td>{progressCell}</td>
                         <td>{fmtDate(batch.created_at)}</td>
                         <td>{fmtDate(batch.completed_at)}</td>
                       </tr>

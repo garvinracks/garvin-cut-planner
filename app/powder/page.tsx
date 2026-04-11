@@ -264,6 +264,10 @@ export default function PowderPage() {
     setMessage(
       `✓ ${count} batch${count !== 1 ? 'es' : ''} marked complete — inventory updated, powder coat recorded at ${fmtCost(costPerLb)}/lb.`
     )
+    // Set flag for orders page to show auto-allocate flash message
+    sessionStorage.setItem('garvin:auto_allocate', 'true')
+    // Navigate to orders page after a short delay so user sees the success message
+    setTimeout(() => { window.location.href = '/orders' }, 1800)
   }
 
   // Legacy: mark an at_coater powder run complete (backward compat)
@@ -315,11 +319,19 @@ export default function PowderPage() {
 
 
       {message && (
-        <div
-          className="message"
-          style={{ color: message.startsWith('✓') ? 'var(--success)' : message.includes('failed') ? 'var(--danger)' : undefined }}
-        >
-          {message}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <div
+            className="message"
+            style={{ flex: 1, color: message.startsWith('✓') ? 'var(--success)' : message.includes('failed') ? 'var(--danger)' : undefined }}
+          >
+            {message}
+          </div>
+          {message.startsWith('✓') && (
+            <button className="btn btn-primary" style={{ height: 32, fontSize: '0.82rem', whiteSpace: 'nowrap' }}
+              onClick={() => { window.location.href = '/orders' }}>
+              📦 View Orders →
+            </button>
+          )}
         </div>
       )}
 

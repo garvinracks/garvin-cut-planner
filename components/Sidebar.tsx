@@ -16,6 +16,14 @@ function IconClose() {
 
 // ── Minimal inline SVG icons ──────────────────────────────────────────────────
 
+function IconDashboard() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2 2h5v5H2zM9 2h5v5H9zM2 9h5v5H2zM9 9h5v5H9z" />
+    </svg>
+  )
+}
+
 function IconPlanner() {
   return (
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -131,6 +139,7 @@ function IconPowder() {
 // ── Nav config ────────────────────────────────────────────────────────────────
 
 const LINKS = [
+  { href: '/',              label: 'Dashboard',      Icon: IconDashboard,  group: 'Operations' },
   { href: '/planner',       label: 'Build Planner',  Icon: IconPlanner,    group: 'Operations' },
   { href: '/orders',        label: 'Orders',         Icon: IconOrders,     group: 'Operations' },
   { href: '/inventory',     label: 'Inventory',      Icon: IconInventory,  group: 'Operations' },
