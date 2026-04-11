@@ -143,6 +143,8 @@ export default function BatchesPage() {
   // Per-part/sub-assembly completions for the active batch: Set<"id:stageKey">
   const [completions, setCompletions] = useState<CompletionSet>(new Set())
   const [loadingCompletions, setLoadingCompletions] = useState(false)
+  const [saveError, setSaveError] = useState<string>('')
+  const [savingKeys, setSavingKeys] = useState<Set<string>>(new Set())
 
   // Fulfills These Orders
   const [batchOrders, setBatchOrders] = useState<Array<{id:string; order_number:string; customer_name:string|null; notes:string|null; order_date:string|null}>>([])
@@ -376,18 +378,31 @@ export default function BatchesPage() {
     subAssemblyGroupsForBatch: Map<string, { subAssembly: SubAssembly; items: Array<{ part: Part; totalQty: number }> }>
   ) {
     const key = `${itemId}:${stageKey}`
+    // Optimistic update
+    const prevCompletions = new Set(completions)
     const newCompletions = new Set(completions)
     checked ? newCompletions.add(key) : newCompletions.delete(key)
     setCompletions(newCompletions)
+    setSavingKeys((prev) => { const next = new Set(prev); next.add(key); return next })
+    setSaveError('')
+
+    // Always delete first (avoids duplicate-key issues regardless of DB constraints)
+    await supabase.from('batch_part_completions').delete()
+      .eq('batch_id', batchId).eq('part_id', itemId).eq('stage_key', stageKey)
+
     if (checked) {
-      await supabase.from('batch_part_completions').upsert(
-        { batch_id: batchId, part_id: itemId, stage_key: stageKey },
-        { onConflict: 'batch_id,part_id,stage_key' }
-      )
-    } else {
-      await supabase.from('batch_part_completions').delete()
-        .eq('batch_id', batchId).eq('part_id', itemId).eq('stage_key', stageKey)
+      const { error } = await supabase.from('batch_part_completions')
+        .insert({ batch_id: batchId, part_id: itemId, stage_key: stageKey })
+      if (error) {
+        // Revert optimistic update
+        setCompletions(prevCompletions)
+        setSaveError(`Save failed: ${error.message}. Your progress was not stored — please try again.`)
+        setSavingKeys((prev) => { const next = new Set(prev); next.delete(key); return next })
+        return
+      }
     }
+
+    setSavingKeys((prev) => { const next = new Set(prev); next.delete(key); return next })
     if (activeBatch) await syncBatchStageFlags(activeBatch, newCompletions, workItems, subAssemblyGroupsForBatch)
   }
 
@@ -398,22 +413,32 @@ export default function BatchesPage() {
     workItems: Map<string, { part: Part; totalQty: number; subAssemblyId: string | null }>,
     subAssemblyGroupsForBatch: Map<string, { subAssembly: SubAssembly; items: Array<{ part: Part; totalQty: number }> }>
   ) {
+    const prevCompletions = new Set(completions)
     const newCompletions = new Set(completions)
+    const bulkKeys = items.map((i) => `${i.id}:${i.stageKey}`)
+    if (checked) for (const k of bulkKeys) newCompletions.add(k)
+    else for (const k of bulkKeys) newCompletions.delete(k)
+    setCompletions(newCompletions)
+    setSavingKeys((prev) => { const next = new Set(prev); for (const k of bulkKeys) next.add(k); return next })
+    setSaveError('')
+
+    // Delete all first, then re-insert if checking
+    for (const item of items) {
+      await supabase.from('batch_part_completions').delete()
+        .eq('batch_id', batchId).eq('part_id', item.id).eq('stage_key', item.stageKey)
+    }
     if (checked) {
-      for (const item of items) newCompletions.add(`${item.id}:${item.stageKey}`)
-      await supabase.from('batch_part_completions').upsert(
-        items.map((item) => ({ batch_id: batchId, part_id: item.id, stage_key: item.stageKey })),
-        { onConflict: 'batch_id,part_id,stage_key' }
-      )
-    } else {
-      for (const item of items) newCompletions.delete(`${item.id}:${item.stageKey}`)
-      // Delete each unchecked item
-      for (const item of items) {
-        await supabase.from('batch_part_completions').delete()
-          .eq('batch_id', batchId).eq('part_id', item.id).eq('stage_key', item.stageKey)
+      const { error } = await supabase.from('batch_part_completions')
+        .insert(items.map((item) => ({ batch_id: batchId, part_id: item.id, stage_key: item.stageKey })))
+      if (error) {
+        setCompletions(prevCompletions)
+        setSaveError(`Save failed: ${error.message}. Please try again.`)
+        setSavingKeys((prev) => { const next = new Set(prev); for (const k of bulkKeys) next.delete(k); return next })
+        return
       }
     }
-    setCompletions(newCompletions)
+
+    setSavingKeys((prev) => { const next = new Set(prev); for (const k of bulkKeys) next.delete(k); return next })
     if (activeBatch) await syncBatchStageFlags(activeBatch, newCompletions, workItems, subAssemblyGroupsForBatch)
   }
 
@@ -826,7 +851,9 @@ export default function BatchesPage() {
                     {stageParts.map(({ part, totalQty }) => (
                       <tr key={part.id}>
                         <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
-                          <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small" isTube={part.part_type === 'tube'} tubeFallback={false} />
+                          <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small"
+                            isTube={part.part_type === 'tube'} tubeFallback={true}
+                            tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape="round" />
                           <div style={{ fontSize: '0.7rem', fontFamily: 'monospace', fontWeight: 700, color: '#555', marginTop: 4 }}>{part.part_number}</div>
                         </td>
                         <td style={{ textAlign: 'center', fontWeight: 700, verticalAlign: 'middle' }}>{totalQty}</td>
@@ -1054,6 +1081,14 @@ export default function BatchesPage() {
                 ))}
               </div>
             )}
+          </div>
+        )}
+
+        {/* Save error banner */}
+        {saveError && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px', background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.35)', borderRadius: 8, color: 'var(--danger)', fontSize: '0.85rem' }}>
+            <span>⚠️ {saveError}</span>
+            <button style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontWeight: 700 }} onClick={() => setSaveError('')}>✕</button>
           </div>
         )}
 
@@ -1413,8 +1448,11 @@ export default function BatchesPage() {
                               return (
                                 <tr key={`part-${part.id}`} style={{ borderBottom: '1px solid var(--border)', background: rowAllDone ? 'rgba(34,197,94,0.04)' : 'transparent' }}>
                                   <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
-                                    <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small" isTube={part.part_type === 'tube'} tubeFallback={false} />
+                                    <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small"
+                                      isTube={part.part_type === 'tube'} tubeFallback={true}
+                                      tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape="round" />
                                     <div style={{ fontSize: '0.68rem', fontFamily: 'monospace', fontWeight: 700, color: 'var(--muted)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{part.part_number}</div>
+                                    {part.description && <div style={{ fontSize: '0.62rem', color: 'var(--muted)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>{part.description}</div>}
                                   </td>
                                   <td style={{ textAlign: 'center', fontWeight: 700, fontSize: '0.88rem', verticalAlign: 'middle', color: 'var(--muted)' }}>×{totalQty}</td>
                                   {activeStages.map(({ stageKey, partKey }) => {
@@ -1427,11 +1465,17 @@ export default function BatchesPage() {
                                     })
                                     return (
                                       <td key={stageKey} style={{ textAlign: 'center', verticalAlign: 'middle', borderLeft: '1px solid var(--border)', background: done ? 'rgba(34,197,94,0.1)' : 'transparent', padding: '4px' }}>
+                                        {savingKeys.has(`${part.id}:${stageKey}`) ? (
+                                          <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>⏳</span>
+                                        ) : (
+                                          <>
                                         <input type="checkbox" checked={done} disabled={blocked}
                                           onChange={(e) => handleToggle(activeBatch.id, part.id, stageKey, e.target.checked, workItems, subAssemblyGroups)}
                                           title={blocked ? '⚠ Complete prior stages first' : undefined}
                                           style={{ width: 18, height: 18, cursor: blocked ? 'not-allowed' : 'pointer', accentColor: 'var(--accent)', opacity: blocked ? 0.35 : 1 }} />
                                         {blocked && <div style={{ fontSize: '0.6rem', color: 'var(--warning)', marginTop: 2 }}>⚠</div>}
+                                          </>
+                                        )}
                                       </td>
                                     )
                                   })}
@@ -1484,8 +1528,11 @@ export default function BatchesPage() {
                               return (
                                 <tr key={`direct-${part.id}`} style={{ borderBottom: '1px solid var(--border)', background: rowAllDone ? 'rgba(34,197,94,0.04)' : 'transparent' }}>
                                   <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
-                                    <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small" isTube={part.part_type === 'tube'} tubeFallback={false} />
+                                    <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small"
+                                      isTube={part.part_type === 'tube'} tubeFallback={true}
+                                      tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape="round" />
                                     <div style={{ fontSize: '0.68rem', fontFamily: 'monospace', fontWeight: 700, color: 'var(--muted)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{part.part_number}</div>
+                                    {part.description && <div style={{ fontSize: '0.62rem', color: 'var(--muted)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>{part.description}</div>}
                                   </td>
                                   <td style={{ textAlign: 'center', fontWeight: 700, fontSize: '0.88rem', verticalAlign: 'middle', color: 'var(--muted)' }}>×{totalQty}</td>
                                   {activeStages.map(({ stageKey, partKey }) => {
@@ -1498,11 +1545,17 @@ export default function BatchesPage() {
                                     })
                                     return (
                                       <td key={stageKey} style={{ textAlign: 'center', verticalAlign: 'middle', borderLeft: '1px solid var(--border)', background: done ? 'rgba(34,197,94,0.1)' : 'transparent', padding: '4px' }}>
+                                        {savingKeys.has(`${part.id}:${stageKey}`) ? (
+                                          <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>⏳</span>
+                                        ) : (
+                                          <>
                                         <input type="checkbox" checked={done} disabled={blocked}
                                           onChange={(e) => handleToggle(activeBatch.id, part.id, stageKey, e.target.checked, workItems, subAssemblyGroups)}
                                           title={blocked ? '⚠ Complete prior stages first' : undefined}
                                           style={{ width: 18, height: 18, cursor: blocked ? 'not-allowed' : 'pointer', accentColor: 'var(--accent)', opacity: blocked ? 0.35 : 1 }} />
                                         {blocked && <div style={{ fontSize: '0.6rem', color: 'var(--warning)', marginTop: 2 }}>⚠</div>}
+                                          </>
+                                        )}
                                       </td>
                                     )
                                   })}
