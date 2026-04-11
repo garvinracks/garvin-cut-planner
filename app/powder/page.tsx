@@ -92,7 +92,6 @@ export default function PowderPage() {
       { data: ssData },
       { data: sapData },
       { data: partData },
-      { data: allBbData },
     ] = await Promise.all([
       supabase.from('build_batches')
         .select('*')
