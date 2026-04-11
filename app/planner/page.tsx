@@ -1264,14 +1264,14 @@ export default function PlannerPage() {
         </section>
       )}
 
-      {/* ── Material Order Sheet ── */}
-      {tubeRows.length > 0 && (
+      {/* ── Material Order ── */}
+      {(tubeRows.length > 0 || sheetRows.length > 0) && (
         <section className="card">
           <div className="card-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
             <div>
-              <h2 className="card-title">Material Order Sheet</h2>
+              <h2 className="card-title">Material Order</h2>
               <div className="card-subtitle">
-                Purchasing summary cross-referenced against the materials pricing log.
+                Full purchasing list — tube bars and sheets combined, with stock on hand and estimated cost.
               </div>
             </div>
             <button
@@ -1287,107 +1287,250 @@ export default function PlannerPage() {
             <div className="card-body">
               {(() => {
                 const defaultSl = parseFloat(stockLength) || 240
-                type OrderRow = {
+
+                // ── Tube rows ──────────────────────────────────────────────────
+                type TubeOrderRow = {
                   key: string
                   spec: string
                   totalLength: number
                   stockLength: number
-                  barsToOrder: number
+                  barsNeeded: number
+                  inStock: number | null
+                  toOrder: number
                   lastPrice: number | null
-                  priceUnit: string
                   estCost: number | null
                   supplier: string | null
                 }
-                const orderRows: OrderRow[] = groupedTubeSections.map((section) => {
-                  const matchedMaterial = materials.find(
+                const tubeOrderRows: TubeOrderRow[] = groupedTubeSections.map((section) => {
+                  const mat = materials.find(
                     (m) =>
                       m.material_type === 'tube' &&
                       (m.material ?? '').toLowerCase() === (section.material ?? '').toLowerCase() &&
                       (m.tube_od ?? '') === (section.tube_od ?? '') &&
                       (m.tube_wall ?? '') === (section.tube_wall ?? '')
                   )
-                  // Use per-material stock length if set, otherwise fall back to global default
-                  const sl = matchedMaterial?.stock_length_in ?? defaultSl
-                  const latestLog = matchedMaterial
-                    ? priceLogs.find((p) => p.material_id === matchedMaterial.id) ?? null
-                    : null
-                  const barsToOrder = Math.ceil(section.totalLength / sl)
+                  const sl = mat?.stock_length_in ?? defaultSl
+                  const latestLog = mat ? priceLogs.find((p) => p.material_id === mat.id) ?? null : null
+                  const barsNeeded = Math.ceil(section.totalLength / sl)
+                  const inStock = mat?.qty_on_hand ?? null
+                  const toOrder = Math.max(0, barsNeeded - (inStock ?? 0))
                   const lastPrice = latestLog?.price ?? null
-                  const estCost = lastPrice !== null ? barsToOrder * lastPrice : null
+                  const estCost = lastPrice !== null ? toOrder * lastPrice : null
                   return {
                     key: section.key,
-                    spec: `${section.material || 'Unspecified'} / ${section.tube_od || '?'} × ${section.tube_wall || '?'} wall`,
+                    spec: `${section.material || 'Unspecified'} · ${section.tube_od || '?'} × ${section.tube_wall || '?'}`,
                     totalLength: section.totalLength,
                     stockLength: sl,
-                    barsToOrder,
+                    barsNeeded,
+                    inStock,
+                    toOrder,
                     lastPrice,
-                    priceUnit: '$/bar',
                     estCost,
                     supplier: latestLog?.supplier ?? null,
                   }
                 })
-                const totalEstCost = orderRows.every((r) => r.estCost !== null)
-                  ? orderRows.reduce((s, r) => s + (r.estCost ?? 0), 0)
+
+                // ── Sheet rows ─────────────────────────────────────────────────
+                type SheetOrderRow = {
+                  materialId: string
+                  materialName: string
+                  thickness: string | null
+                  totalPartsWeight: number
+                  unitWeightLbs: number
+                  utilization: number
+                  sheetsNeeded: number
+                  inStock: number | null
+                  toOrder: number
+                  lastPrice: number | null
+                  estCost: number | null
+                  supplier: string | null
+                }
+                const sheetGroupMap = new Map<string, { totalPartsWeight: number; mat: MaterialRecord; latestLog: PriceLogRecord | null }>()
+                for (const row of sheetRows) {
+                  if (!row.weight_lbs) continue
+                  const mat = materials.find(
+                    (m) =>
+                      m.material_type === 'sheet' &&
+                      (m.material ?? '').toLowerCase() === (row.material ?? '').toLowerCase() &&
+                      (m.thickness ?? '') === (row.thickness ?? '')
+                  )
+                  if (!mat || !mat.unit_weight_lbs) continue
+                  const existing = sheetGroupMap.get(mat.id)
+                  if (existing) {
+                    existing.totalPartsWeight += row.weight_lbs * row.qty
+                  } else {
+                    const latestLog = priceLogs.find((p) => p.material_id === mat.id) ?? null
+                    sheetGroupMap.set(mat.id, { totalPartsWeight: row.weight_lbs * row.qty, mat, latestLog })
+                  }
+                }
+                const sheetOrderRows: SheetOrderRow[] = Array.from(sheetGroupMap.values()).map(({ totalPartsWeight, mat, latestLog }) => {
+                  const utilization = 1 - (mat.scrap_rate ?? 0.15)
+                  const sheetsNeeded = Math.ceil(totalPartsWeight / (mat.unit_weight_lbs! * utilization))
+                  const inStock = mat.qty_on_hand ?? null
+                  const toOrder = Math.max(0, sheetsNeeded - (inStock ?? 0))
+                  const lastPrice = latestLog?.price ?? null
+                  const estCost = lastPrice !== null ? toOrder * lastPrice : null
+                  return {
+                    materialId: mat.id,
+                    materialName: mat.name,
+                    thickness: mat.thickness ?? null,
+                    totalPartsWeight,
+                    unitWeightLbs: mat.unit_weight_lbs!,
+                    utilization,
+                    sheetsNeeded,
+                    inStock,
+                    toOrder,
+                    lastPrice,
+                    estCost,
+                    supplier: latestLog?.supplier ?? null,
+                  }
+                })
+
+                // ── Grand total ────────────────────────────────────────────────
+                const allCosts = [
+                  ...tubeOrderRows.map((r) => r.estCost),
+                  ...sheetOrderRows.map((r) => r.estCost),
+                ]
+                const grandTotal = allCosts.every((c) => c !== null)
+                  ? allCosts.reduce((s, c) => s + (c ?? 0), 0)
                   : null
+
+                const missingPrice =
+                  tubeOrderRows.some((r) => r.lastPrice === null) ||
+                  sheetOrderRows.some((r) => r.lastPrice === null)
+
                 return (
-                  <div className="table-wrap">
-                    <table className="table">
-                      <thead>
-                        <tr>
-                          <th>Material / Spec</th>
-                          <th>Total Length Needed</th>
-                          <th>Stock Bar Length</th>
-                          <th>Bars to Order</th>
-                          <th>Last Price</th>
-                          <th>Est. Cost</th>
-                          <th>Supplier</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {orderRows.map((row) => (
-                          <tr key={row.key}>
-                            <td style={{ fontWeight: 600 }}>{row.spec}</td>
-                            <td>
-                              {row.totalLength}&Prime;
-                              <span style={{ color: 'var(--muted)', marginLeft: 4, fontSize: '0.85em' }}>
-                                ({(row.totalLength / 12).toFixed(2)} ft)
-                              </span>
-                            </td>
-                            <td>{row.stockLength}&Prime;</td>
-                            <td style={{ fontWeight: 700, color: 'var(--accent)' }}>{row.barsToOrder}</td>
-                            <td>
-                              {row.lastPrice !== null
-                                ? `$${row.lastPrice.toFixed(2)} ${row.priceUnit}`
-                                : <span style={{ color: 'var(--muted)' }}>—</span>}
-                            </td>
-                            <td style={{ fontWeight: 700 }}>
-                              {row.estCost !== null
-                                ? `$${row.estCost.toFixed(2)}`
-                                : <span style={{ color: 'var(--muted)' }}>—</span>}
-                            </td>
-                            <td style={{ color: 'var(--muted)' }}>{row.supplier || '—'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                      <tfoot>
-                        <tr style={{ borderTop: '2px solid var(--border)' }}>
-                          <td colSpan={5} style={{ fontWeight: 700, textAlign: 'right', paddingRight: 12 }}>
-                            Total Estimated Cost
-                          </td>
-                          <td style={{ fontWeight: 700, color: 'var(--accent)' }}>
-                            {totalEstCost !== null
-                              ? `$${totalEstCost.toFixed(2)}`
-                              : <span style={{ color: 'var(--muted)' }}>—</span>}
-                          </td>
-                          <td />
-                        </tr>
-                      </tfoot>
-                    </table>
-                    {orderRows.some((r) => r.lastPrice === null) && (
-                      <div className="message" style={{ marginTop: 10, fontSize: '0.85rem' }}>
-                        Some materials have no price data in the pricing log. Add prices on the Materials page.
+                  <div>
+                    {/* ── Tube section ── */}
+                    {tubeOrderRows.length > 0 && (
+                      <div style={{ marginBottom: sheetOrderRows.length > 0 ? 28 : 0 }}>
+                        <div className="group-title" style={{ marginBottom: 10 }}>Tube Stock</div>
+                        <div className="table-wrap">
+                          <table className="table">
+                            <thead>
+                              <tr>
+                                <th>Material / Spec</th>
+                                <th>Length Needed</th>
+                                <th>Bar Length</th>
+                                <th style={{ textAlign: 'center' }}>Bars Needed</th>
+                                <th style={{ textAlign: 'center' }}>In Stock</th>
+                                <th style={{ textAlign: 'center', color: 'var(--accent)' }}>To Order</th>
+                                <th style={{ textAlign: 'right' }}>Last Price</th>
+                                <th style={{ textAlign: 'right' }}>Est. Cost</th>
+                                <th>Supplier</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {tubeOrderRows.map((row) => (
+                                <tr key={row.key}>
+                                  <td style={{ fontWeight: 600 }}>{row.spec}</td>
+                                  <td>
+                                    {row.totalLength}&Prime;
+                                    <span style={{ color: 'var(--muted)', marginLeft: 4, fontSize: '0.85em' }}>
+                                      ({(row.totalLength / 12).toFixed(1)} ft)
+                                    </span>
+                                  </td>
+                                  <td style={{ color: 'var(--muted)' }}>{row.stockLength}&Prime;</td>
+                                  <td style={{ textAlign: 'center', fontWeight: 700 }}>{row.barsNeeded}</td>
+                                  <td style={{ textAlign: 'center' }}>
+                                    {row.inStock != null
+                                      ? <span style={{ color: row.inStock >= row.barsNeeded ? 'var(--success)' : 'var(--warning, #f59e0b)' }}>{row.inStock}</span>
+                                      : <span style={{ color: 'var(--muted)' }}>—</span>}
+                                  </td>
+                                  <td style={{ textAlign: 'center', fontWeight: 800 }}>
+                                    {row.toOrder > 0
+                                      ? <span style={{ color: 'var(--danger, #ef4444)' }}>{row.toOrder}</span>
+                                      : <span style={{ color: 'var(--success)' }}>✓</span>}
+                                  </td>
+                                  <td style={{ textAlign: 'right', color: 'var(--muted)' }}>
+                                    {row.lastPrice != null ? `$${row.lastPrice.toFixed(2)}/bar` : '—'}
+                                  </td>
+                                  <td style={{ textAlign: 'right', fontWeight: 700 }}>
+                                    {row.estCost != null ? `$${row.estCost.toFixed(2)}` : <span style={{ color: 'var(--muted)' }}>—</span>}
+                                  </td>
+                                  <td style={{ color: 'var(--muted)' }}>{row.supplier || '—'}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
                     )}
+
+                    {/* ── Sheet section ── */}
+                    {sheetOrderRows.length > 0 && (
+                      <div style={{ marginBottom: 16 }}>
+                        <div className="group-title" style={{ marginBottom: 10 }}>Sheet Stock</div>
+                        <div className="table-wrap">
+                          <table className="table">
+                            <thead>
+                              <tr>
+                                <th>Material</th>
+                                <th style={{ textAlign: 'right' }}>Parts Wt (lbs)</th>
+                                <th style={{ textAlign: 'center' }}>Sheet Wt</th>
+                                <th style={{ textAlign: 'center' }}>Utilization</th>
+                                <th style={{ textAlign: 'center' }}>Sheets Needed</th>
+                                <th style={{ textAlign: 'center' }}>In Stock</th>
+                                <th style={{ textAlign: 'center', color: 'var(--accent)' }}>To Order</th>
+                                <th style={{ textAlign: 'right' }}>Last Price</th>
+                                <th style={{ textAlign: 'right' }}>Est. Cost</th>
+                                <th>Supplier</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {sheetOrderRows.map((row) => (
+                                <tr key={row.materialId}>
+                                  <td>
+                                    <div style={{ fontWeight: 600 }}>{row.materialName}</div>
+                                    {row.thickness && <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>{row.thickness}&Prime; thick</div>}
+                                  </td>
+                                  <td style={{ textAlign: 'right', fontFamily: 'monospace', fontSize: '0.83rem' }}>
+                                    {row.totalPartsWeight.toFixed(2)}
+                                  </td>
+                                  <td style={{ textAlign: 'center', color: 'var(--muted)', fontSize: '0.83rem' }}>{row.unitWeightLbs} lbs</td>
+                                  <td style={{ textAlign: 'center', color: 'var(--muted)', fontSize: '0.83rem' }}>{(row.utilization * 100).toFixed(0)}%</td>
+                                  <td style={{ textAlign: 'center', fontWeight: 700 }}>{row.sheetsNeeded}</td>
+                                  <td style={{ textAlign: 'center' }}>
+                                    {row.inStock != null
+                                      ? <span style={{ color: row.inStock >= row.sheetsNeeded ? 'var(--success)' : 'var(--warning, #f59e0b)' }}>{row.inStock}</span>
+                                      : <span style={{ color: 'var(--muted)' }}>—</span>}
+                                  </td>
+                                  <td style={{ textAlign: 'center', fontWeight: 800 }}>
+                                    {row.toOrder > 0
+                                      ? <span style={{ color: 'var(--danger, #ef4444)' }}>{row.toOrder}</span>
+                                      : <span style={{ color: 'var(--success)' }}>✓</span>}
+                                  </td>
+                                  <td style={{ textAlign: 'right', color: 'var(--muted)' }}>
+                                    {row.lastPrice != null ? `$${row.lastPrice.toFixed(2)}/sheet` : '—'}
+                                  </td>
+                                  <td style={{ textAlign: 'right', fontWeight: 700 }}>
+                                    {row.estCost != null ? `$${row.estCost.toFixed(2)}` : <span style={{ color: 'var(--muted)' }}>—</span>}
+                                  </td>
+                                  <td style={{ color: 'var(--muted)' }}>{row.supplier || '—'}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ── Grand total ── */}
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 16, padding: '12px 4px 0', borderTop: '2px solid var(--border)' }}>
+                      <span style={{ fontWeight: 700, color: 'var(--muted)' }}>Total Estimated Material Cost</span>
+                      <span style={{ fontSize: '1.25rem', fontWeight: 800, color: 'var(--accent)' }}>
+                        {grandTotal !== null ? `$${grandTotal.toFixed(2)}` : '—'}
+                      </span>
+                    </div>
+
+                    {missingPrice && (
+                      <div className="message" style={{ marginTop: 10, fontSize: '0.85rem' }}>
+                        Some materials have no price data — add prices on the Materials page.
+                      </div>
+                    )}
+                    <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: 6 }}>
+                      Est. cost uses "To Order" qty only. Sheets needed = ⌈ parts weight ÷ (sheet weight × utilization) ⌉.
+                    </div>
                   </div>
                 )
               })()}
@@ -1461,133 +1604,6 @@ export default function PlannerPage() {
           )}
         </div>}
       </section>
-
-      {/* ── Sheet Material Estimate ── */}
-      {sheetRows.length > 0 && (
-        <section className="card">
-          <div className="card-header">
-            <h2 className="card-title">Sheet Material Estimate</h2>
-            <div className="card-subtitle">
-              Sheets required for this build, cross-referenced against on-hand stock.
-            </div>
-          </div>
-          <div className="card-body">
-            {(() => {
-              type SheetGroup = {
-                materialId: string
-                materialName: string
-                thickness: string | null
-                unitWeightLbs: number
-                stockQtyOnHand: number | null
-                scrapRate: number
-                totalPartsWeight: number
-              }
-              const groups = new Map<string, SheetGroup>()
-
-              for (const row of sheetRows) {
-                if (!row.weight_lbs) continue
-                // Match material by material name + thickness
-                const mat = materials.find(
-                  (m) =>
-                    m.material_type === 'sheet' &&
-                    (m.material ?? '').toLowerCase() === (row.material ?? '').toLowerCase() &&
-                    (m.thickness ?? '') === (row.thickness ?? '')
-                )
-                if (!mat || !mat.unit_weight_lbs) continue
-
-                const partWeight = row.weight_lbs * row.qty
-                const existing = groups.get(mat.id)
-                if (existing) {
-                  existing.totalPartsWeight += partWeight
-                } else {
-                  groups.set(mat.id, {
-                    materialId: mat.id,
-                    materialName: mat.name,
-                    thickness: mat.thickness ?? null,
-                    unitWeightLbs: mat.unit_weight_lbs,
-                    stockQtyOnHand: mat.qty_on_hand ?? null,
-                    scrapRate: mat.scrap_rate ?? 0.15,
-                    totalPartsWeight: partWeight,
-                  })
-                }
-              }
-
-              if (groups.size === 0) {
-                return (
-                  <div className="empty">
-                    No sheet parts with weight data found — add <code>weight_lbs</code> to parts on the Parts page, and make sure materials have <code>unit_weight_lbs</code> set.
-                  </div>
-                )
-              }
-
-              return (
-                <>
-                  <div className="table-wrap">
-                    <table className="table">
-                      <thead>
-                        <tr>
-                          <th>Material</th>
-                          <th style={{ textAlign: 'right' }}>Parts Weight (lbs)</th>
-                          <th style={{ textAlign: 'center' }}>Sheet Wt (lbs)</th>
-                          <th style={{ textAlign: 'center' }}>Utilization</th>
-                          <th style={{ textAlign: 'center' }}>Sheets Needed</th>
-                          <th style={{ textAlign: 'center' }}>In Stock</th>
-                          <th style={{ textAlign: 'center' }}>To Order</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {Array.from(groups.values()).map((g) => {
-                          const utilization = 1 - g.scrapRate
-                          const sheetsNeeded = Math.ceil(g.totalPartsWeight / (g.unitWeightLbs * utilization))
-                          const inStock = g.stockQtyOnHand ?? 0
-                          const toOrder = Math.max(0, sheetsNeeded - inStock)
-                          return (
-                            <tr key={g.materialId}>
-                              <td>
-                                <div style={{ fontWeight: 700, fontSize: '0.85rem' }}>{g.materialName}</div>
-                                {g.thickness && (
-                                  <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>{g.thickness}&Prime; thick</div>
-                                )}
-                              </td>
-                              <td style={{ textAlign: 'right', fontFamily: 'monospace', fontSize: '0.83rem' }}>
-                                {g.totalPartsWeight.toFixed(2)}
-                              </td>
-                              <td style={{ textAlign: 'center', fontSize: '0.83rem', color: 'var(--text-2)' }}>
-                                {g.unitWeightLbs} lbs
-                              </td>
-                              <td style={{ textAlign: 'center', fontSize: '0.83rem', color: 'var(--text-2)' }}>
-                                {(utilization * 100).toFixed(0)}%
-                              </td>
-                              <td style={{ textAlign: 'center', fontWeight: 700 }}>
-                                {sheetsNeeded}
-                              </td>
-                              <td style={{ textAlign: 'center', fontSize: '0.83rem' }}>
-                                {g.stockQtyOnHand != null
-                                  ? <span style={{ color: inStock >= sheetsNeeded ? 'var(--success)' : 'var(--warning, #f59e0b)' }}>{inStock}</span>
-                                  : <span style={{ color: 'var(--muted)' }}>—</span>
-                                }
-                              </td>
-                              <td style={{ textAlign: 'center', fontWeight: 700 }}>
-                                {toOrder > 0
-                                  ? <span style={{ color: 'var(--danger, #ef4444)', fontWeight: 800 }}>{toOrder}</span>
-                                  : <span style={{ color: 'var(--success)' }}>✓</span>
-                                }
-                              </td>
-                            </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: 8 }}>
-                    Sheets needed = ⌈ total parts weight ÷ (sheet weight × utilization) ⌉ · Utilization = 1 − scrap rate set on each material.
-                  </div>
-                </>
-              )
-            })()}
-          </div>
-        </section>
-      )}
 
       {/* ── Shop Floor View ── */}
       {shopFloorOpen && (tubeRows.length > 0 || sheetRows.length > 0) && (
