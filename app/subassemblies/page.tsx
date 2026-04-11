@@ -40,7 +40,7 @@ const emptySubassemblyForm = {
   id: '',
   name: '',
   notes: '',
-  requires_weld: false,
+  requires_weld: true,
 }
 
 export default function SubassembliesPage() {
@@ -931,7 +931,11 @@ WITH CHECK (bucket_id = 'subassembly-images');`}
                                     partNumber={row.part_number}
                                     size="tiny"
                                     isTube={fullPart?.part_type === 'tube'}
-                                    tubeFallback={false}
+                                    tubeFallback={true}
+                                    tubeOd={fullPart?.tube_od ?? undefined}
+                                    tubeWall={fullPart?.tube_wall ?? undefined}
+                                    cutLength={fullPart?.cut_length ?? undefined}
+                                    tubeShape="round"
                                   />
                                 </td>
                                 <td>{row.part_number}</td>
