@@ -1084,7 +1084,8 @@ export default function BatchesPage() {
         ({ subAssembly }) => subAssembly.requires_weld && !completions.has(`${subAssembly.id}:weld`)
       )
       const finalWeldPending = Array.from(workItems.values()).filter(
-        (w) => w.part.requires_weld && !completions.has(`${w.part.id}:weld`)
+        // Exclude SA parts — their weld is tracked at the sub-assembly level
+        (w) => !saPartIds.has(w.part.id) && w.part.requires_weld && !completions.has(`${w.part.id}:weld`)
       )
 
       if (unsawedTubeParts.length > 0) {
@@ -1613,6 +1614,8 @@ export default function BatchesPage() {
                             const allStageItems: Array<{ id: string; stageKey: string }> = []
                             const stg = STAGES.find((s) => s.stageKey === stageKey)!
                             for (const w of workItems.values()) {
+                              // For weld, skip SA parts — their weld is the SA-level op below
+                              if (stageKey === 'weld' && saPartIds.has(w.part.id)) continue
                               if (w.part[stg.partKey as keyof Part]) allStageItems.push({ id: w.part.id, stageKey })
                             }
                             if (stageKey === 'weld') {
