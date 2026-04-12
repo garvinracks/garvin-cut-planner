@@ -253,12 +253,12 @@ export default function BatchesPage() {
       .from('order_lines')
       .select('sku_id, order:order_id(status)')
       .not('sku_id', 'is', null)
-    const counts: Record<string, number> = {}
+    const skuOrderCounts: Record<string, number> = {}
     for (const row of (olData ?? []) as any[]) {
       if (row.order?.status !== 'open') continue
-      counts[row.sku_id] = (counts[row.sku_id] ?? 0) + 1
+      skuOrderCounts[row.sku_id] = (skuOrderCounts[row.sku_id] ?? 0) + 1
     }
-    setOrderCounts(counts)
+    setOrderCounts(skuOrderCounts)
 
     // Auto-open a batch if sessionStorage has a pending open request
     try {
