@@ -1869,6 +1869,20 @@ export default function BatchesPage() {
     )
   }
 
+  // ── Create view cost estimate ─────────────────────────────────────────────────
+  const createCostPreview = useMemo(() => {
+    return createRows
+      .filter((r) => r.skuId.trim() && Number(r.qty) > 0)
+      .map((r) => {
+        const sku  = skus.find((s) => s.id === r.skuId)
+        const qty  = Number(r.qty)
+        const cost = calcMatCost(r.skuId, qty)
+        return { skuId: r.skuId, description: sku?.description ?? r.skuId, qty, cost }
+      })
+  }, [createRows, parts, skuParts, skuSubs, subParts, materials, priceLogs])
+
+  const createTotalCost = createCostPreview.reduce((s, r) => s + r.cost, 0)
+
   // ── CREATE VIEW ───────────────────────────────────────────────────────────────
   if (view === 'create') {
     return (
@@ -1930,6 +1944,50 @@ export default function BatchesPage() {
             </div>
           </div>
         </section>
+
+        {/* ── Estimated Material Cost ─────────────────────────────────────── */}
+        {createCostPreview.length > 0 && (
+          <section className="card">
+            <div className="card-header">
+              <h2 className="card-title">Estimated Material Cost</h2>
+              <div className="card-subtitle">Based on latest logged material prices — does not include labour, powder coat, or hardware</div>
+            </div>
+            <div className="card-body" style={{ padding: 0 }}>
+              <div className="table-wrap">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>SKU</th>
+                      <th>Description</th>
+                      <th style={{ textAlign: 'center' }}>Qty</th>
+                      <th style={{ textAlign: 'right' }}>Est. Material Cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {createCostPreview.map((row) => (
+                      <tr key={row.skuId}>
+                        <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>{row.skuId}</td>
+                        <td style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>{row.description}</td>
+                        <td style={{ textAlign: 'center' }}>{row.qty}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>
+                          {row.cost > 0 ? fmtCost(row.cost) : <span style={{ color: 'var(--muted)', fontSize: '0.8rem' }}>no price data</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  {createCostPreview.length > 1 && (
+                    <tfoot>
+                      <tr>
+                        <td colSpan={3} style={{ fontWeight: 700, textAlign: 'right', color: 'var(--muted)', fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Total</td>
+                        <td style={{ textAlign: 'right', fontWeight: 800, fontSize: '1rem', color: 'var(--accent)' }}>{fmtCost(createTotalCost)}</td>
+                      </tr>
+                    </tfoot>
+                  )}
+                </table>
+              </div>
+            </div>
+          </section>
+        )}
       </div>
     )
   }

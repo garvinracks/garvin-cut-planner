@@ -266,8 +266,6 @@ export default function PowderPage() {
     )
     // Set flag for orders page to show auto-allocate flash message
     sessionStorage.setItem('garvin:auto_allocate', 'true')
-    // Navigate to orders page after a short delay so user sees the success message
-    setTimeout(() => { window.location.href = '/orders' }, 1800)
   }
 
   // Legacy: mark an at_coater powder run complete (backward compat)

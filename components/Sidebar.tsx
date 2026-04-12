@@ -140,12 +140,10 @@ function IconPowder() {
 
 const LINKS = [
   { href: '/',              label: 'Dashboard',      Icon: IconDashboard,  group: 'Operations' },
-  { href: '/planner',       label: 'Build Planner',  Icon: IconPlanner,    group: 'Operations' },
   { href: '/orders',        label: 'Orders',         Icon: IconOrders,     group: 'Operations' },
   { href: '/inventory',     label: 'Inventory',      Icon: IconInventory,  group: 'Operations' },
   { href: '/batches',       label: 'Build Batches',  Icon: IconBatches,    group: 'Operations' },
   { href: '/powder',        label: 'Powder Coat',    Icon: IconPowder,     group: 'Operations' },
-  { href: '/jobs',          label: 'Saved Jobs',     Icon: IconJobs,       group: 'Operations' },
   { href: '/skus',          label: 'SKUs',           Icon: IconSKU,        group: 'Library'    },
   { href: '/subassemblies', label: 'Subassemblies',  Icon: IconSubassemblies, group: 'Library' },
   { href: '/parts',         label: 'Parts',          Icon: IconParts,      group: 'Library'    },
