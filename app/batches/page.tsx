@@ -909,6 +909,20 @@ export default function BatchesPage() {
     )
   }
 
+  // ── Create view cost estimate (must be before any early returns) ─────────────
+  const createCostPreview = useMemo(() => {
+    return createRows
+      .filter((r) => r.skuId.trim() && Number(r.qty) > 0)
+      .map((r) => {
+        const sku  = skus.find((s) => s.id === r.skuId)
+        const qty  = Number(r.qty)
+        const cost = calcMatCost(r.skuId, qty)
+        return { skuId: r.skuId, description: sku?.description ?? r.skuId, qty, cost }
+      })
+  }, [createRows, parts, skuParts, skuSubs, subParts, materials, priceLogs])
+
+  const createTotalCost = createCostPreview.reduce((s, r) => s + r.cost, 0)
+
   // ── Render ────────────────────────────────────────────────────────────────────
 
   if (loading) return <div className="section-stack"><div className="empty">Loading…</div></div>
@@ -1868,20 +1882,6 @@ export default function BatchesPage() {
       </div>
     )
   }
-
-  // ── Create view cost estimate ─────────────────────────────────────────────────
-  const createCostPreview = useMemo(() => {
-    return createRows
-      .filter((r) => r.skuId.trim() && Number(r.qty) > 0)
-      .map((r) => {
-        const sku  = skus.find((s) => s.id === r.skuId)
-        const qty  = Number(r.qty)
-        const cost = calcMatCost(r.skuId, qty)
-        return { skuId: r.skuId, description: sku?.description ?? r.skuId, qty, cost }
-      })
-  }, [createRows, parts, skuParts, skuSubs, subParts, materials, priceLogs])
-
-  const createTotalCost = createCostPreview.reduce((s, r) => s + r.cost, 0)
 
   // ── CREATE VIEW ───────────────────────────────────────────────────────────────
   if (view === 'create') {
