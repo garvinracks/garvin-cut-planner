@@ -11,6 +11,7 @@ export type PickableSKU = {
 
 type Props = {
   skus: PickableSKU[]
+  orderCounts?: Record<string, number>
   onSelect: (skus: PickableSKU[]) => void
   onClose: () => void
 }
@@ -34,9 +35,10 @@ function catLabel(cat: string | null) {
   return cat ?? 'Uncategorized'
 }
 
-export default function SkuPickerModal({ skus, onSelect, onClose }: Props) {
+export default function SkuPickerModal({ skus, orderCounts = {}, onSelect, onClose }: Props) {
   const [search, setSearch]               = useState('')
   const [catFilter, setCatFilter]         = useState<string>('all')
+  const [sort, setSort]                   = useState<'category' | 'orders'>('category')
   const [selected, setSelected]           = useState<Set<string>>(new Set())
   const searchRef                         = useRef<HTMLInputElement>(null)
 
@@ -116,10 +118,11 @@ export default function SkuPickerModal({ skus, onSelect, onClose }: Props) {
     onClose()
   }
 
-  const renderCards = (list: PickableSKU[]) =>
+  const renderCards = (list: PickableSKU[], showCategory = false) =>
     list.map((sku) => {
       const isSelected = selected.has(sku.id)
       const cc = catColor(sku.category)
+      const orderQty = orderCounts[sku.id] ?? 0
       return (
         <button
           key={sku.id}
@@ -153,73 +156,54 @@ export default function SkuPickerModal({ skus, onSelect, onClose }: Props) {
         >
           {/* Checkmark overlay when selected */}
           {isSelected && (
-            <span
-              style={{
-                position: 'absolute',
-                top: 8,
-                right: 9,
-                width: 18,
-                height: 18,
-                background: 'var(--accent)',
-                borderRadius: '50%',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: '0.7rem',
-                color: '#fff',
-                fontWeight: 700,
-              }}
-            >
-              ✓
+            <span style={{
+              position: 'absolute', top: 8, right: 9,
+              width: 18, height: 18, background: 'var(--accent)',
+              borderRadius: '50%', display: 'flex', alignItems: 'center',
+              justifyContent: 'center', fontSize: '0.7rem', color: '#fff', fontWeight: 700,
+            }}>✓</span>
+          )}
+
+          {/* Order count badge top-left (only when > 0) */}
+          {orderQty > 0 && !isSelected && (
+            <span style={{
+              position: 'absolute', top: 8, right: 9,
+              fontSize: '0.6rem', fontWeight: 700,
+              background: 'rgba(234,179,8,0.2)', color: '#facc15',
+              border: '1px solid rgba(234,179,8,0.35)',
+              borderRadius: 4, padding: '1px 5px', lineHeight: 1.5,
+            }}>
+              {orderQty} order{orderQty !== 1 ? 's' : ''}
             </span>
           )}
 
-          {/* SKU ID — prominent */}
-          <div
-            style={{
-              fontWeight: 700,
-              fontSize: '0.88rem',
-              color: 'var(--text)',
-              letterSpacing: '0.01em',
-              paddingRight: isSelected ? 24 : 0,
-            }}
-          >
+          {/* SKU ID */}
+          <div style={{
+            fontWeight: 700, fontSize: '0.88rem', color: 'var(--text)',
+            letterSpacing: '0.01em', paddingRight: (isSelected || orderQty > 0) ? 56 : 0,
+          }}>
             {sku.id}
           </div>
 
           {/* Description */}
           {sku.description && (
-            <div
-              style={{
-                fontSize: '0.74rem',
-                color: 'var(--text-2)',
-                lineHeight: 1.4,
-                display: '-webkit-box',
-                WebkitLineClamp: 2,
-                WebkitBoxOrient: 'vertical',
-                overflow: 'hidden',
-              }}
-            >
+            <div style={{
+              fontSize: '0.74rem', color: 'var(--text-2)', lineHeight: 1.4,
+              display: '-webkit-box', WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical', overflow: 'hidden',
+            }}>
               {sku.description}
             </div>
           )}
 
-          {/* Category badge */}
+          {/* Category badge — shown when in flat/sorted view */}
           <div style={{ marginTop: 2 }}>
-            <span
-              style={{
-                fontSize: '0.6rem',
-                fontWeight: 700,
-                textTransform: 'uppercase',
-                letterSpacing: '0.07em',
-                background: cc.bg,
-                color: cc.text,
-                border: `1px solid ${cc.border}`,
-                borderRadius: 4,
-                padding: '2px 5px',
-                lineHeight: 1.4,
-              }}
-            >
+            <span style={{
+              fontSize: '0.6rem', fontWeight: 700, textTransform: 'uppercase',
+              letterSpacing: '0.07em', background: cc.bg, color: cc.text,
+              border: `1px solid ${cc.border}`, borderRadius: 4,
+              padding: '2px 5px', lineHeight: 1.4,
+            }}>
               {catLabel(sku.category)}
             </span>
           </div>
@@ -290,41 +274,54 @@ export default function SkuPickerModal({ skus, onSelect, onClose }: Props) {
             />
           </div>
 
-          {/* Category filter pills */}
-          <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-            <button
-              type="button"
-              className={`btn ${catFilter === 'all' ? 'btn-primary' : 'btn-secondary'}`}
-              style={{ padding: '6px 14px', fontSize: '0.8rem' }}
-              onClick={() => setCatFilter('all')}
-            >
-              All
-            </button>
-            {categories.map((cat) => {
-              const label = catLabel(cat)
-              const cc = catColor(cat)
-              const active = catFilter === label
-              return (
-                <button
-                  key={label}
-                  type="button"
-                  onClick={() => { setCatFilter(active ? 'all' : label); setSearch('') }}
-                  style={{
-                    padding: '6px 14px',
-                    fontSize: '0.8rem',
-                    borderRadius: 6,
-                    border: `1px solid ${active ? cc.border : 'var(--border)'}`,
-                    background: active ? cc.bg : 'var(--panel-2)',
-                    color: active ? cc.text : 'var(--text-2)',
-                    cursor: 'pointer',
-                    fontWeight: active ? 700 : 500,
-                    transition: 'all 0.12s',
-                  }}
-                >
-                  {label}
+          {/* Sort + category filter pills */}
+          <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap', alignItems: 'center' }}>
+            {/* Sort toggle */}
+            <div style={{ display: 'flex', borderRadius: 6, border: '1px solid var(--border)', overflow: 'hidden', flexShrink: 0 }}>
+              <button type="button" onClick={() => { setSort('category'); setCatFilter('all') }}
+                style={{ padding: '5px 11px', fontSize: '0.78rem', cursor: 'pointer', border: 'none',
+                  background: sort === 'category' ? 'var(--accent)' : 'var(--panel-2)',
+                  color: sort === 'category' ? '#fff' : 'var(--text-2)', fontWeight: sort === 'category' ? 700 : 400 }}>
+                By Category
+              </button>
+              <button type="button" onClick={() => { setSort('orders'); setCatFilter('all') }}
+                style={{ padding: '5px 11px', fontSize: '0.78rem', cursor: 'pointer', border: 'none',
+                  borderLeft: '1px solid var(--border)',
+                  background: sort === 'orders' ? '#92400e' : 'var(--panel-2)',
+                  color: sort === 'orders' ? '#fbbf24' : 'var(--text-2)', fontWeight: sort === 'orders' ? 700 : 400 }}>
+                Most Orders
+              </button>
+            </div>
+
+            {/* Category filter pills (only in category mode) */}
+            {sort === 'category' && (
+              <>
+                <button type="button"
+                  className={`btn ${catFilter === 'all' ? 'btn-primary' : 'btn-secondary'}`}
+                  style={{ padding: '6px 14px', fontSize: '0.8rem' }}
+                  onClick={() => setCatFilter('all')}>
+                  All
                 </button>
-              )
-            })}
+                {categories.map((cat) => {
+                  const label = catLabel(cat)
+                  const cc = catColor(cat)
+                  const active = catFilter === label
+                  return (
+                    <button key={label} type="button"
+                      onClick={() => { setCatFilter(active ? 'all' : label); setSearch('') }}
+                      style={{
+                        padding: '6px 14px', fontSize: '0.8rem', borderRadius: 6,
+                        border: `1px solid ${active ? cc.border : 'var(--border)'}`,
+                        background: active ? cc.bg : 'var(--panel-2)',
+                        color: active ? cc.text : 'var(--text-2)',
+                        cursor: 'pointer', fontWeight: active ? 700 : 500, transition: 'all 0.12s',
+                      }}>
+                      {label}
+                    </button>
+                  )
+                })}
+              </>
+            )}
           </div>
 
           <button
@@ -373,81 +370,73 @@ export default function SkuPickerModal({ skus, onSelect, onClose }: Props) {
         {/* ── Card grid ── */}
         <div style={{ overflowY: 'auto', padding: 14, flex: 1 }}>
           {filtered.length === 0 ? (
-            <div className="empty" style={{ padding: '40px 0' }}>
-              No matching SKUs.
-            </div>
+            <div className="empty" style={{ padding: '40px 0' }}>No matching SKUs.</div>
+          ) : sort === 'orders' ? (
+            /* Sorted by open order count, flat grid */
+            (() => {
+              const sorted = [...filtered].sort((a, b) => (orderCounts[b.id] ?? 0) - (orderCounts[a.id] ?? 0))
+              const withOrders    = sorted.filter((s) => (orderCounts[s.id] ?? 0) > 0)
+              const withoutOrders = sorted.filter((s) => (orderCounts[s.id] ?? 0) === 0)
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+                  {withOrders.length > 0 && (
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                        <span style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#fbbf24' }}>
+                          Has Open Orders
+                        </span>
+                        <span style={{ fontSize: '0.68rem', color: 'var(--muted)', background: 'var(--panel-2)', border: '1px solid var(--border)', borderRadius: 4, padding: '1px 6px' }}>
+                          {withOrders.length}
+                        </span>
+                        <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 10, alignContent: 'start', alignItems: 'start' }}>
+                        {renderCards(withOrders, true)}
+                      </div>
+                    </div>
+                  )}
+                  {withoutOrders.length > 0 && (
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                        <span style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--muted)' }}>
+                          No Open Orders
+                        </span>
+                        <span style={{ fontSize: '0.68rem', color: 'var(--muted)', background: 'var(--panel-2)', border: '1px solid var(--border)', borderRadius: 4, padding: '1px 6px' }}>
+                          {withoutOrders.length}
+                        </span>
+                        <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 10, alignContent: 'start', alignItems: 'start' }}>
+                        {renderCards(withoutOrders, true)}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })()
           ) : isFiltering ? (
-            /* Flat grid when filtering/searching */
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
-                gap: 10,
-                alignContent: 'start',
-                alignItems: 'start',
-              }}
-            >
+            /* Flat grid when searching */
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 10, alignContent: 'start', alignItems: 'start' }}>
               {renderCards(filtered)}
             </div>
           ) : (
-            /* Grouped by category when showing all */
+            /* Grouped by category */
             <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
               {Array.from(grouped.entries()).map(([groupLabel, groupSkus]) => {
                 const cat = groupSkus[0]?.category ?? null
                 const cc  = catColor(cat)
                 return (
                   <div key={groupLabel}>
-                    {/* Group header */}
-                    <div
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 10,
-                        marginBottom: 10,
-                      }}
-                    >
-                      <span
-                        style={{
-                          fontSize: '0.68rem',
-                          fontWeight: 700,
-                          textTransform: 'uppercase',
-                          letterSpacing: '0.1em',
-                          color: cc.text,
-                        }}
-                      >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                      <span style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: cc.text }}>
                         {groupLabel}
                       </span>
-                      <span
-                        style={{
-                          fontSize: '0.68rem',
-                          color: 'var(--muted)',
-                          background: 'var(--panel-2)',
-                          border: '1px solid var(--border)',
-                          borderRadius: 4,
-                          padding: '1px 6px',
-                        }}
-                      >
+                      <span style={{ fontSize: '0.68rem', color: 'var(--muted)', background: 'var(--panel-2)', border: '1px solid var(--border)', borderRadius: 4, padding: '1px 6px' }}>
                         {groupSkus.length}
                       </span>
-                      <div
-                        style={{
-                          flex: 1,
-                          height: 1,
-                          background: 'var(--border)',
-                        }}
-                      />
+                      <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
                     </div>
-
-                    {/* Cards */}
-                    <div
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
-                        gap: 10,
-                        alignContent: 'start',
-                        alignItems: 'start',
-                      }}
-                    >
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 10, alignContent: 'start', alignItems: 'start' }}>
                       {renderCards(groupSkus)}
                     </div>
                   </div>

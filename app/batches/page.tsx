@@ -10,6 +10,7 @@ import { useRouter } from 'next/navigation'
 import { createBrowserClient } from '@/lib/supabase'
 import DxfPartPreview from '@/components/DxfPartPreview'
 import { downloadXlsx } from '@/lib/xlsx'
+import SkuPickerModal, { type PickableSKU } from '@/components/SkuPickerModal'
 
 const SUB_IMAGE_BUCKET = 'subassembly-images'
 
@@ -41,7 +42,7 @@ type BuildBatchLine = {
   mat_cost_snapshot: number | null
 }
 
-type SKU = { id: string; description: string }
+type SKU = { id: string; description: string; category: string | null; active: boolean }
 
 type Part = {
   id: string
@@ -158,6 +159,8 @@ export default function BatchesPage() {
   const [createNotes, setCreateNotes] = useState('')
   const [createRows, setCreateRows]   = useState([{ skuId: '', qty: '1', skuLookup: '' }])
   const [createDropdown, setCreateDropdown] = useState<number | null>(null)
+  const [skuPickerOpen, setSkuPickerOpen]   = useState(false)
+  const [orderCounts, setOrderCounts]       = useState<Record<string, number>>({})
   const [saving, setSaving]           = useState(false)
   const [sendingToPowder, setSendingToPowder] = useState(false)
 
@@ -179,7 +182,7 @@ export default function BatchesPage() {
     ] = await Promise.all([
       supabase.from('build_batches').select('*').order('created_at', { ascending: false }),
       supabase.from('build_batch_lines').select('*'),
-      supabase.from('skus').select('id, description').order('id'),
+      supabase.from('skus').select('id, description, category, active').order('id'),
       supabase.from('parts').select('id, part_number, description, part_type, material, tube_od, tube_wall, cut_length, weight_lbs, dxf_file, requires_laser, requires_sheet_bend, requires_tube_bend, requires_saw, requires_drill, requires_weld'),
       supabase.from('sku_parts').select('sku_id, part_id, qty'),
       supabase.from('sku_sub_assemblies').select('sku_id, sub_assembly_id, qty'),
@@ -244,6 +247,18 @@ export default function BatchesPage() {
       totalOps[batch.id] = uniqueOps.size
     }
     setBatchTotalOps(totalOps)
+
+    // Load open order counts per SKU for the picker modal
+    const { data: olData } = await supabase
+      .from('order_lines')
+      .select('sku_id, order:order_id(status)')
+      .not('sku_id', 'is', null)
+    const counts: Record<string, number> = {}
+    for (const row of (olData ?? []) as any[]) {
+      if (row.order?.status !== 'open') continue
+      counts[row.sku_id] = (counts[row.sku_id] ?? 0) + 1
+    }
+    setOrderCounts(counts)
 
     // Auto-open a batch if sessionStorage has a pending open request
     try {
@@ -1940,10 +1955,34 @@ export default function BatchesPage() {
             </div>
             <div className="btn-row">
               <button className="btn btn-secondary" onClick={() => setCreateRows((prev) => [...prev, { skuId: '', qty: '1', skuLookup: '' }])}>+ Add Row</button>
+              <button className="btn btn-secondary" onClick={() => setSkuPickerOpen(true)}>Browse SKUs</button>
               <button className="btn btn-primary" disabled={saving} onClick={createBatch}>{saving ? 'Saving…' : 'Create Batch'}</button>
             </div>
           </div>
         </section>
+
+        {/* ── SKU Picker Modal ────────────────────────────────────────────── */}
+        {skuPickerOpen && (
+          <SkuPickerModal
+            skus={skus}
+            orderCounts={orderCounts}
+            onClose={() => setSkuPickerOpen(false)}
+            onSelect={(picked) => {
+              setCreateRows((prev) => {
+                let result = [...prev]
+                for (const sku of picked) {
+                  const emptyIdx = result.findIndex((r) => !r.skuId.trim())
+                  if (emptyIdx !== -1) {
+                    result[emptyIdx] = { skuId: sku.id, qty: '1', skuLookup: sku.id }
+                  } else {
+                    result = [...result, { skuId: sku.id, qty: '1', skuLookup: sku.id }]
+                  }
+                }
+                return result
+              })
+            }}
+          />
+        )}
 
         {/* ── Estimated Material Cost ─────────────────────────────────────── */}
         {createCostPreview.length > 0 && (
