@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { useRouter } from 'next/navigation'
 import { createBrowserClient } from '@/lib/supabase'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -348,7 +347,6 @@ const ALLOC_STYLE: Record<AllocStatus, { icon: string; label: string; color: str
 
 export default function OrdersPage() {
   const supabase = useMemo(() => createBrowserClient(), [])
-  const router   = useRouter()
 
   // Store config
   const [storeConfig, setStoreConfig] = useState<StoreConfig[]>([])
@@ -612,25 +610,7 @@ export default function OrdersPage() {
     setSelectedIds(new Set(batch.map((o) => o.id)))
   }
 
-  // ── Send to Build Planner ───────────────────────────────────────────────────
-
-  function sendToPlanner() {
-    const selected = orders.filter((o) => selectedIds.has(o.id))
-    const demand: Record<string, number> = {}
-    for (const order of selected) {
-      for (const line of order.order_lines) {
-        if (!line.sku_id) continue
-        demand[line.sku_id] = (demand[line.sku_id] ?? 0) + line.qty
-      }
-    }
-    const rows = Object.entries(demand).map(([skuId, qty]) => ({
-      skuId, qty: String(qty), skuLookup: skuId,
-    }))
-    sessionStorage.setItem('garvin:orders_import', JSON.stringify(rows))
-    router.push('/planner')
-  }
-
-  // ── Quick Batch (skip planner, go direct to /batches) ──────────────────────
+  // ── Create Batch from selected orders ──────────────────────────────────────
 
   function sendToBatch() {
     const selected = orders.filter((o) => selectedIds.has(o.id))
@@ -1141,11 +1121,8 @@ export default function OrdersPage() {
             <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--accent-text)' }}>
               {selectedIds.size} order{selectedIds.size !== 1 ? 's' : ''} selected
             </span>
-            <button className="btn btn-primary" style={{ height: 30, fontSize: '0.8rem' }} onClick={sendToPlanner}>
-              📋 Send to Build Planner
-            </button>
-            <button className="btn btn-secondary" style={{ height: 30, fontSize: '0.8rem' }} onClick={sendToBatch}>
-              ⚡ Quick Batch
+            <button className="btn btn-primary" style={{ height: 30, fontSize: '0.8rem' }} onClick={sendToBatch}>
+              ⚡ Create Batch →
             </button>
             <button className="btn btn-secondary" style={{ height: 30, fontSize: '0.8rem' }} onClick={() => setSelectedIds(new Set())}>
               Clear Selection

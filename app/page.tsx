@@ -11,20 +11,21 @@ type BuildBatch = {
   status: string
 }
 
+type OrderLine = {
+  sku_id: string
+  qty: number
+}
+
 type Order = {
   id: string
   order_date: string | null
   synced_at: string | null
+  order_lines: OrderLine[]
 }
 
 type InventoryRow = {
   sku_id: string
   qty_on_hand: number
-}
-
-type BatchLine = {
-  batch_id: string
-  sku_id: string
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -117,33 +118,28 @@ export default function DashboardPage() {
   const [batches, setBatches] = useState<BuildBatch[]>([])
   const [orders, setOrders] = useState<Order[]>([])
   const [inventory, setInventory] = useState<InventoryRow[]>([])
-  const [batchLines, setBatchLines] = useState<BatchLine[]>([])
 
   useEffect(() => {
     const supabase = createBrowserClient()
 
     async function loadAll() {
-      const [batchRes, orderRes, invRes, lineRes] = await Promise.all([
+      const [batchRes, orderRes, invRes] = await Promise.all([
         supabase
           .from('build_batches')
           .select('*')
           .in('status', ['planned', 'in_progress', 'at_powder']),
         supabase
           .from('orders')
-          .select('id, order_date, synced_at')
+          .select('id, order_date, synced_at, order_lines(sku_id, qty)')
           .eq('status', 'open'),
         supabase
           .from('sku_inventory')
           .select('sku_id, qty_on_hand'),
-        supabase
-          .from('build_batch_lines')
-          .select('batch_id, sku_id'),
       ])
 
       setBatches((batchRes.data as BuildBatch[]) ?? [])
       setOrders((orderRes.data as Order[]) ?? [])
       setInventory((invRes.data as InventoryRow[]) ?? [])
-      setBatchLines((lineRes.data as BatchLine[]) ?? [])
       setLoading(false)
     }
 
@@ -174,32 +170,39 @@ export default function DashboardPage() {
     }, null)
   }, [orders])
 
-  // SKUs that are in an active batch
-  const skusInActiveBatch = useMemo(() => new Set(batchLines.map((l) => l.sku_id)), [batchLines])
+  // "Build needed" = orders that can't be fully filled from current inventory
+  // Uses the same oldest-first allocation logic as the Orders page
+  const buildNeededCount = useMemo(() => {
+    // Sort orders oldest-first so earliest orders get first pick of stock
+    const sorted = [...orders].sort((a, b) => {
+      if (!a.order_date) return 1
+      if (!b.order_date) return -1
+      return new Date(a.order_date).getTime() - new Date(b.order_date).getTime()
+    })
 
-  // SKUs with inventory on hand
-  const skusInStock = useMemo(
-    () => new Set(inventory.filter((i) => i.qty_on_hand > 0).map((i) => i.sku_id)),
-    [inventory],
-  )
+    // Track remaining inventory as we allocate
+    const remaining: Record<string, number> = {}
+    for (const inv of inventory) {
+      remaining[inv.sku_id] = inv.qty_on_hand
+    }
 
-  // "Build needed" = open orders that have no inventory and no active batch for any SKU
-  // We don't have order_lines loaded, so we use a simple count of orders where
-  // neither their id matches inventory nor batch coverage. Since we don't have
-  // the order→sku mapping in this load, we count orders where the order itself
-  // isn't covered. As a practical heuristic: count orders that exist, minus
-  // those whose count of in-stock or in-batch SKUs covers them. With limited
-  // data we just compare totals: orders that exceed available SKU coverage.
-  // Simplest correct heuristic given the data: open orders count minus
-  // the number of distinct in-stock or in-batch SKU types (rough under-estimate).
-  // Per spec: "orders whose SKUs are NOT in any active batch_line AND have no
-  // sku_inventory row with qty_on_hand > 0" — since we don't have order_lines
-  // we approximate as: total open orders minus those with any coverage.
-  const coveredSkuCount = useMemo(
-    () => new Set([...skusInActiveBatch, ...skusInStock]).size,
-    [skusInActiveBatch, skusInStock],
-  )
-  const buildNeededCount = Math.max(0, openOrderCount - coveredSkuCount)
+    let needsBuild = 0
+    for (const order of sorted) {
+      const lines = order.order_lines ?? []
+      const canFill = lines.length > 0 && lines.every(
+        (line) => (remaining[line.sku_id] ?? 0) >= line.qty
+      )
+      if (canFill) {
+        // Deduct allocated stock so later orders can't double-count it
+        for (const line of lines) {
+          remaining[line.sku_id] = (remaining[line.sku_id] ?? 0) - line.qty
+        }
+      } else {
+        needsBuild++
+      }
+    }
+    return needsBuild
+  }, [orders, inventory])
 
   const inProgressBatches = batches.filter((b) => b.status === 'in_progress')
   const atPowderBatches = batches.filter((b) => b.status === 'at_powder')
@@ -313,9 +316,9 @@ export default function DashboardPage() {
           </button>
           <button
             className="btn btn-primary"
-            onClick={() => { window.location.href = '/planner' }}
+            onClick={() => { window.location.href = '/batches' }}
           >
-            📋 Plan a Build
+            ⚡ New Build Batch
           </button>
           <button
             className="btn btn-secondary"
