@@ -61,11 +61,17 @@ export async function POST() {
 
     let imported = 0
     let skipped = 0
+    let cancelled = 0
+
+    // Track every ShipStation order ID seen in this sync across all stores
+    const seenSsOrderIds = new Set<number>()
 
     for (const store of enabled) {
       const ssOrders = await fetchAllOrders(store.storeId)
 
       for (const o of ssOrders) {
+        seenSsOrderIds.add(o.orderId)
+
         const customerName =
           o.shipTo?.name || o.billTo?.name || o.customerUsername || null
 
@@ -125,10 +131,33 @@ export async function POST() {
       }
     }
 
+    // ── Mark cancelled: open orders no longer in ShipStation ───────────────────
+    // Any order that is still 'open' in our DB but wasn't in the latest sync
+    // has been cancelled or shipped in ShipStation — close it here too.
+    if (seenSsOrderIds.size > 0) {
+      const { data: openOrders } = await supabase
+        .from('orders')
+        .select('id, shipstation_order_id')
+        .eq('status', 'open')
+
+      const toCancel = (openOrders ?? []).filter(
+        (o: any) => o.shipstation_order_id && !seenSsOrderIds.has(o.shipstation_order_id)
+      )
+
+      if (toCancel.length > 0) {
+        await supabase
+          .from('orders')
+          .update({ status: 'cancelled', synced_at: new Date().toISOString() })
+          .in('id', toCancel.map((o: any) => o.id))
+        cancelled = toCancel.length
+      }
+    }
+
     return NextResponse.json({
       success: true,
       imported,
       skipped,
+      cancelled,
       stores: enabled.map((s) => ({ name: s.storeName, channel: s.channel })),
     })
   } catch (err: unknown) {
