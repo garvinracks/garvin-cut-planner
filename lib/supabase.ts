@@ -6,12 +6,19 @@ import { createClient } from '@supabase/supabase-js'
 const SSR_URL = 'https://placeholder.supabase.co'
 const SSR_KEY = 'placeholder'
 
+// Singleton browser client — reused across all components to avoid the
+// "Multiple GoTrueClient instances" warning and session conflicts.
+let _browserClient: ReturnType<typeof createClient> | null = null
+
 export function createBrowserClient() {
   // During SSR / static prerender there is no browser — return a safe no-op
-  // client. The real client is recreated in the browser via useMemo.
+  // client. Never cache this instance.
   if (typeof window === 'undefined') {
     return createClient(SSR_URL, SSR_KEY)
   }
+
+  // Return existing singleton if already created
+  if (_browserClient) return _browserClient
 
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
@@ -28,7 +35,8 @@ export function createBrowserClient() {
 
   // Guard against a URL that is set but malformed (e.g. missing https://)
   try {
-    return createClient(url, key)
+    _browserClient = createClient(url, key)
+    return _browserClient
   } catch (err) {
     console.error(
       '[Garvin] Invalid NEXT_PUBLIC_SUPABASE_URL — must start with https://\n' +
