@@ -106,7 +106,7 @@ export async function POST() {
         await supabase.from('order_lines').delete().eq('order_id', orderRow.id)
 
         const items: any[] = (o.items ?? []).filter(
-          (i: any) => i.sku && !i.adjustment
+          (i: any) => i.sku && !i.adjustment && (i.quantity ?? 0) > 0
         )
 
         for (const item of items) {
