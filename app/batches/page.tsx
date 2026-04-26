@@ -9,7 +9,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createBrowserClient } from '@/lib/supabase'
 import DxfPartPreview from '@/components/DxfPartPreview'
-import { downloadXlsx } from '@/lib/xlsx'
+import { downloadXlsx, xlsxToBuffer } from '@/lib/xlsx'
+import JSZip from 'jszip'
 import SkuPickerModal, { type PickableSKU } from '@/components/SkuPickerModal'
 
 const SUB_IMAGE_BUCKET = 'subassembly-images'
@@ -161,7 +162,7 @@ export default function BatchesPage() {
   const [createDropdown, setCreateDropdown] = useState<number | null>(null)
   const [skuPickerOpen, setSkuPickerOpen]   = useState(false)
   const [orderCounts, setOrderCounts]       = useState<Record<string, number>>({})
-  const [cypCutBasePath, setCypCutBasePath] = useState('')
+
   const [saving, setSaving]           = useState(false)
   const [sendingToPowder, setSendingToPowder] = useState(false)
 
@@ -909,9 +910,8 @@ export default function BatchesPage() {
     if (w) { w.document.write(html); w.document.close() }
   }
 
-  function exportBatchCypCut(wItems: Map<string, { part: Part; totalQty: number; subAssemblyId: string | null }>) {
-    // Deduplicate by part_number — same part may appear across multiple SAs
-    // but CypCut only needs one row per unique part with the total quantity
+  async function exportBatchCypCut(wItems: Map<string, { part: Part; totalQty: number; subAssemblyId: string | null }>) {
+    // Deduplicate by part.id — same part may appear across multiple SAs
     const partTotals = new Map<string, { part: Part; totalQty: number }>()
     for (const [, wi] of wItems) {
       if (wi.part.part_type !== 'sheet') continue
@@ -924,19 +924,46 @@ export default function BatchesPage() {
     }
     if (partTotals.size === 0) { alert('No sheet parts in this batch.'); return }
 
-    const base = cypCutBasePath.trim()
-      ? cypCutBasePath.trim().replace(/[/\\]$/, '') + '\\'
-      : ''
+    const supabase = createBrowserClient()
+    const zip = new JSZip()
+    const batchName = activeBatch?.name ?? 'batch'
 
-    downloadXlsx(
-      `cypcut-${activeBatch?.name ?? 'batch'}.xlsx`,
-      'PartsDefinition',
-      Array.from(partTotals.values()).map(({ part, totalQty }) => ({
-        PartName: `[${part.material ?? ''}] ${part.part_number}`,
-        Amount: Math.ceil(totalQty * 1.05),
-        FilePath: base + (part.dxf_file ?? ''),
-      }))
-    )
+    // Build XLSX rows — FilePath is just the bare filename; DXFs will be in same folder
+    const rows = Array.from(partTotals.values()).map(({ part, totalQty }) => ({
+      PartName: `[${part.material ?? ''}] ${part.part_number}`,
+      Amount: Math.ceil(totalQty * 1.05),
+      FilePath: part.dxf_file ?? '',
+    }))
+
+    // Add XLSX to ZIP
+    const xlsxBytes = xlsxToBuffer('PartsDefinition', rows)
+    zip.file(`cypcut-${batchName}.xlsx`, xlsxBytes)
+
+    // Fetch each DXF from Supabase storage and add to ZIP
+    const fetchPromises = Array.from(partTotals.values())
+      .filter(({ part }) => !!part.dxf_file)
+      .map(async ({ part }) => {
+        const filename = part.dxf_file!
+        const { data: { publicUrl } } = supabase.storage.from('dxf-files').getPublicUrl(filename)
+        try {
+          const res = await fetch(publicUrl)
+          if (!res.ok) throw new Error(`${res.status}`)
+          const buf = await res.arrayBuffer()
+          zip.file(filename, buf)
+        } catch (err) {
+          console.warn(`[CypCut] Could not fetch DXF for ${filename}:`, err)
+        }
+      })
+
+    await Promise.all(fetchPromises)
+
+    const zipBlob = await zip.generateAsync({ type: 'blob' })
+    const url = URL.createObjectURL(zipBlob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `cypcut-${batchName}.zip`
+    a.click()
+    URL.revokeObjectURL(url)
   }
 
   function exportBatchTubeXlsx(wItems: Map<string, { part: Part; totalQty: number; subAssemblyId: string | null }>) {
@@ -1356,21 +1383,13 @@ export default function BatchesPage() {
                     <div>
                       {/* Cut list action buttons */}
                       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
-                        <input
-                          className="field"
-                          value={cypCutBasePath}
-                          onChange={(e) => setCypCutBasePath(e.target.value)}
-                          placeholder="DXF folder path (e.g. C:\DXF Files)"
-                          style={{ fontSize: '0.8rem', width: 260 }}
-                          title="Local folder where your DXF files are saved. Will be prepended to each file path in the export."
-                        />
                         <button
                           type="button"
                           className="btn btn-secondary"
                           style={{ fontSize: '0.82rem' }}
                           onClick={() => exportBatchCypCut(workItems)}
                         >
-                          &#x1F532; Export CypCut XLSX
+                          &#x1F4E6; Export CypCut Bundle
                         </button>
                         <button
                           type="button"
