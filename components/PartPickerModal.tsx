@@ -18,25 +18,38 @@ export type PickablePart = {
 
 type Props = {
   parts: PickablePart[]
+  /** Called when a single card is clicked (no Ctrl). Modal closes automatically. */
   onSelect: (part: PickablePart) => void
+  /**
+   * Optional — enables Ctrl+click multi-select. When provided an "Add X Selected"
+   * button appears and calls this with all selected parts when clicked.
+   */
+  onSelectMultiple?: (parts: PickablePart[]) => void
   onClose: () => void
 }
 
 const PREVIEW_HEIGHT = 120 // px — fixed preview area height
 
-export default function PartPickerModal({ parts, onSelect, onClose }: Props) {
+export default function PartPickerModal({ parts, onSelect, onSelectMultiple, onClose }: Props) {
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState<'all' | 'sheet' | 'tube'>('all')
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const searchRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     searchRef.current?.focus()
     function handleKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') {
+        if (selectedIds.size > 0) {
+          setSelectedIds(new Set()) // first Escape clears selection
+        } else {
+          onClose()
+        }
+      }
     }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
-  }, [onClose])
+  }, [onClose, selectedIds])
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -56,6 +69,31 @@ export default function PartPickerModal({ parts, onSelect, onClose }: Props) {
         .includes(q)
     })
   }, [parts, search, typeFilter])
+
+  function handleCardClick(part: PickablePart, e: React.MouseEvent) {
+    if ((e.ctrlKey || e.metaKey) && onSelectMultiple) {
+      // Ctrl/Cmd+click → toggle selection, don't close
+      setSelectedIds((prev) => {
+        const next = new Set(prev)
+        if (next.has(part.id)) next.delete(part.id)
+        else next.add(part.id)
+        return next
+      })
+    } else {
+      // Normal click → single select + close
+      onSelect(part)
+      onClose()
+    }
+  }
+
+  function handleAddSelected() {
+    if (!onSelectMultiple || selectedIds.size === 0) return
+    const selected = parts.filter((p) => selectedIds.has(p.id))
+    onSelectMultiple(selected)
+    onClose()
+  }
+
+  const selectedCount = selectedIds.size
 
   return (
     <div
@@ -133,6 +171,18 @@ export default function PartPickerModal({ parts, onSelect, onClose }: Props) {
             ))}
           </div>
 
+          {/* Add Selected button — only shown when Ctrl+click multi-select is active */}
+          {onSelectMultiple && selectedCount > 0 && (
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ padding: '6px 14px', fontSize: '0.82rem', whiteSpace: 'nowrap' }}
+              onClick={handleAddSelected}
+            >
+              ✓ Add {selectedCount} Selected
+            </button>
+          )}
+
           <button
             type="button"
             className="btn btn-secondary"
@@ -155,7 +205,11 @@ export default function PartPickerModal({ parts, onSelect, onClose }: Props) {
         >
           {filtered.length} part{filtered.length !== 1 ? 's' : ''}
           {search ? ` matching "${search}"` : ''}
-          {' — click a card to select'}
+          {onSelectMultiple
+            ? selectedCount > 0
+              ? ` — ${selectedCount} selected — click to select, Ctrl+click to multi-select`
+              : ' — click to select · Ctrl+click to multi-select'
+            : ' — click a card to select'}
         </div>
 
         {/* ── Card grid ── */}
@@ -167,7 +221,7 @@ export default function PartPickerModal({ parts, onSelect, onClose }: Props) {
             gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))',
             gap: 10,
             alignContent: 'start',
-            alignItems: 'start',   // cards are natural height — no row-stretching
+            alignItems: 'start',
           }}
         >
           {filtered.length === 0 ? (
@@ -176,7 +230,13 @@ export default function PartPickerModal({ parts, onSelect, onClose }: Props) {
             </div>
           ) : (
             filtered.map((part) => (
-              <PartCard key={part.id} part={part} onSelect={onSelect} previewHeight={PREVIEW_HEIGHT} />
+              <PartCard
+                key={part.id}
+                part={part}
+                isSelected={selectedIds.has(part.id)}
+                onCardClick={handleCardClick}
+                previewHeight={PREVIEW_HEIGHT}
+              />
             ))
           )}
         </div>
@@ -189,11 +249,13 @@ export default function PartPickerModal({ parts, onSelect, onClose }: Props) {
 
 function PartCard({
   part,
-  onSelect,
+  isSelected,
+  onCardClick,
   previewHeight,
 }: {
   part: PickablePart
-  onSelect: (p: PickablePart) => void
+  isSelected: boolean
+  onCardClick: (p: PickablePart, e: React.MouseEvent) => void
   previewHeight: number
 }) {
   const isSheet = part.part_type === 'sheet'
@@ -210,10 +272,10 @@ function PartCard({
   return (
     <button
       type="button"
-      onClick={() => onSelect(part)}
+      onClick={(e) => onCardClick(part, e)}
       style={{
-        background: 'var(--panel-2)',
-        border: '1px solid var(--border)',
+        background: isSelected ? 'var(--accent-soft)' : 'var(--panel-2)',
+        border: `2px solid ${isSelected ? 'var(--accent)' : 'var(--border)'}`,
         borderRadius: 8,
         padding: 0,
         cursor: 'pointer',
@@ -222,16 +284,44 @@ function PartCard({
         textAlign: 'left',
         transition: 'border-color 0.13s, background 0.13s',
         width: '100%',
+        position: 'relative',
       }}
       onMouseEnter={(e) => {
-        e.currentTarget.style.borderColor = 'var(--accent)'
-        e.currentTarget.style.background = 'var(--accent-soft)'
+        if (!isSelected) {
+          e.currentTarget.style.borderColor = 'var(--accent)'
+          e.currentTarget.style.background = 'var(--accent-soft)'
+        }
       }}
       onMouseLeave={(e) => {
-        e.currentTarget.style.borderColor = 'var(--border)'
-        e.currentTarget.style.background = 'var(--panel-2)'
+        if (!isSelected) {
+          e.currentTarget.style.borderColor = 'var(--border)'
+          e.currentTarget.style.background = 'var(--panel-2)'
+        }
       }}
     >
+      {/* Selected checkmark badge */}
+      {isSelected && (
+        <div style={{
+          position: 'absolute',
+          top: 6,
+          right: 6,
+          zIndex: 2,
+          width: 22,
+          height: 22,
+          borderRadius: '50%',
+          background: 'var(--accent)',
+          color: '#fff',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: '0.75rem',
+          fontWeight: 700,
+          boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+        }}>
+          ✓
+        </div>
+      )}
+
       {/* ── Preview area: fixed height ── */}
       <div
         style={{
@@ -241,7 +331,7 @@ function PartCard({
           background: 'var(--panel)',
           borderBottom: '1px solid var(--border)',
           overflow: 'hidden',
-          borderRadius: '8px 8px 0 0',
+          borderRadius: '7px 7px 0 0',
         }}
       >
         <DxfPartPreview

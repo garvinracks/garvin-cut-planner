@@ -11,6 +11,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createBrowserClient } from '@/lib/supabase'
 import DxfPartPreview from '@/components/DxfPartPreview'
 import PartPickerModal from '@/components/PartPickerModal'
+import SubAssemblyPickerModal from '@/components/SubAssemblyPickerModal'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -316,6 +317,8 @@ export default function SkusPage() {
 
   // 'sku' | sub_assembly_id — for PartPickerModal
   const [partPickerOpenFor, setPartPickerOpenFor] = useState<'sku' | string | null>(null)
+  // SA picker
+  const [saPickerOpen, setSaPickerOpen] = useState(false)
 
   // ── Modal state ───────────────────────────────────────────────────────────────
 
@@ -788,6 +791,32 @@ export default function SkusPage() {
       await loadSelectedSkuRelations(selectedSkuId)
     }
 
+    setAddingRelation(false)
+  }
+
+  /** Ctrl+click multi-select from PartPickerModal: add all selected parts to a sub-assembly (qty=1 each) */
+  async function handleMultiAddPartsToSubassembly(subassemblyId: string, selectedParts: import('@/components/PartPickerModal').PickablePart[]) {
+    setAddingRelation(true)
+    setRelationMessage('')
+    for (const part of selectedParts) {
+      await upsertSubassemblyPart(subassemblyId, part.id, 1)
+    }
+    setRelationMessage(`${selectedParts.length} part${selectedParts.length !== 1 ? 's' : ''} added.`)
+    await loadSubassemblyParts(subassemblyId)
+    await loadSelectedSkuRelations(selectedSkuId)
+    setAddingRelation(false)
+  }
+
+  /** Ctrl+click multi-select from PartPickerModal: add all selected parts directly to the SKU (qty=1 each) */
+  async function handleMultiAddPartsToSku(selectedParts: import('@/components/PartPickerModal').PickablePart[]) {
+    if (!selectedSkuId) return
+    setAddingRelation(true)
+    setRelationMessage('')
+    for (const part of selectedParts) {
+      await upsertSkuPart(selectedSkuId, part.id, 1)
+    }
+    setRelationMessage(`${selectedParts.length} part${selectedParts.length !== 1 ? 's' : ''} added.`)
+    await loadSelectedSkuRelations(selectedSkuId)
     setAddingRelation(false)
   }
 
@@ -1766,7 +1795,7 @@ export default function SkusPage() {
                       <div
                         style={{
                           display: 'grid',
-                          gridTemplateColumns: 'minmax(0, 1fr) 100px auto',
+                          gridTemplateColumns: 'minmax(0, 1fr) 100px auto auto',
                           gap: 10,
                           alignItems: 'end',
                           marginBottom: 10,
@@ -1774,18 +1803,29 @@ export default function SkusPage() {
                       >
                         <div>
                           <label className="label" style={{ fontSize: '0.78rem' }}>Add Existing Sub-assembly</label>
-                          <input
-                            className="field"
-                            list="subassembly-list"
-                            value={subassemblyLookup}
-                            onChange={(e) => {
-                              const value = e.target.value
-                              setSubassemblyLookup(value)
-                              const match = findSubassemblyByLookup(value)
-                              setSubassemblyIdToAdd(match?.id || '')
-                            }}
-                            placeholder="Type sub-assembly ID or name"
-                          />
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <input
+                              className="field"
+                              list="subassembly-list"
+                              value={subassemblyLookup}
+                              onChange={(e) => {
+                                const value = e.target.value
+                                setSubassemblyLookup(value)
+                                const match = findSubassemblyByLookup(value)
+                                setSubassemblyIdToAdd(match?.id || '')
+                              }}
+                              placeholder="Type or browse…"
+                              style={{ flex: 1 }}
+                            />
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              style={{ fontSize: '0.8rem', whiteSpace: 'nowrap' }}
+                              onClick={() => setSaPickerOpen(true)}
+                            >
+                              🔍 Browse
+                            </button>
+                          </div>
                           <datalist id="subassembly-list">
                             {subassemblies.map((sa) => (
                               <option key={sa.id} value={sa.id}>{sa.name}</option>
@@ -2887,6 +2927,27 @@ export default function SkusPage() {
               setSubassemblyDraftPartId((prev) => ({ ...prev, [partPickerOpenFor]: part.id }))
             }
             setPartPickerOpenFor(null)
+          }}
+          onSelectMultiple={(selectedParts) => {
+            if (partPickerOpenFor === 'sku') {
+              void handleMultiAddPartsToSku(selectedParts)
+            } else if (partPickerOpenFor) {
+              void handleMultiAddPartsToSubassembly(partPickerOpenFor, selectedParts)
+            }
+            setPartPickerOpenFor(null)
+          }}
+        />
+      )}
+
+      {/* ── SubAssemblyPickerModal ───────────────────────────────────────────────── */}
+      {saPickerOpen && (
+        <SubAssemblyPickerModal
+          subassemblies={subassemblies}
+          onClose={() => setSaPickerOpen(false)}
+          onSelect={(sa) => {
+            setSubassemblyLookup(sa.name)
+            setSubassemblyIdToAdd(sa.id)
+            setSaPickerOpen(false)
           }}
         />
       )}
