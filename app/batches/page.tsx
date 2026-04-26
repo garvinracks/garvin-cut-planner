@@ -161,6 +161,7 @@ export default function BatchesPage() {
   const [createDropdown, setCreateDropdown] = useState<number | null>(null)
   const [skuPickerOpen, setSkuPickerOpen]   = useState(false)
   const [orderCounts, setOrderCounts]       = useState<Record<string, number>>({})
+  const [cypCutBasePath, setCypCutBasePath] = useState('')
   const [saving, setSaving]           = useState(false)
   const [sendingToPowder, setSendingToPowder] = useState(false)
 
@@ -308,22 +309,38 @@ export default function BatchesPage() {
     // Load orders fulfilled by this batch
     setBatchOrders([])
     setShowBatchOrders(false)
-    const batchSkuIds = lines.filter((l) => l.batch_id === activeBatch.id).map((l) => l.sku_id)
-    if (batchSkuIds.length > 0) {
+    const batchSkuSet = new Set(lines.filter((l) => l.batch_id === activeBatch.id).map((l) => l.sku_id))
+    if (batchSkuSet.size > 0) {
       void (async () => {
-        const { data: orderLines } = await supabase
+        // Step 1: find orders that have at least one matching SKU
+        const { data: matchingLines } = await supabase
           .from('order_lines')
           .select('order_id, sku_id')
-          .in('sku_id', batchSkuIds)
-        if (orderLines && orderLines.length > 0) {
-          const orderIds = [...new Set((orderLines as Array<{order_id:string; sku_id:string}>).map((l) => l.order_id))]
-          const { data: ordersData } = await supabase
-            .from('orders')
-            .select('id, order_number, customer_name, notes, order_date')
-            .in('id', orderIds)
-            .eq('status', 'open')
-          setBatchOrders((ordersData ?? []) as any)
-        }
+          .in('sku_id', Array.from(batchSkuSet))
+        if (!matchingLines?.length) return
+
+        const candidateIds = [...new Set((matchingLines as any[]).map((l) => l.order_id))]
+
+        // Step 2: get ALL lines for those orders to check full coverage
+        const { data: allLines } = await supabase
+          .from('order_lines')
+          .select('order_id, sku_id')
+          .in('order_id', candidateIds)
+
+        // Step 3: only include orders where EVERY line SKU is in this batch
+        const fullyCovedIds = candidateIds.filter((orderId) => {
+          const orderLines = (allLines ?? []).filter((l: any) => l.order_id === orderId)
+          return orderLines.length > 0 && orderLines.every((l: any) => batchSkuSet.has(l.sku_id))
+        })
+
+        if (!fullyCovedIds.length) return
+
+        const { data: ordersData } = await supabase
+          .from('orders')
+          .select('id, order_number, customer_name, notes, order_date')
+          .in('id', fullyCovedIds)
+          .eq('status', 'open')
+        setBatchOrders((ordersData ?? []) as any)
       })()
     }
   }, [activeBatch?.id])
@@ -347,11 +364,14 @@ export default function BatchesPage() {
       for (const { partId, qty, subAssemblyId } of entries) {
         const part = parts.find((p) => p.id === partId)
         if (!part) continue
-        const existing = map.get(partId)
+        // Key by partId:subAssemblyId so the same part in different SAs
+        // gets its own row with the correct per-SA quantity
+        const key = subAssemblyId ? `${partId}:${subAssemblyId}` : partId
+        const existing = map.get(key)
         if (existing) {
           existing.totalQty += qty * line.qty
         } else {
-          map.set(partId, { part, totalQty: qty * line.qty, subAssemblyId })
+          map.set(key, { part, totalQty: qty * line.qty, subAssemblyId })
         }
       }
     }
@@ -890,16 +910,31 @@ export default function BatchesPage() {
   }
 
   function exportBatchCypCut(wItems: Map<string, { part: Part; totalQty: number; subAssemblyId: string | null }>) {
-    const sheetParts = Array.from(wItems.entries())
-      .filter(([, wi]) => wi.part.part_type === 'sheet')
-    if (sheetParts.length === 0) { alert('No sheet parts in this batch.'); return }
+    // Deduplicate by part_number — same part may appear across multiple SAs
+    // but CypCut only needs one row per unique part with the total quantity
+    const partTotals = new Map<string, { part: Part; totalQty: number }>()
+    for (const [, wi] of wItems) {
+      if (wi.part.part_type !== 'sheet') continue
+      const existing = partTotals.get(wi.part.id)
+      if (existing) {
+        existing.totalQty += wi.totalQty
+      } else {
+        partTotals.set(wi.part.id, { part: wi.part, totalQty: wi.totalQty })
+      }
+    }
+    if (partTotals.size === 0) { alert('No sheet parts in this batch.'); return }
+
+    const base = cypCutBasePath.trim()
+      ? cypCutBasePath.trim().replace(/[/\\]$/, '') + '\\'
+      : ''
+
     downloadXlsx(
       `cypcut-${activeBatch?.name ?? 'batch'}.xlsx`,
       'PartsDefinition',
-      sheetParts.map(([, wi]) => ({
-        PartName: `[${wi.part.material ?? ''}] ${wi.part.part_number}`,
-        Amount: Math.ceil(wi.totalQty * 1.05),
-        FilePath: wi.part.dxf_file ?? '',
+      Array.from(partTotals.values()).map(({ part, totalQty }) => ({
+        PartName: `[${part.material ?? ''}] ${part.part_number}`,
+        Amount: Math.ceil(totalQty * 1.05),
+        FilePath: base + (part.dxf_file ?? ''),
       }))
     )
   }
@@ -1320,7 +1355,15 @@ export default function BatchesPage() {
                     /* ── Cut List View ────────────────────────────────────────── */
                     <div>
                       {/* Cut list action buttons */}
-                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <input
+                          className="field"
+                          value={cypCutBasePath}
+                          onChange={(e) => setCypCutBasePath(e.target.value)}
+                          placeholder="DXF folder path (e.g. C:\DXF Files)"
+                          style={{ fontSize: '0.8rem', width: 260 }}
+                          title="Local folder where your DXF files are saved. Will be prepended to each file path in the export."
+                        />
                         <button
                           type="button"
                           className="btn btn-secondary"
