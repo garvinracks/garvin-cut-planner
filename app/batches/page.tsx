@@ -1064,7 +1064,7 @@ export default function BatchesPage() {
                         <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
                           <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small"
                             isTube={part.part_type === 'tube'} tubeFallback={true}
-                            tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape="round" />
+                            tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={part.tube_od?.toLowerCase().includes('x') ? 'square' : 'round'} />
                           <div style={{ fontSize: '0.7rem', fontFamily: 'monospace', fontWeight: 700, color: '#555', marginTop: 4 }}>{part.part_number}</div>
                         </td>
                         <td style={{ textAlign: 'center', fontWeight: 700, verticalAlign: 'middle' }}>{totalQty}</td>
@@ -1748,13 +1748,17 @@ export default function BatchesPage() {
                             <tr key={`sa-hdr-${saId}`}>
                               <td colSpan={2 + activeStages.length} style={{ padding: '7px 12px', background: 'rgba(167,139,250,0.09)', borderTop: '2px solid rgba(167,139,250,0.22)', borderBottom: '1px solid var(--border)' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                                  {subAssembly.image_file && (
+                                  {subAssembly.image_file ? (
                                     <img
                                       src={supabase.storage.from(SUB_IMAGE_BUCKET).getPublicUrl(subAssembly.image_file).data.publicUrl}
                                       alt={subAssembly.name}
-                                      style={{ width: 38, height: 38, objectFit: 'cover', borderRadius: 4, border: '1px solid rgba(167,139,250,0.3)', flexShrink: 0 }}
+                                      style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 6, border: '1px solid rgba(167,139,250,0.3)', flexShrink: 0 }}
                                       onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
                                     />
+                                  ) : (
+                                    <div style={{ width: 48, height: 48, borderRadius: 6, border: '1px dashed rgba(167,139,250,0.3)', background: 'rgba(167,139,250,0.07)', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.3rem', color: 'rgba(167,139,250,0.4)' }}>
+                                      🔧
+                                    </div>
                                   )}
                                   <div>
                                     <div style={{ fontSize: '0.65rem', color: '#a78bfa', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Sub-Assembly</div>
@@ -1783,7 +1787,7 @@ export default function BatchesPage() {
                                     <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
                                       <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small"
                                         isTube={part.part_type === 'tube'} tubeFallback={true}
-                                        tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape="round" />
+                                        tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={part.tube_od?.toLowerCase().includes('x') ? 'square' : 'round'} />
                                       <div style={{ fontSize: '0.68rem', fontFamily: 'monospace', fontWeight: 700, color: 'var(--muted)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{part.part_number}</div>
                                       {part.description && <div style={{ fontSize: '0.62rem', color: 'var(--muted)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>{part.description}</div>}
                                     </td>
@@ -1858,7 +1862,7 @@ export default function BatchesPage() {
                                   <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
                                     <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small"
                                       isTube={part.part_type === 'tube'} tubeFallback={true}
-                                      tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape="round" />
+                                      tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={part.tube_od?.toLowerCase().includes('x') ? 'square' : 'round'} />
                                     <div style={{ fontSize: '0.68rem', fontFamily: 'monospace', fontWeight: 700, color: 'var(--muted)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{part.part_number}</div>
                                     {part.description && <div style={{ fontSize: '0.62rem', color: 'var(--muted)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>{part.description}</div>}
                                   </td>
