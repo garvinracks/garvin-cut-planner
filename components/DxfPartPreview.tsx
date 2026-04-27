@@ -166,17 +166,30 @@ export default function DxfPartPreview({
 
   // ── Tube fallback: rich info card ────────────────────────────
   if (isTube && tubeFallback) {
-    const isSquare = tubeShape === 'square'
+    // Detect square from either prop or tube_od containing 'x' (e.g. "1x1", "1.5x1.5")
+    const isSquare = tubeShape === 'square' || (tubeOd ?? '').toLowerCase().includes('x')
     const isFillOrLarge = size === 'fill' || size === 'large'
-    const svgSize = isFillOrLarge ? 48 : size === 'small' ? 36 : 26
+    const svgSize = isFillOrLarge ? 52 : size === 'small' ? 40 : 28
 
-    const dimFontSize   = isFillOrLarge ? '0.8rem'  : size === 'small' ? '0.68rem' : '0.6rem'
-    const cutFontSize   = isFillOrLarge ? '0.72rem' : size === 'small' ? '0.62rem' : '0.56rem'
-    const hasDims       = tubeOd || tubeWall || (cutLength != null && cutLength > 0)
+    const dimFontSize = isFillOrLarge ? '0.8rem'  : size === 'small' ? '0.68rem' : '0.6rem'
+    const cutFontSize = isFillOrLarge ? '0.72rem' : size === 'small' ? '0.62rem' : '0.56rem'
+    const hasDims     = tubeOd || tubeWall || (cutLength != null && cutLength > 0)
+
+    // ── Scale cross-section to actual OD ──────────────────────
+    // Parse OD: round = "0.75", square = "1x1" → take first number
+    const odNum   = Math.max(parseFloat((tubeOd ?? '1').replace(/[xX×].*/i, '').trim()) || 1, 0.25)
+    const wallNum = Math.max(parseFloat(tubeWall ?? '') || 0.065, 0.02)
+
+    // Map OD to outer radius in a 52×52 viewBox (0.5" → r≈8, 1" → r≈15, 1.5" → r≈20, 2" → r≈24)
+    const outerR  = Math.min(Math.max(odNum * 14, 7), 24)
+    // Wall thickness in SVG px — keep proportional but min 1.5px so it's always visible
+    const wallPx  = Math.max((wallNum / odNum) * outerR * 2.8, 1.5)
+    const innerR  = Math.max(outerR - wallPx, 2)
+    const cx = 26, cy = 26
 
     return (
       <div style={{ ...baseBox, flexDirection: 'row', gap: isFillOrLarge ? 10 : 6, padding: isFillOrLarge ? 12 : size === 'small' ? 7 : 5, alignItems: 'center', justifyContent: 'center' }}>
-        {/* Cross-section SVG */}
+        {/* Cross-section SVG — sized to actual OD */}
         <svg
           width={svgSize}
           height={svgSize}
@@ -185,18 +198,22 @@ export default function DxfPartPreview({
         >
           {isSquare ? (
             <>
-              <rect x={4} y={4} width={44} height={44} rx={2} fill="none" stroke="#94a3b8" strokeWidth={3} />
-              <rect x={13} y={13} width={26} height={26} rx={1} fill="none" stroke="#94a3b8" strokeWidth={2} />
+              {/* Outer square */}
+              <rect x={cx - outerR} y={cy - outerR} width={outerR * 2} height={outerR * 2} rx={2} fill="rgba(148,163,184,0.12)" stroke="#94a3b8" strokeWidth={2} />
+              {/* Inner void */}
+              <rect x={cx - innerR} y={cy - innerR} width={innerR * 2} height={innerR * 2} rx={1} fill="rgba(0,0,0,0.35)" stroke="#94a3b8" strokeWidth={1.5} />
             </>
           ) : (
             <>
-              <circle cx={26} cy={26} r={22} fill="none" stroke="#94a3b8" strokeWidth={3} />
-              <circle cx={26} cy={26} r={13} fill="none" stroke="#94a3b8" strokeWidth={2} />
+              {/* Outer circle */}
+              <circle cx={cx} cy={cy} r={outerR} fill="rgba(148,163,184,0.12)" stroke="#94a3b8" strokeWidth={2} />
+              {/* Inner void */}
+              <circle cx={cx} cy={cy} r={innerR} fill="rgba(0,0,0,0.35)" stroke="#94a3b8" strokeWidth={1.5} />
             </>
           )}
         </svg>
 
-        {/* Dims / cut length — shown at all sizes */}
+        {/* Dims / cut length */}
         {hasDims && (
           <div style={{ lineHeight: 1.35, minWidth: 0 }}>
             {(tubeOd || tubeWall) && (
