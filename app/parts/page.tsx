@@ -35,6 +35,7 @@ type Part = {
   thickness: string | null
   tube_od: string | null
   tube_wall: string | null
+  tube_shape: string | null
   cut_length: number | null
   dxf_file: string | null
   notes: string | null
@@ -56,6 +57,7 @@ type MaterialRow = {
   thickness: string | null
   tube_od: string | null
   tube_wall: string | null
+  tube_shape: string | null
 }
 
 const DXF_BUCKET = 'dxf-files'
@@ -182,7 +184,7 @@ function parseCsvText(text: string): CsvImportRow[] {
 }
 
 const CSV_TEMPLATE = [
-  'id,part_number,description,part_type,material,thickness,tube_od,tube_wall,cut_length,notes',
+  'id,part_number,description,part_type,material,thickness,tube_od,tube_wall,tube_shape,cut_length,notes',
   '20000-L1,20000-L1,Wind Deflector Left,sheet,HRPO,3/16,,,,',
   '20000-T1,20000-T1,Main Frame Rail,tube,DOM,,,1.25,.120,48,',
 ].join('\n')
@@ -508,6 +510,9 @@ export default function PartsPage() {
         thickness: form.part_type === 'sheet' ? selectedMaterial.thickness || null : null,
         tube_od: form.part_type === 'tube' ? selectedMaterial.tube_od || null : null,
         tube_wall: form.part_type === 'tube' ? selectedMaterial.tube_wall || null : null,
+        tube_shape: form.part_type === 'tube'
+          ? (selectedMaterial.tube_shape ?? (selectedMaterial.tube_od?.toLowerCase().includes('x') ? 'square' : 'round'))
+          : 'round',
         cut_length:
           form.part_type === 'tube' && form.cut_length.trim() !== ''
             ? Number(form.cut_length)
@@ -1277,7 +1282,7 @@ export default function PartsPage() {
                   }}>
                     {group.map((part) => {
                       const isActive  = editingId === part.id
-                      const isSquare  = (part.tube_od ?? '').toLowerCase().includes('x')
+                      const isSquare  = part.tube_shape === 'square' || (part.tube_od ?? '').toLowerCase().includes('x')
                       const dims      = ptype === 'sheet'
                         ? [part.thickness, part.material].filter(Boolean).join(' · ')
                         : [part.tube_od, part.tube_wall, part.material].filter(Boolean).join(' · ')
