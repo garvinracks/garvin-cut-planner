@@ -169,6 +169,13 @@ export default function BatchesPage() {
   const [saving, setSaving]           = useState(false)
   const [sendingToPowder, setSendingToPowder] = useState(false)
 
+  // CypCut DXF folder — persisted in localStorage so user only sets it once
+  const [cypCutFolder, setCypCutFolder] = useState<string>('')
+  useEffect(() => {
+    const saved = typeof window !== 'undefined' ? (localStorage.getItem('cypcut_dxf_folder') ?? '') : ''
+    setCypCutFolder(saved)
+  }, [])
+
   // Draft editing: lineId → qty string (for editing lines on a draft batch)
   const [draftLineEdits, setDraftLineEdits] = useState<Record<string, string>>({})
 
@@ -974,12 +981,17 @@ export default function BatchesPage() {
     const zip = new JSZip()
     const batchName = activeBatch?.name ?? 'batch'
 
-    // Build XLSX rows — FilePath is just the bare filename; DXFs will be in same folder
-    const rows = Array.from(partTotals.values()).map(({ part, totalQty }) => ({
-      PartName: [part.thickness, part.material ? `[${part.material}]` : null, part.part_number].filter(Boolean).join(' '),
-      Amount: Math.ceil(totalQty * 1.05),
-      FilePath: part.dxf_file ?? '',
-    }))
+    // Build XLSX rows — FilePath uses the configured folder so CypCut can find files
+    const folder = cypCutFolder.trim().replace(/[/\\]+$/, '')  // strip trailing slashes
+    const rows = Array.from(partTotals.values()).map(({ part, totalQty }) => {
+      const bare = part.dxf_file ?? ''
+      const filePath = folder ? `${folder}\\${bare}` : bare
+      return {
+        PartName: [part.thickness, part.material ? `[${part.material}]` : null, part.part_number].filter(Boolean).join(' '),
+        Amount: Math.ceil(totalQty * 1.05),
+        FilePath: filePath,
+      }
+    })
 
     // Add XLSX to ZIP
     const xlsxBytes = xlsxToBuffer('PartsDefinition', rows)
@@ -1472,6 +1484,20 @@ export default function BatchesPage() {
                     <div>
                       {/* Cut list action buttons */}
                       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--panel-2)', border: '1px solid var(--border)', borderRadius: 8, padding: '4px 10px' }}>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--muted)', whiteSpace: 'nowrap' }}>Extract&nbsp;to:</span>
+                          <input
+                            className="field"
+                            style={{ width: 220, fontSize: '0.78rem', padding: '3px 8px', fontFamily: 'monospace' }}
+                            value={cypCutFolder}
+                            onChange={(e) => {
+                              setCypCutFolder(e.target.value)
+                              localStorage.setItem('cypcut_dxf_folder', e.target.value)
+                            }}
+                            placeholder="C:\CypCut\DXF"
+                            title="Folder where you extract the ZIP — CypCut will look here for DXF files"
+                          />
+                        </div>
                         <button
                           type="button"
                           className="btn btn-secondary"
