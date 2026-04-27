@@ -17,7 +17,7 @@ const SUB_IMAGE_BUCKET = 'subassembly-images'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type BatchStatus = 'planned' | 'in_progress' | 'at_powder' | 'complete'
+type BatchStatus = 'draft' | 'planned' | 'in_progress' | 'at_powder' | 'complete'
 
 type BuildBatch = {
   id: string
@@ -116,6 +116,7 @@ function fmtCost(n: number | null) {
 }
 
 const STATUS_STYLE: Record<BatchStatus, { label: string; bg: string; color: string }> = {
+  draft:       { label: 'Draft',            bg: 'rgba(59,130,246,0.15)',  color: '#60a5fa' },
   planned:     { label: 'Planned',          bg: 'rgba(100,116,139,0.18)', color: '#94a3b8' },
   in_progress: { label: 'In Progress',      bg: 'rgba(234,179,8,0.18)',   color: '#facc15' },
   at_powder:   { label: 'At Powder Coater', bg: 'rgba(167,139,250,0.2)',  color: '#a78bfa' },
@@ -167,6 +168,9 @@ export default function BatchesPage() {
 
   const [saving, setSaving]           = useState(false)
   const [sendingToPowder, setSendingToPowder] = useState(false)
+
+  // Draft editing: lineId → qty string (for editing lines on a draft batch)
+  const [draftLineEdits, setDraftLineEdits] = useState<Record<string, string>>({})
 
   // ── Load ─────────────────────────────────────────────────────────────────────
 
@@ -391,7 +395,9 @@ export default function BatchesPage() {
         m.material_type === part.part_type &&
         (part.part_type === 'tube'
           ? m.tube_od === part.tube_od && m.tube_wall === part.tube_wall
-          : m.thickness === part.material)
+          : m.id === part.material ||
+            (m.name != null && m.name === part.material) ||
+            m.thickness === part.material)
       )
       if (!mat) continue
       const log = priceLogs.find((pl) => pl.material_id === mat.id)
@@ -546,6 +552,44 @@ export default function BatchesPage() {
     const fresh = (await supabase.from('build_batches').select('*').eq('id', batch.id).single()).data
     setActiveBatch(fresh as BuildBatch)
     setView('detail')
+    setSaving(false)
+  }
+
+  async function saveDraft() {
+    if (!createName.trim()) { setMessage('Name is required.'); return }
+    const filledRows = createRows.filter((r) => r.skuId.trim() && r.qty.trim())
+    if (!filledRows.length) { setMessage('Add at least one SKU.'); return }
+    setSaving(true); setMessage('')
+    const { data: batch, error } = await supabase
+      .from('build_batches')
+      .insert({ name: createName.trim(), notes: createNotes.trim() || null, status: 'draft' })
+      .select('*').single()
+    if (error || !batch) { setMessage('Save failed: ' + (error?.message ?? 'unknown')); setSaving(false); return }
+    await supabase.from('build_batch_lines').insert(
+      filledRows.map((r) => ({ batch_id: batch.id, sku_id: r.skuId.trim(), qty: parseInt(r.qty) || 1 }))
+    )
+    setCreateName(''); setCreateNotes(''); setCreateRows([{ skuId: '', qty: '1', skuLookup: '' }])
+    await loadAll()
+    const fresh = (await supabase.from('build_batches').select('*').eq('id', batch.id).single()).data
+    setActiveBatch(fresh as BuildBatch)
+    setDraftLineEdits({})
+    setView('detail')
+    setSaving(false)
+  }
+
+  async function confirmDraft(batch: BuildBatch, editedLines: Record<string, string>) {
+    setSaving(true); setMessage('')
+    // Save any edited qtys first
+    const updates = Object.entries(editedLines)
+    for (const [lineId, qtyStr] of updates) {
+      const qty = parseInt(qtyStr) || 1
+      await supabase.from('build_batch_lines').update({ qty }).eq('id', lineId)
+    }
+    await supabase.from('build_batches').update({ status: 'planned' }).eq('id', batch.id)
+    await loadAll()
+    const fresh = (await supabase.from('build_batches').select('*').eq('id', batch.id).single()).data
+    setActiveBatch(fresh as BuildBatch)
+    setDraftLineEdits({})
     setSaving(false)
   }
 
@@ -1244,6 +1288,11 @@ export default function BatchesPage() {
               <span style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>Created {fmtDate(activeBatch.created_at)}</span>
               {activeBatch.completed_at && <span style={{ color: 'var(--success)', fontSize: '0.82rem' }}>Completed {fmtDate(activeBatch.completed_at)}</span>}
               <div className="batch-action-bar" style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {activeBatch.status === 'draft' && (
+                  <button className="btn btn-primary" disabled={saving} onClick={() => confirmDraft(activeBatch, draftLineEdits)}>
+                    {saving ? 'Saving…' : '✓ Confirm Batch'}
+                  </button>
+                )}
                 {activeBatch.status === 'planned' && (
                   <button className="btn btn-primary" onClick={() => updateStatus(activeBatch, 'in_progress')}>▶ Start Build</button>
                 )}
@@ -1269,6 +1318,44 @@ export default function BatchesPage() {
             {activeBatch.notes && <div style={{ marginTop: 10, color: 'var(--text-2)', fontSize: '0.85rem' }}>{activeBatch.notes}</div>}
           </div>
         </section>
+
+        {/* ── Draft editing card ────────────────────────────────────────────── */}
+        {activeBatch.status === 'draft' && (
+          <section className="card">
+            <div className="card-header">
+              <h2 className="card-title">Review &amp; Confirm Quantities</h2>
+              <div className="card-subtitle">Edit quantities if needed, then click "Confirm Batch" to mark as Planned and start building.</div>
+            </div>
+            <div className="card-body" style={{ padding: 0 }}>
+              <div className="table-wrap">
+                <table className="table">
+                  <thead><tr><th>SKU</th><th>Description</th><th style={{ textAlign: 'center', width: 100 }}>Qty</th></tr></thead>
+                  <tbody>
+                    {batchLines.map((line) => {
+                      const sku = skus.find((s) => s.id === line.sku_id)
+                      const qtyVal = draftLineEdits[line.id] ?? String(line.qty)
+                      return (
+                        <tr key={line.id}>
+                          <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>{line.sku_id}</td>
+                          <td style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>{sku?.description ?? '—'}</td>
+                          <td style={{ textAlign: 'center' }}>
+                            <input
+                              type="number" min="1" step="1"
+                              className="field"
+                              style={{ width: 80, textAlign: 'center', padding: '4px 8px' }}
+                              value={qtyVal}
+                              onChange={(e) => setDraftLineEdits((prev) => ({ ...prev, [line.id]: e.target.value }))}
+                            />
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* Next Up banner */}
         {activeBatch.status === 'in_progress' && nextUpText && (
@@ -2024,6 +2111,7 @@ export default function BatchesPage() {
             <div className="btn-row">
               <button className="btn btn-secondary" onClick={() => setCreateRows((prev) => [...prev, { skuId: '', qty: '1', skuLookup: '' }])}>+ Add Row</button>
               <button className="btn btn-secondary" onClick={() => setSkuPickerOpen(true)}>Browse SKUs</button>
+              <button className="btn btn-secondary" disabled={saving} onClick={saveDraft} title="Save quantities to confirm later">{saving ? 'Saving…' : '💾 Save Draft'}</button>
               <button className="btn btn-primary" disabled={saving} onClick={createBatch}>{saving ? 'Saving…' : 'Create Batch'}</button>
             </div>
           </div>
@@ -2137,6 +2225,8 @@ export default function BatchesPage() {
                             <span style={{ color: 'var(--success)', fontSize: '0.8rem', fontWeight: 700 }}>✓ Done</span>
                           ) : batch.status === 'at_powder' ? (
                             <span style={{ color: '#a78bfa', fontSize: '0.8rem', fontWeight: 700 }}>🎨 At Powder</span>
+                          ) : batch.status === 'draft' ? (
+                            <span style={{ color: '#60a5fa', fontSize: '0.8rem' }}>Pending confirmation</span>
                           ) : batch.status === 'planned' ? (
                             <span style={{ color: 'var(--muted)', fontSize: '0.8rem' }}>Not started</span>
                           ) : (
