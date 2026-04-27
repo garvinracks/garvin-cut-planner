@@ -963,7 +963,7 @@ export default function BatchesPage() {
     if (w) { w.document.write(html); w.document.close() }
   }
 
-  async function exportBatchCypCut(wItems: Map<string, { part: Part; totalQty: number; subAssemblyId: string | null }>) {
+  function exportBatchCypCut(wItems: Map<string, { part: Part; totalQty: number; subAssemblyId: string | null }>) {
     // Deduplicate by part.id — same part may appear across multiple SAs
     const partTotals = new Map<string, { part: Part; totalQty: number }>()
     for (const [, wi] of wItems) {
@@ -977,12 +977,9 @@ export default function BatchesPage() {
     }
     if (partTotals.size === 0) { alert('No sheet parts in this batch.'); return }
 
-    const supabase = createBrowserClient()
-    const zip = new JSZip()
     const batchName = activeBatch?.name ?? 'batch'
-
-    // Build XLSX rows — FilePath uses the configured folder so CypCut can find files
     const folder = cypCutFolder.trim().replace(/[/\\]+$/, '')  // strip trailing slashes
+
     const rows = Array.from(partTotals.values()).map(({ part, totalQty }) => {
       const bare = part.dxf_file ?? ''
       const filePath = folder ? `${folder}\\${bare}` : bare
@@ -993,35 +990,7 @@ export default function BatchesPage() {
       }
     })
 
-    // Add XLSX to ZIP
-    const xlsxBytes = xlsxToBuffer('PartsDefinition', rows)
-    zip.file(`cypcut-${batchName}.xlsx`, xlsxBytes)
-
-    // Fetch each DXF from Supabase storage and add to ZIP
-    const fetchPromises = Array.from(partTotals.values())
-      .filter(({ part }) => !!part.dxf_file)
-      .map(async ({ part }) => {
-        const filename = part.dxf_file!
-        const { data: { publicUrl } } = supabase.storage.from('dxf-files').getPublicUrl(filename)
-        try {
-          const res = await fetch(publicUrl)
-          if (!res.ok) throw new Error(`${res.status}`)
-          const buf = await res.arrayBuffer()
-          zip.file(filename, buf)
-        } catch (err) {
-          console.warn(`[CypCut] Could not fetch DXF for ${filename}:`, err)
-        }
-      })
-
-    await Promise.all(fetchPromises)
-
-    const zipBlob = await zip.generateAsync({ type: 'blob' })
-    const url = URL.createObjectURL(zipBlob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `cypcut-${batchName}.zip`
-    a.click()
-    URL.revokeObjectURL(url)
+    downloadXlsx(`cypcut-${batchName}.xlsx`, 'PartsDefinition', rows)
   }
 
   function exportBatchTubeXlsx(wItems: Map<string, { part: Part; totalQty: number; subAssemblyId: string | null }>) {
@@ -1485,17 +1454,17 @@ export default function BatchesPage() {
                       {/* Cut list action buttons */}
                       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--panel-2)', border: '1px solid var(--border)', borderRadius: 8, padding: '4px 10px' }}>
-                          <span style={{ fontSize: '0.72rem', color: 'var(--muted)', whiteSpace: 'nowrap' }}>Extract&nbsp;to:</span>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--muted)', whiteSpace: 'nowrap' }}>DXF&nbsp;folder:</span>
                           <input
                             className="field"
-                            style={{ width: 220, fontSize: '0.78rem', padding: '3px 8px', fontFamily: 'monospace' }}
+                            style={{ width: 240, fontSize: '0.78rem', padding: '3px 8px', fontFamily: 'monospace' }}
                             value={cypCutFolder}
                             onChange={(e) => {
                               setCypCutFolder(e.target.value)
                               localStorage.setItem('cypcut_dxf_folder', e.target.value)
                             }}
-                            placeholder="C:\CypCut\DXF"
-                            title="Folder where you extract the ZIP — CypCut will look here for DXF files"
+                            placeholder="C:\Users\charl\Part DXF"
+                            title="Folder where your DXF files live — set once, remembered forever"
                           />
                         </div>
                         <button
@@ -1504,7 +1473,7 @@ export default function BatchesPage() {
                           style={{ fontSize: '0.82rem' }}
                           onClick={() => exportBatchCypCut(workItems)}
                         >
-                          &#x1F4E6; Export CypCut Bundle
+                          &#x1F4CA; Export CypCut XLSX
                         </button>
                         <button
                           type="button"
