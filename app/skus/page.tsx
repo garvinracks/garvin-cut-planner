@@ -468,6 +468,9 @@ export default function SkusPage() {
       return
     }
 
+    // Clear stale SA part data from the previous SKU immediately
+    setSubassemblyPartMap({})
+
     const [{ data: subRows, error: subError }, { data: partRows, error: partError }] = await Promise.all([
       supabase
         .from('sku_sub_assemblies')
@@ -516,6 +519,12 @@ export default function SkusPage() {
         requires_weld: row.sub_assembly?.requires_weld ?? null,
       }))
       setSelectedSkuSubassemblies(mappedSubRows)
+
+      // Eagerly load every SA's parts so the BOM Explosion is complete without
+      // needing to expand each sub-assembly manually first.
+      if (mappedSubRows.length > 0) {
+        await Promise.all(mappedSubRows.map((sa) => loadSubassemblyParts(sa.sub_assembly_id)))
+      }
     }
 
     if (partError) {
