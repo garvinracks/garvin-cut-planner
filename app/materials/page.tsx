@@ -1,9 +1,11 @@
 'use client'
 
 /*
- * SQL migrations — run once in Supabase before using the new delivery receipt fields:
+ * SQL migrations — run once in Supabase SQL editor:
  *   ALTER TABLE material_price_logs ADD COLUMN IF NOT EXISTS qty_received  numeric;
  *   ALTER TABLE material_price_logs ADD COLUMN IF NOT EXISTS length_per_bar_in numeric;
+ *   ALTER TABLE materials ADD COLUMN IF NOT EXISTS tube_shape text NOT NULL DEFAULT 'round';
+ *   ALTER TABLE parts     ADD COLUMN IF NOT EXISTS tube_shape text NOT NULL DEFAULT 'round';
  */
 
 /* eslint-disable react-hooks/exhaustive-deps */
@@ -21,6 +23,7 @@ type MaterialRow = {
   thickness: string | null
   tube_od: string | null
   tube_wall: string | null
+  tube_shape: string | null
   notes: string | null
   unit_weight_lbs: number | null
   scrap_rate: number | null
@@ -341,7 +344,8 @@ export default function MaterialsPage() {
 
   function startEdit(row: MaterialRow) {
     const isTube = row.material_type === 'tube'
-    const tubeShape = row.tube_od?.toLowerCase().includes('x') ? 'square' : 'round'
+    // Prefer the stored tube_shape column; fall back to deriving from tube_od for old rows
+    const tubeShape = row.tube_shape ?? (row.tube_od?.toLowerCase().includes('x') ? 'square' : 'round')
     setEditingId(row.id)
     setForm({
       material_type: row.material_type,
@@ -373,6 +377,7 @@ export default function MaterialsPage() {
       material_type: form.material_type as 'tube' | 'sheet',
       material: form.material.trim() || null,
       thickness: form.material_type === 'sheet' ? form.sheet_thickness.trim() || null : null,
+      tube_shape: form.material_type === 'tube' ? form.tube_shape : 'round',
       tube_od: form.material_type === 'tube' ? form.tube_dimension.trim() || null : null,
       tube_wall: form.material_type === 'tube' ? form.wall_thickness.trim() || null : null,
       notes: form.notes.trim() || null,

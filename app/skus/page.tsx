@@ -45,6 +45,7 @@ type Part = {
   thickness: string | null
   tube_od: string | null
   tube_wall: string | null
+  tube_shape: string | null
   cut_length: number | null
   dxf_file: string | null
   notes?: string | null
@@ -91,6 +92,7 @@ type SkuPartRow = {
   weight_lbs: number | null
   tube_od: string | null
   tube_wall: string | null
+  tube_shape: string | null
   cut_length: number | null
 }
 
@@ -105,6 +107,7 @@ type SubAssemblyPartRow = {
   weight_lbs: number | null
   tube_od: string | null
   tube_wall: string | null
+  tube_shape: string | null
   cut_length: number | null
 }
 
@@ -118,6 +121,7 @@ type ExplodedPreviewRow = {
   weight_lbs: number | null
   tube_od: string | null
   tube_wall: string | null
+  tube_shape: string | null
   cut_length: number | null
 }
 
@@ -140,6 +144,7 @@ type JoinedSkuPartRow = {
     weight_lbs?: number | null
     tube_od?: string | null
     tube_wall?: string | null
+    tube_shape?: string | null
     cut_length?: number | null
   } | null
 }
@@ -381,7 +386,7 @@ export default function SkusPage() {
   async function loadParts() {
     const { data, error } = await supabase
       .from('parts')
-      .select('id, part_number, description, part_type, material, thickness, tube_od, tube_wall, cut_length, dxf_file, notes, weight_lbs, requires_laser, requires_sheet_bend, requires_tube_bend, requires_saw, requires_drill, requires_weld')
+      .select('id, part_number, description, part_type, material, thickness, tube_od, tube_wall, tube_shape, cut_length, dxf_file, notes, weight_lbs, requires_laser, requires_sheet_bend, requires_tube_bend, requires_saw, requires_drill, requires_weld')
       .order('part_number', { ascending: true })
 
     if (!error) {
@@ -431,6 +436,7 @@ export default function SkusPage() {
           weight_lbs,
           tube_od,
           tube_wall,
+          tube_shape,
           cut_length
         )
       `)
@@ -453,6 +459,7 @@ export default function SkusPage() {
       weight_lbs: row.part?.weight_lbs ?? null,
       tube_od: row.part?.tube_od ?? null,
       tube_wall: row.part?.tube_wall ?? null,
+      tube_shape: row.part?.tube_shape ?? null,
       cut_length: row.part?.cut_length ?? null,
     }))
 
@@ -541,6 +548,7 @@ export default function SkusPage() {
         weight_lbs: row.part?.weight_lbs ?? null,
         tube_od: row.part?.tube_od ?? null,
         tube_wall: row.part?.tube_wall ?? null,
+        tube_shape: row.part?.tube_shape ?? null,
         cut_length: row.part?.cut_length ?? null,
       }))
       setSelectedSkuParts(mappedPartRows)
@@ -1445,6 +1453,7 @@ export default function SkusPage() {
           weight_lbs: row.weight_lbs,
           tube_od: row.tube_od,
           tube_wall: row.tube_wall,
+          tube_shape: row.tube_shape,
           cut_length: row.cut_length,
         })
       }
@@ -1468,6 +1477,7 @@ export default function SkusPage() {
             weight_lbs: subPart.weight_lbs,
             tube_od: subPart.tube_od,
             tube_wall: subPart.tube_wall,
+            tube_shape: subPart.tube_shape,
             cut_length: subPart.cut_length,
           })
         }
@@ -2085,7 +2095,7 @@ export default function SkusPage() {
                                                     tubeOd={subRow.tube_od ?? undefined}
                                                     tubeWall={subRow.tube_wall ?? undefined}
                                                     cutLength={subRow.cut_length ?? undefined}
-                                                    tubeShape={(subRow.tube_od ?? '').toLowerCase().includes('x') ? 'square' : 'round'}
+                                                    tubeShape={subRow.tube_shape === 'square' || (subRow.tube_od ?? '').toLowerCase().includes('x') ? 'square' : 'round'}
                                                   />
                                                 </td>
                                                 <td style={{ fontWeight: 700, fontFamily: 'monospace', fontSize: '0.83rem' }}>
@@ -2248,7 +2258,7 @@ export default function SkusPage() {
                                       tubeOd={row.tube_od ?? undefined}
                                       tubeWall={row.tube_wall ?? undefined}
                                       cutLength={row.cut_length ?? undefined}
-                                      tubeShape={(row.tube_od ?? '').toLowerCase().includes('x') ? 'square' : 'round'}
+                                      tubeShape={row.tube_shape === 'square' || (row.tube_od ?? '').toLowerCase().includes('x') ? 'square' : 'round'}
                                     />
                                   </td>
                                   <td style={{ fontWeight: 700, fontFamily: 'monospace', fontSize: '0.83rem' }}>
@@ -2341,7 +2351,7 @@ export default function SkusPage() {
                                       tubeOd={row.tube_od ?? undefined}
                                       tubeWall={row.tube_wall ?? undefined}
                                       cutLength={row.cut_length ?? undefined}
-                                      tubeShape={(row.tube_od ?? '').toLowerCase().includes('x') ? 'square' : 'round'}
+                                      tubeShape={row.tube_shape === 'square' || (row.tube_od ?? '').toLowerCase().includes('x') ? 'square' : 'round'}
                                     />
                                   </td>
                                   <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>{row.part_number}</td>

@@ -54,6 +54,7 @@ type Part = {
   thickness: string | null
   tube_od: string | null
   tube_wall: string | null
+  tube_shape: string | null
   cut_length: number | null
   weight_lbs: number | null
   dxf_file: string | null
@@ -186,7 +187,7 @@ export default function BatchesPage() {
       supabase.from('build_batches').select('*').order('created_at', { ascending: false }),
       supabase.from('build_batch_lines').select('*'),
       supabase.from('skus').select('id, description, category, active').order('id'),
-      supabase.from('parts').select('id, part_number, description, part_type, material, thickness, tube_od, tube_wall, cut_length, weight_lbs, dxf_file, requires_laser, requires_sheet_bend, requires_tube_bend, requires_saw, requires_drill, requires_weld'),
+      supabase.from('parts').select('id, part_number, description, part_type, material, thickness, tube_od, tube_wall, tube_shape, cut_length, weight_lbs, dxf_file, requires_laser, requires_sheet_bend, requires_tube_bend, requires_saw, requires_drill, requires_weld'),
       supabase.from('sku_parts').select('sku_id, part_id, qty'),
       supabase.from('sku_sub_assemblies').select('sku_id, sub_assembly_id, qty'),
       supabase.from('sub_assembly_parts').select('sub_assembly_id, part_id, qty'),
@@ -1065,7 +1066,7 @@ export default function BatchesPage() {
                         <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
                           <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small"
                             isTube={part.part_type === 'tube'} tubeFallback={true}
-                            tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={part.tube_od?.toLowerCase().includes('x') ? 'square' : 'round'} />
+                            tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={part.tube_shape === 'square' || part.tube_od?.toLowerCase().includes('x') ? 'square' : 'round'} />
                           <div style={{ fontSize: '0.7rem', fontFamily: 'monospace', fontWeight: 700, color: '#555', marginTop: 4 }}>{part.part_number}</div>
                         </td>
                         <td style={{ textAlign: 'center', fontWeight: 700, verticalAlign: 'middle' }}>{totalQty}</td>
@@ -1788,7 +1789,7 @@ export default function BatchesPage() {
                                     <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
                                       <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small"
                                         isTube={part.part_type === 'tube'} tubeFallback={true}
-                                        tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={part.tube_od?.toLowerCase().includes('x') ? 'square' : 'round'} />
+                                        tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={part.tube_shape === 'square' || part.tube_od?.toLowerCase().includes('x') ? 'square' : 'round'} />
                                       <div style={{ fontSize: '0.68rem', fontFamily: 'monospace', fontWeight: 700, color: 'var(--muted)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{part.part_number}</div>
                                       {part.description && <div style={{ fontSize: '0.62rem', color: 'var(--muted)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>{part.description}</div>}
                                     </td>
@@ -1863,7 +1864,7 @@ export default function BatchesPage() {
                                   <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
                                     <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small"
                                       isTube={part.part_type === 'tube'} tubeFallback={true}
-                                      tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={part.tube_od?.toLowerCase().includes('x') ? 'square' : 'round'} />
+                                      tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={part.tube_shape === 'square' || part.tube_od?.toLowerCase().includes('x') ? 'square' : 'round'} />
                                     <div style={{ fontSize: '0.68rem', fontFamily: 'monospace', fontWeight: 700, color: 'var(--muted)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{part.part_number}</div>
                                     {part.description && <div style={{ fontSize: '0.62rem', color: 'var(--muted)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>{part.description}</div>}
                                   </td>
