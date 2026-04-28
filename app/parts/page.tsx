@@ -10,8 +10,9 @@ import DxfPartPreview from '@/components/DxfPartPreview'
 export const STAGE_KEYS = [
   'requires_laser',
   'requires_sheet_bend',
-  'requires_tube_bend',
   'requires_saw',
+  'requires_notch',
+  'requires_tube_bend',
   'requires_drill',
   'requires_weld',
 ] as const
@@ -20,8 +21,9 @@ export type StageKey = typeof STAGE_KEYS[number]
 export const STAGE_LABELS: Record<StageKey, string> = {
   requires_laser:      'Laser',
   requires_sheet_bend: 'Sheet Bend',
-  requires_tube_bend:  'Tube Bend',
   requires_saw:        'Saw',
+  requires_notch:      'Notch',
+  requires_tube_bend:  'Tube Bend',
   requires_drill:      'Drill Press',
   requires_weld:       'Weld',
 }
@@ -42,8 +44,9 @@ type Part = {
   weight_lbs: number | null
   requires_laser:      boolean
   requires_sheet_bend: boolean
-  requires_tube_bend:  boolean
   requires_saw:        boolean
+  requires_notch:      boolean
+  requires_tube_bend:  boolean
   requires_drill:      boolean
   requires_weld:       boolean
   requires_powder:     boolean
@@ -201,8 +204,9 @@ const emptyForm = {
   notes: '',
   requires_laser:      false,
   requires_sheet_bend: false,
-  requires_tube_bend:  false,
   requires_saw:        false,
+  requires_notch:      false,
+  requires_tube_bend:  false,
   requires_drill:      false,
   requires_weld:       false,
   requires_powder:     false,
@@ -423,8 +427,9 @@ export default function PartsPage() {
       notes: part.notes || '',
       requires_laser:      part.requires_laser,
       requires_sheet_bend: part.requires_sheet_bend,
-      requires_tube_bend:  part.requires_tube_bend,
       requires_saw:        part.requires_saw,
+      requires_notch:      part.requires_notch ?? false,
+      requires_tube_bend:  part.requires_tube_bend,
       requires_drill:      part.requires_drill,
       requires_weld:       part.requires_weld,
       requires_powder:     part.requires_powder,
@@ -452,8 +457,9 @@ export default function PartsPage() {
       notes: part.notes || '',
       requires_laser:      part.requires_laser,
       requires_sheet_bend: part.requires_sheet_bend,
-      requires_tube_bend:  part.requires_tube_bend,
       requires_saw:        part.requires_saw,
+      requires_notch:      part.requires_notch ?? false,
+      requires_tube_bend:  part.requires_tube_bend,
       requires_drill:      part.requires_drill,
       requires_weld:       part.requires_weld,
       requires_powder:     part.requires_powder,
@@ -522,8 +528,9 @@ export default function PartsPage() {
         notes: form.notes.trim() || null,
         requires_laser:      form.requires_laser,
         requires_sheet_bend: form.requires_sheet_bend,
-        requires_tube_bend:  form.requires_tube_bend,
         requires_saw:        form.requires_saw,
+        requires_notch:      form.requires_notch,
+        requires_tube_bend:  form.requires_tube_bend,
         requires_drill:      form.requires_drill,
         requires_weld:       form.requires_weld,
         requires_powder:     form.requires_powder,

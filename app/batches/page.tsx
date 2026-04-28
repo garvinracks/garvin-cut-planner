@@ -1,8 +1,10 @@
 'use client'
 
 /*
- * SQL migration — run before using sub-assembly weld tracking:
+ * SQL migrations:
  * ALTER TABLE sub_assemblies ADD COLUMN IF NOT EXISTS requires_weld boolean DEFAULT false;
+ * ALTER TABLE parts ADD COLUMN IF NOT EXISTS requires_notch boolean NOT NULL DEFAULT false;
+ * ALTER TABLE build_batches ADD COLUMN IF NOT EXISTS stage_notch boolean NOT NULL DEFAULT false;
  */
 
 import { useEffect, useMemo, useState } from 'react'
@@ -28,8 +30,9 @@ type BuildBatch = {
   completed_at: string | null
   stage_laser: boolean
   stage_sheet_bend: boolean
-  stage_tube_bend: boolean
   stage_saw: boolean
+  stage_notch: boolean
+  stage_tube_bend: boolean
   stage_drill: boolean
   stage_weld: boolean
   powder_batch_id: string | null
@@ -60,8 +63,9 @@ type Part = {
   dxf_file: string | null
   requires_laser: boolean
   requires_sheet_bend: boolean
-  requires_tube_bend: boolean
   requires_saw: boolean
+  requires_notch: boolean
+  requires_tube_bend: boolean
   requires_drill: boolean
   requires_weld: boolean
 }
@@ -99,6 +103,7 @@ const STAGES = [
   { key: 'stage_laser',      stageKey: 'laser',      partKey: 'requires_laser',      label: 'Laser' },
   { key: 'stage_sheet_bend', stageKey: 'sheet_bend', partKey: 'requires_sheet_bend', label: 'Sheet Bend' },
   { key: 'stage_saw',        stageKey: 'saw',        partKey: 'requires_saw',        label: 'Saw' },
+  { key: 'stage_notch',      stageKey: 'notch',      partKey: 'requires_notch',      label: 'Notch' },
   { key: 'stage_tube_bend',  stageKey: 'tube_bend',  partKey: 'requires_tube_bend',  label: 'Tube Bend' },
   { key: 'stage_drill',      stageKey: 'drill',      partKey: 'requires_drill',      label: 'Drill Press' },
   { key: 'stage_weld',       stageKey: 'weld',       partKey: 'requires_weld',       label: 'Weld' },
@@ -199,7 +204,7 @@ export default function BatchesPage() {
       supabase.from('build_batches').select('*').order('created_at', { ascending: false }),
       supabase.from('build_batch_lines').select('*'),
       supabase.from('skus').select('id, description, category, active').order('id'),
-      supabase.from('parts').select('id, part_number, description, part_type, material, thickness, tube_od, tube_wall, tube_shape, cut_length, weight_lbs, dxf_file, requires_laser, requires_sheet_bend, requires_tube_bend, requires_saw, requires_drill, requires_weld'),
+      supabase.from('parts').select('id, part_number, description, part_type, material, thickness, tube_od, tube_wall, tube_shape, cut_length, weight_lbs, dxf_file, requires_laser, requires_sheet_bend, requires_saw, requires_notch, requires_tube_bend, requires_drill, requires_weld'),
       supabase.from('sku_parts').select('sku_id, part_id, qty'),
       supabase.from('sku_sub_assemblies').select('sku_id, sub_assembly_id, qty'),
       supabase.from('sub_assembly_parts').select('sub_assembly_id, part_id, qty'),
@@ -703,6 +708,7 @@ export default function BatchesPage() {
       dxfFile: string | null
       qty: number
       done: boolean
+      requiresLaser: boolean
     }>
   }
 
@@ -774,16 +780,25 @@ export default function BatchesPage() {
         ? (saGroups.get(subAssemblyId)?.subAssembly.name ?? null)
         : null
 
-      tubeGroupMap.get(matId)!.cuts.push({
-        partId: part.id,
-        partNumber: part.part_number,
-        description: part.description,
-        cutLengthIn: part.cut_length ?? null,
-        qty: totalQty,
-        requiresBend: part.requires_tube_bend,
-        saLabel,
-        done: comps.has(`${part.id}:saw`),
-      })
+      // Deduplicate: same part used in multiple SAs → merge into one row
+      const existing = tubeGroupMap.get(matId)!.cuts.find((c) => c.partId === part.id)
+      if (existing) {
+        existing.qty += totalQty
+        if (saLabel && existing.saLabel !== saLabel) {
+          existing.saLabel = 'Multiple assemblies'
+        }
+      } else {
+        tubeGroupMap.get(matId)!.cuts.push({
+          partId: part.id,
+          partNumber: part.part_number,
+          description: part.description,
+          cutLengthIn: part.cut_length ?? null,
+          qty: totalQty,
+          requiresBend: part.requires_tube_bend,
+          saLabel,
+          done: comps.has(`${part.id}:saw`),
+        })
+      }
     }
 
     // Sort cuts within each group: longest first
@@ -828,6 +843,7 @@ export default function BatchesPage() {
         dxfFile: part.dxf_file,
         qty: totalQty,
         done: comps.has(`${part.id}:laser`) || comps.has(`${part.id}:sheet_bend`),
+        requiresLaser: part.requires_laser,
       })
     }
     const sheetGroups = Array.from(sheetGroupMap.values())
@@ -1861,8 +1877,22 @@ export default function BatchesPage() {
                                       {p.description.length > 38 ? p.description.slice(0, 38) + '…' : p.description}
                                     </div>
                                   )}
-                                  {p.done && (
-                                    <div style={{ fontSize: '0.68rem', color: 'var(--success)', marginTop: 4, fontWeight: 700 }}>✓ Done</div>
+                                  {p.requiresLaser && (
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 6, cursor: 'pointer' }}>
+                                      <input
+                                        type="checkbox"
+                                        checked={comps.has(`${p.partId}:laser`)}
+                                        disabled={savingKeys.has(`${p.partId}:laser`)}
+                                        onChange={(e) => void handleToggle(
+                                          activeBatch.id, p.partId, 'laser', e.target.checked,
+                                          workItems, subAssemblyGroups
+                                        )}
+                                        style={{ width: 14, height: 14, accentColor: 'var(--success)' }}
+                                      />
+                                      <span style={{ fontSize: '0.68rem', color: comps.has(`${p.partId}:laser`) ? 'var(--success)' : 'var(--muted)', fontWeight: 600 }}>
+                                        {comps.has(`${p.partId}:laser`) ? '✓ Lasered' : 'Mark lasered'}
+                                      </span>
+                                    </label>
                                   )}
                                 </div>
                               </div>
