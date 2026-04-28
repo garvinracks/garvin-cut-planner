@@ -8,9 +8,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createBrowserClient } from '@/lib/supabase'
+import { Helper } from 'dxf'
 import DxfPartPreview from '@/components/DxfPartPreview'
-import { downloadXlsx, xlsxToBuffer } from '@/lib/xlsx'
-import JSZip from 'jszip'
+import { downloadXlsx } from '@/lib/xlsx'
 import SkuPickerModal, { type PickableSKU } from '@/components/SkuPickerModal'
 
 const SUB_IMAGE_BUCKET = 'subassembly-images'
@@ -74,6 +74,7 @@ type SubAssembly = { id: string; name: string; requires_weld: boolean; image_fil
 type MaterialRecord = {
   id: string
   name: string | null
+  material: string | null
   material_type: string
   tube_od: string | null
   tube_wall: string | null
@@ -203,7 +204,7 @@ export default function BatchesPage() {
       supabase.from('sku_sub_assemblies').select('sku_id, sub_assembly_id, qty'),
       supabase.from('sub_assembly_parts').select('sub_assembly_id, part_id, qty'),
       supabase.from('sub_assemblies').select('id, name, requires_weld, image_file'),
-      supabase.from('materials').select('id, name, material_type, tube_od, tube_wall, thickness, unit_weight_lbs, stock_length_in, scrap_rate, qty_on_hand'),
+      supabase.from('materials').select('id, name, material, material_type, tube_od, tube_wall, thickness, unit_weight_lbs, stock_length_in, scrap_rate, qty_on_hand'),
       supabase.from('material_price_logs').select('material_id, price').order('date_purchased', { ascending: false }),
     ])
     const loadedBatches = (batchData ?? []) as BuildBatch[]
@@ -403,6 +404,7 @@ export default function BatchesPage() {
         (part.part_type === 'tube'
           ? m.tube_od === part.tube_od && m.tube_wall === part.tube_wall
           : m.id === part.material ||
+            (m.material != null && m.material === part.material) ||
             (m.name != null && m.name === part.material) ||
             m.thickness === part.material)
       )
@@ -800,10 +802,11 @@ export default function BatchesPage() {
     const sheetGroupMap = new Map<string, SheetCutListGroup>()
     for (const { part, totalQty } of wItems.values()) {
       if (part.part_type !== 'sheet') continue
-      // Match by ID first, then by name, then by thickness (legacy)
+      // Match by ID, material grade, name, or thickness (legacy)
       const mat = materials.find(
         (m) => m.material_type === 'sheet' && (
           m.id === part.material ||
+          (m.material != null && m.material === part.material) ||
           (m.name != null && m.name === part.material) ||
           m.thickness === part.material
         )
@@ -846,121 +849,196 @@ export default function BatchesPage() {
 
   // ── Print cut list ────────────────────────────────────────────────────────────
 
-  function printCutList(
+  async function printCutList(
     tubeGroups: CutListGroup[],
     sheetGroups: SheetCutListGroup[]
   ) {
     const batchName = activeBatch?.name ?? 'Batch'
+
+    // Open window immediately so browser doesn't block the popup
+    const w = window.open('', '_blank')
+    if (!w) { alert('Pop-up blocked — please allow pop-ups for this page.'); return }
+    w.document.write(`<html><head><title>Generating…</title></head><body style="font-family:sans-serif;padding:32px;color:#555">Generating cut list, please wait…</body></html>`)
+
+    // Fetch DXF SVGs for all sheet parts in parallel
+    const supabase = createBrowserClient()
+    const dxfSvgMap: Record<string, string> = {}
+    await Promise.all(
+      sheetGroups.flatMap((sg) => sg.parts)
+        .filter((p) => !!p.dxfFile)
+        .map(async (p) => {
+          try {
+            const { data: { publicUrl } } = supabase.storage.from('dxf-files').getPublicUrl(p.dxfFile!)
+            const res = await fetch(publicUrl)
+            if (!res.ok) return
+            const text = await res.text()
+            const helper = new Helper(text)
+            const rawSvg = helper.toSVG()
+            if (!rawSvg) return
+            // Normalize for print (white bg, dark strokes)
+            let svg = rawSvg.trim()
+              .replace(/<\?xml[\s\S]*?\?>/gi, '')
+              .replace(/<!DOCTYPE[\s\S]*?>/gi, '')
+            const vbMatch = svg.match(/viewBox="([^"]+)"/i)
+            if (vbMatch) {
+              const nums = vbMatch[1].trim().split(/[ ,]+/).map(Number)
+              if (nums.length === 4 && nums.every(Number.isFinite)) {
+                const [x, y, ww, hh] = nums
+                const pad = Math.max(ww, hh) * 0.12
+                svg = svg.replace(/viewBox="[^"]*"/i, `viewBox="${x-pad} ${y-pad} ${ww+pad*2} ${hh+pad*2}"`)
+              }
+            }
+            svg = svg.replace(/width="[^"]*"/i, 'width="100%"').replace(/height="[^"]*"/i, 'height="100%"')
+            if (!svg.includes('preserveAspectRatio=')) svg = svg.replace('<svg', '<svg preserveAspectRatio="xMidYMid meet"')
+            svg = svg.replace(/<svg([^>]*)>/, `<svg$1><style>* { fill: none !important; stroke: #333 !important; stroke-width: 1.5 !important; stroke-linecap: round !important; stroke-linejoin: round !important; vector-effect: non-scaling-stroke !important; }</style>`)
+            dxfSvgMap[p.partId] = svg
+          } catch { /* skip if DXF unavailable */ }
+        })
+    )
+
+    const PRINT_COLORS = ['#2563eb','#7c3aed','#db2777','#ea580c','#0d9488','#65a30d','#d97706','#0891b2','#be123c','#4d7c0f']
+
     let html = `<!DOCTYPE html><html><head><title>Cut List \u2014 ${batchName}</title>
 <style>
-  body { font-family: sans-serif; padding: 24px; color: #111; }
-  h1 { margin: 0 0 4px; font-size: 1.4rem; }
-  .subtitle { color: #666; font-size: 0.85rem; margin-bottom: 24px; }
-  .material-group { margin-bottom: 28px; page-break-inside: avoid; }
-  .material-header { background: #f0f0f0; padding: 8px 12px; border-left: 4px solid #333; margin-bottom: 8px; }
-  .material-name { font-weight: bold; font-size: 1rem; }
-  .material-stats { font-size: 0.8rem; color: #555; margin-top: 2px; }
-  .section-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: #888; font-weight: 700; padding: 4px 0 2px; border-bottom: 1px solid #ccc; margin: 10px 0 6px; }
+  body { font-family: Arial, sans-serif; padding: 20px; color: #111; background: #fff; }
+  h1 { margin: 0 0 4px; font-size: 1.3rem; }
+  .subtitle { color: #666; font-size: 0.82rem; margin-bottom: 20px; }
+  .material-group { margin-bottom: 24px; page-break-inside: avoid; border: 1px solid #ccc; border-radius: 6px; overflow: hidden; }
+  .material-header { background: #f0f0f0; padding: 8px 12px; border-left: 4px solid #333; }
+  .tube-header { border-left-color: #2563eb; }
+  .sheet-header { border-left-color: #0891b2; }
+  .material-name { font-weight: bold; font-size: 0.95rem; }
+  .material-stats { font-size: 0.75rem; color: #555; margin-top: 2px; }
+  .section-label { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.1em; color: #888; font-weight: 700; padding: 6px 12px 3px; background: #fafafa; border-bottom: 1px solid #e5e5e5; }
   table { width: 100%; border-collapse: collapse; }
-  th { text-align: left; padding: 6px 8px; border-bottom: 2px solid #333; font-size: 0.78rem; text-transform: uppercase; }
-  td { padding: 5px 8px; border-bottom: 1px solid #ddd; font-size: 0.85rem; }
+  th { text-align: left; padding: 5px 8px; border-bottom: 2px solid #333; font-size: 0.72rem; text-transform: uppercase; background: #fafafa; }
+  td { padding: 4px 8px; border-bottom: 1px solid #eee; font-size: 0.82rem; vertical-align: middle; }
   .mono { font-family: monospace; font-weight: bold; }
-  .bend-badge { background: #e0e0e0; border-radius: 3px; padding: 1px 5px; font-size: 0.72rem; }
-  .totals-row td { background: #f8f8f8; font-weight: bold; border-top: 2px solid #333; }
-  .done-row td { color: #888; text-decoration: line-through; }
-  .sa-label { font-size: 0.72rem; color: #888; }
-  @media print { body { padding: 12px; } }
+  .bend-badge { background: #fef3c7; border: 1px solid #d97706; border-radius: 3px; padding: 1px 5px; font-size: 0.66rem; font-weight: 700; color: #92400e; }
+  .totals-row td { background: #f5f5f5; font-weight: bold; border-top: 2px solid #333; }
+  .done-row td { color: #aaa; text-decoration: line-through; }
+  .sa-label { font-size: 0.68rem; color: #888; }
+  /* Tube nesting */
+  .nest-wrap { padding: 10px 12px 12px; border-top: 1px solid #e5e5e5; background: #fafafa; }
+  .nest-title { font-size: 0.66rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: #888; margin-bottom: 8px; }
+  .nest-bar-label { font-size: 0.62rem; color: #888; font-family: monospace; margin-bottom: 3px; }
+  .nest-bar { height: 26px; border-radius: 4px; overflow: hidden; border: 1px solid #ccc; display: flex; margin-bottom: 6px; }
+  .nest-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; }
+  .nest-legend-item { display: flex; align-items: center; gap: 5px; font-size: 0.66rem; font-family: monospace; }
+  .nest-swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  /* Sheet part cards */
+  .parts-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; padding: 10px; }
+  .part-card { border: 1px solid #ddd; border-radius: 6px; overflow: hidden; }
+  .part-card.done { opacity: 0.5; }
+  .part-dxf { height: 110px; background: #f7f7f7; display: flex; align-items: center; justify-content: center; }
+  .part-dxf svg { width: 100%; height: 100%; }
+  .part-info { padding: 6px 8px; }
+  .part-num { font-family: monospace; font-weight: 700; font-size: 0.74rem; color: #1d4ed8; }
+  .part-qty { font-weight: 800; font-size: 0.82rem; float: right; }
+  .part-desc { font-size: 0.68rem; color: #666; margin-top: 2px; line-height: 1.3; }
+  @media print { body { padding: 10px; } .material-group { page-break-inside: avoid; } }
 </style></head><body>
 <h1>Cut List \u2014 ${batchName}</h1>
 <div class="subtitle">Printed ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}</div>`
 
+    // ── Tube groups ───────────────────────────────────────────────────────────
     for (const grp of tubeGroups) {
       const totalIn = grp.cuts.reduce((s, c) => s + (c.cutLengthIn ?? 0) * c.qty, 0)
-      const stockNeeded = grp.stockLengthIn
-        ? Math.ceil(totalIn / grp.stockLengthIn)
-        : null
-      const scrapIn = stockNeeded && grp.stockLengthIn
-        ? stockNeeded * grp.stockLengthIn - totalIn
-        : null
+      const stockNeeded = grp.stockLengthIn ? Math.ceil(totalIn / grp.stockLengthIn) : null
+      const scrapIn = stockNeeded && grp.stockLengthIn ? stockNeeded * grp.stockLengthIn - totalIn : null
       const totalPcs = grp.cuts.reduce((s, c) => s + c.qty, 0)
+      const partIds = [...new Set(grp.cuts.map((c) => c.partId))]
+      const colorMap: Record<string, string> = {}
+      partIds.forEach((id, i) => { colorMap[id] = PRINT_COLORS[i % PRINT_COLORS.length] })
 
       html += `<div class="material-group">
-<div class="material-header">
-  <div class="material-name">${grp.tubeOd ?? '?'} Tube \xd7 ${grp.tubeWall ?? '?'} wall</div>
-  <div class="material-stats">Stock: ${grp.stockLengthIn ? grp.stockLengthIn + '"' : 'unknown'} &nbsp;|&nbsp; ${totalPcs} pieces &nbsp;|&nbsp; ${totalIn.toFixed(1)}" total</div>
+<div class="material-header tube-header">
+  <div class="material-name">${grp.tubeOd ?? '?'} Tube &times; ${grp.tubeWall ?? '?'} wall</div>
+  <div class="material-stats">Stock: ${grp.stockLengthIn ? grp.stockLengthIn + '"' : 'unknown'} &nbsp;&bull;&nbsp; ${totalPcs} pieces &nbsp;&bull;&nbsp; ${totalIn.toFixed(1)}" total${stockNeeded != null ? ` &nbsp;&bull;&nbsp; <strong>${stockNeeded} bar${stockNeeded !== 1 ? 's' : ''} needed</strong>` : ''}</div>
 </div>
 <div class="section-label">Cuts</div>
 <table>
-<thead><tr><th style="width:90px">Part #</th><th>Description</th><th style="width:40px;text-align:center">Qty</th><th style="width:60px;text-align:right">Length</th><th style="width:60px;text-align:right">Total</th><th style="width:50px"></th></tr></thead>
+<thead><tr><th style="width:90px">Part #</th><th>Description</th><th style="width:40px;text-align:center">Qty</th><th style="width:64px;text-align:right">Length</th><th style="width:64px;text-align:right">Total</th><th style="width:50px"></th></tr></thead>
 <tbody>`
       for (const c of grp.cuts) {
         const rowClass = c.done ? ' class="done-row"' : ''
+        const dot = `<span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${colorMap[c.partId]};margin-right:5px;flex-shrink:0"></span>`
         const desc = (c.description ?? '').length > 42 ? (c.description ?? '').slice(0, 42) + '\u2026' : (c.description ?? '\u2014')
-        html += `<tr${rowClass}>
-  <td class="mono">${c.partNumber}</td>
-  <td>${desc}${c.saLabel ? `<br><span class="sa-label">${c.saLabel}</span>` : ''}</td>
-  <td style="text-align:center">${c.qty}&times;</td>
-  <td style="text-align:right">${c.cutLengthIn != null ? c.cutLengthIn + '"' : '\u2014'}</td>
-  <td style="text-align:right">${c.cutLengthIn != null ? (c.cutLengthIn * c.qty) + '"' : '\u2014'}</td>
-  <td>${c.requiresBend ? '<span class="bend-badge">BEND</span>' : ''}</td>
-</tr>`
+        html += `<tr${rowClass}><td class="mono">${dot}${c.partNumber}</td><td>${desc}${c.saLabel ? `<br><span class="sa-label">${c.saLabel}</span>` : ''}</td><td style="text-align:center">${c.qty}&times;</td><td style="text-align:right">${c.cutLengthIn != null ? c.cutLengthIn + '"' : '\u2014'}</td><td style="text-align:right">${c.cutLengthIn != null ? (c.cutLengthIn * c.qty) + '"' : '\u2014'}</td><td>${c.requiresBend ? '<span class="bend-badge">BEND</span>' : ''}</td></tr>`
       }
-      html += `</tbody>
-<tfoot><tr class="totals-row">
-  <td colspan="2">Total</td>
-  <td style="text-align:center">${totalPcs} pcs</td>
-  <td style="text-align:right" colspan="2">${totalIn.toFixed(1)}"</td>
-  <td></td>
-</tr></tfoot>
-</table>`
-      if (stockNeeded != null) {
-        html += `<div style="font-size:0.8rem;color:#555;margin-top:6px;padding:4px 0;">
-  Stock required: ${stockNeeded} \xd7 ${grp.stockLengthIn}" = ${(stockNeeded * (grp.stockLengthIn!)).toFixed(0)}" available &rarr; ${scrapIn?.toFixed(1)}" scrap
-</div>`
+      html += `</tbody><tfoot><tr class="totals-row"><td colspan="2">Total</td><td style="text-align:center">${totalPcs}&times;</td><td style="text-align:right" colspan="2">${totalIn.toFixed(1)}"</td><td></td></tr></tfoot></table>`
+
+      // Tube nesting diagram
+      if (grp.stockLengthIn && grp.stockLengthIn > 0) {
+        const bars = nestTubeCuts(grp.cuts, grp.stockLengthIn)
+        if (bars.length > 0) {
+          html += `<div class="nest-wrap"><div class="nest-title">Stock Layout &mdash; ${bars.length} bar${bars.length !== 1 ? 's' : ''}</div>`
+          for (let bi = 0; bi < bars.length; bi++) {
+            const bar = bars[bi]
+            const scrapLen = Math.max(0, grp.stockLengthIn - (bar.used - 0.125))
+            const scrapPct = (scrapLen / grp.stockLengthIn) * 100
+            html += `<div class="nest-bar-label">Bar ${bi + 1} / ${grp.stockLengthIn}"</div><div class="nest-bar">`
+            for (const seg of bar.segments) {
+              const pct = (seg.len / grp.stockLengthIn) * 100
+              const color = colorMap[seg.cut.partId]
+              const label = pct > 16 ? `${seg.cut.partNumber} &middot; ${seg.len}"` : pct > 7 ? `${seg.len}"` : ''
+              html += `<div style="width:${pct}%;background:${color};border-right:2px solid rgba(0,0,0,0.15);display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0"><span style="font-size:0.58rem;font-weight:700;color:#fff;white-space:nowrap;padding:0 3px;text-shadow:0 1px 2px rgba(0,0,0,0.4)">${label}</span></div>`
+            }
+            if (scrapPct > 0.5) {
+              html += `<div style="flex:1;background:#f0f0f0;display:flex;align-items:center;justify-content:center"><span style="font-size:0.58rem;color:#aaa;white-space:nowrap">${scrapPct > 5 ? scrapLen.toFixed(1) + '" scrap' : ''}</span></div>`
+            }
+            html += `</div>`
+          }
+          // Legend
+          html += `<div class="nest-legend">`
+          for (const c of grp.cuts) {
+            html += `<div class="nest-legend-item"><div class="nest-swatch" style="background:${colorMap[c.partId]}"></div>${c.partNumber}${c.cutLengthIn != null ? ` ${c.cutLengthIn}"` : ''} &times;${c.qty}</div>`
+          }
+          html += `</div></div>`
+        }
       }
 
-      // Bends sub-section
+      // Bends
       const bendParts = grp.cuts.filter((c) => c.requiresBend)
       if (bendParts.length > 0) {
-        html += `<div class="section-label">Bends</div>
-<table>
-<thead><tr><th style="width:90px">Part #</th><th>Description</th><th style="width:40px;text-align:center">Qty</th><th style="width:60px;text-align:right">Length</th></tr></thead>
-<tbody>`
+        html += `<div class="section-label">Bends</div><table><thead><tr><th style="width:90px">Part #</th><th>Description</th><th style="width:40px;text-align:center">Qty</th><th style="width:64px;text-align:right">Length</th></tr></thead><tbody>`
         for (const c of bendParts) {
           const desc = (c.description ?? '').length > 42 ? (c.description ?? '').slice(0, 42) + '\u2026' : (c.description ?? '\u2014')
           html += `<tr><td class="mono">${c.partNumber}</td><td>${desc}</td><td style="text-align:center">${c.qty}&times;</td><td style="text-align:right">${c.cutLengthIn != null ? c.cutLengthIn + '"' : '\u2014'}</td></tr>`
         }
         html += `</tbody></table>`
       }
-
       html += `</div>`
     }
 
+    // ── Sheet groups ──────────────────────────────────────────────────────────
     for (const sg of sheetGroups) {
       const totalPieces = sg.parts.reduce((s, p) => s + p.qty, 0)
       html += `<div class="material-group">
-<div class="material-header">
+<div class="material-header sheet-header">
   <div class="material-name">${sg.materialName}</div>
-  <div class="material-stats">${totalPieces} pieces needed</div>
+  <div class="material-stats">${totalPieces} pieces needed &nbsp;&bull;&nbsp; ${sg.parts.length} part${sg.parts.length !== 1 ? 's' : ''}</div>
 </div>
-<table>
-<thead><tr><th style="width:90px">Part #</th><th>Description</th><th style="width:100px;text-align:center">Pieces Needed</th></tr></thead>
-<tbody>`
+<div class="parts-grid">`
       for (const p of sg.parts) {
-        const rowClass = p.done ? ' class="done-row"' : ''
-        const desc = (p.description ?? '').length > 42 ? (p.description ?? '').slice(0, 42) + '\u2026' : (p.description ?? '\u2014')
-        html += `<tr${rowClass}>
-  <td class="mono">${p.partNumber}</td>
-  <td>${desc}</td>
-  <td style="text-align:center">${p.qty} pieces needed</td>
-</tr>`
+        const desc = (p.description ?? '').length > 36 ? (p.description ?? '').slice(0, 36) + '\u2026' : (p.description ?? '')
+        const svgContent = dxfSvgMap[p.partId] ?? `<div style="color:#ccc;font-size:0.7rem;text-align:center">${p.partNumber}<br>No preview</div>`
+        const hasSvg = !!dxfSvgMap[p.partId]
+        html += `<div class="part-card${p.done ? ' done' : ''}">
+  <div class="part-dxf" style="${hasSvg ? '' : 'align-items:center;justify-content:center;flex-direction:column;gap:4px'}">${svgContent}</div>
+  <div class="part-info">
+    <span class="part-num">${p.partNumber}</span><span class="part-qty">${p.done ? '✓' : '&times;' + p.qty}</span>
+    ${desc ? `<div class="part-desc">${desc}</div>` : ''}
+  </div>
+</div>`
       }
-      html += `</tbody></table></div>`
+      html += `</div></div>`
     }
 
     html += `<script>window.onload=function(){window.print()}<\/script></body></html>`
-    const w = window.open('', '_blank')
-    if (w) { w.document.write(html); w.document.close() }
+    w.document.open()
+    w.document.write(html)
+    w.document.close()
   }
 
   function exportBatchCypCut(wItems: Map<string, { part: Part; totalQty: number; subAssemblyId: string | null }>) {
@@ -1479,7 +1557,7 @@ export default function BatchesPage() {
                           type="button"
                           className="btn btn-secondary"
                           style={{ fontSize: '0.82rem' }}
-                          onClick={() => printCutList(tubeGroups, sheetGroups)}
+                          onClick={() => void printCutList(tubeGroups, sheetGroups)}
                         >
                           &#x1F5A8; Print Cut List
                         </button>
