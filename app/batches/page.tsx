@@ -2006,7 +2006,7 @@ export default function BatchesPage() {
                   /* ── Progress Table View ──────────────────────────────────── */
                   <>
                   {/* Part-first manufacturing checklist table */}
-                  <div className="mfg-table-wrap" style={{ overflowX: 'auto', overflowY: 'visible' }}>
+                  <div className="mfg-table-wrap" style={{ overflow: 'auto', maxHeight: 'calc(100vh - 300px)', minHeight: 300 }}>
                     <table className="mfg-table" style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
                       <colgroup>
                         <col style={{ width: 170 }} />
@@ -2062,7 +2062,7 @@ export default function BatchesPage() {
                           <>
                             {/* SA header row — sticky below the column header */}
                             <tr key={`sa-hdr-${saId}`} style={{ position: 'sticky', top: 52, zIndex: 10 }}>
-                              <td colSpan={2 + activeStages.length} style={{ padding: '7px 12px', background: 'rgba(20,20,30,0.97)', borderTop: '2px solid rgba(167,139,250,0.35)', borderBottom: '1px solid rgba(167,139,250,0.22)', boxShadow: '0 2px 8px rgba(0,0,0,0.25)' }}>
+                              <td colSpan={2 + activeStages.length} style={{ padding: '7px 12px', background: 'var(--panel-2)', borderTop: '2px solid #a78bfa', borderBottom: '1px solid var(--border)' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                                   {subAssembly.image_file ? (
                                     <img
