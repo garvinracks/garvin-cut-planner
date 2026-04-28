@@ -103,9 +103,9 @@ const STAGES = [
   { key: 'stage_laser',      stageKey: 'laser',      partKey: 'requires_laser',      label: 'Laser' },
   { key: 'stage_sheet_bend', stageKey: 'sheet_bend', partKey: 'requires_sheet_bend', label: 'Sheet Bend' },
   { key: 'stage_saw',        stageKey: 'saw',        partKey: 'requires_saw',        label: 'Saw' },
+  { key: 'stage_drill',      stageKey: 'drill',      partKey: 'requires_drill',      label: 'Drill Press' },
   { key: 'stage_notch',      stageKey: 'notch',      partKey: 'requires_notch',      label: 'Notch' },
   { key: 'stage_tube_bend',  stageKey: 'tube_bend',  partKey: 'requires_tube_bend',  label: 'Tube Bend' },
-  { key: 'stage_drill',      stageKey: 'drill',      partKey: 'requires_drill',      label: 'Drill Press' },
   { key: 'stage_weld',       stageKey: 'weld',       partKey: 'requires_weld',       label: 'Weld' },
 ] as const
 

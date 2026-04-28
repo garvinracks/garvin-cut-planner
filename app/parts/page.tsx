@@ -11,9 +11,9 @@ export const STAGE_KEYS = [
   'requires_laser',
   'requires_sheet_bend',
   'requires_saw',
+  'requires_drill',
   'requires_notch',
   'requires_tube_bend',
-  'requires_drill',
   'requires_weld',
 ] as const
 export type StageKey = typeof STAGE_KEYS[number]
@@ -22,9 +22,9 @@ export const STAGE_LABELS: Record<StageKey, string> = {
   requires_laser:      'Laser',
   requires_sheet_bend: 'Sheet Bend',
   requires_saw:        'Saw',
+  requires_drill:      'Drill Press',
   requires_notch:      'Notch',
   requires_tube_bend:  'Tube Bend',
-  requires_drill:      'Drill Press',
   requires_weld:       'Weld',
 }
 
