@@ -525,9 +525,19 @@ export default function BatchesPage() {
     workItems: Map<string, { part: Part; totalQty: number; subAssemblyId: string | null }>,
     subAssemblyGroupsForBatch: Map<string, { subAssembly: SubAssembly; items: Array<{ part: Part; totalQty: number }> }>
   ) {
+    // Deduplicate: same part can appear in multiple sub-assemblies, which would
+    // cause a unique-constraint violation when inserting the same row twice.
+    const seen = new Set<string>()
+    const uniqueItems = items.filter((i) => {
+      const k = `${i.id}:${i.stageKey}`
+      if (seen.has(k)) return false
+      seen.add(k)
+      return true
+    })
+
     const prevCompletions = new Set(completions)
     const newCompletions = new Set(completions)
-    const bulkKeys = items.map((i) => `${i.id}:${i.stageKey}`)
+    const bulkKeys = uniqueItems.map((i) => `${i.id}:${i.stageKey}`)
     if (checked) for (const k of bulkKeys) newCompletions.add(k)
     else for (const k of bulkKeys) newCompletions.delete(k)
     setCompletions(newCompletions)
@@ -536,7 +546,7 @@ export default function BatchesPage() {
 
     // Delete all first, then re-insert if checking
     let deleteErr: { message: string } | null = null
-    for (const item of items) {
+    for (const item of uniqueItems) {
       const { error } = await supabase.from('batch_part_completions').delete()
         .eq('batch_id', batchId).eq('part_id', item.id).eq('stage_key', item.stageKey)
       if (error) { deleteErr = error; break }
@@ -549,7 +559,7 @@ export default function BatchesPage() {
     }
     if (checked) {
       const { error } = await supabase.from('batch_part_completions')
-        .insert(items.map((item) => ({ batch_id: batchId, part_id: item.id, stage_key: item.stageKey })))
+        .insert(uniqueItems.map((item) => ({ batch_id: batchId, part_id: item.id, stage_key: item.stageKey })))
       if (error) {
         setCompletions(prevCompletions)
         setSaveError(`Save failed: ${error.message}. Please try again.`)
