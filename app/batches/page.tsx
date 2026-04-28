@@ -2006,7 +2006,7 @@ export default function BatchesPage() {
                   /* ── Progress Table View ──────────────────────────────────── */
                   <>
                   {/* Part-first manufacturing checklist table */}
-                  <div className="mfg-table-wrap" style={{ overflow: 'auto', maxHeight: 'calc(100vh - 300px)', minHeight: 300 }}>
+                  <div className="mfg-table-wrap" style={{ overflow: 'auto', maxHeight: 'calc(100vh - 160px)', minHeight: 300 }}>
                     <table className="mfg-table" style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
                       <colgroup>
                         <col style={{ width: 170 }} />
