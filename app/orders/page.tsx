@@ -440,7 +440,7 @@ export default function OrdersPage() {
   async function loadBatches() {
     const [{ data: bl }, { data: ab }] = await Promise.all([
       supabase.from('build_batch_lines').select('batch_id, sku_id'),
-      supabase.from('build_batches').select('id, name, status').in('status', ['planned', 'in_progress', 'at_powder']),
+      supabase.from('build_batches').select('id, name, status').in('status', ['draft', 'planned', 'in_progress', 'at_powder']),
     ])
     setBatchLines((bl ?? []) as BatchLine[])
     setActiveBatches((ab ?? []) as ActiveBatch[])
@@ -614,13 +614,42 @@ export default function OrdersPage() {
 
   function sendToBatch() {
     const selected = orders.filter((o) => selectedIds.has(o.id))
+
+    // Build the set of SKUs already present in any active batch (draft → at_powder)
+    const activeBatchIds = new Set(activeBatches.map((b) => b.id))
+    const skusInActiveBatches = new Set(
+      batchLines
+        .filter((bl) => activeBatchIds.has(bl.batch_id))
+        .map((bl) => bl.sku_id)
+    )
+
     const demand: Record<string, number> = {}
+    const skipped = new Set<string>()
+
     for (const order of selected) {
       for (const line of order.order_lines) {
         if (!line.sku_id) continue
+        if (skusInActiveBatches.has(line.sku_id)) {
+          skipped.add(line.sku_id)
+          continue
+        }
         demand[line.sku_id] = (demand[line.sku_id] ?? 0) + line.qty
       }
     }
+
+    if (Object.keys(demand).length === 0) {
+      alert('All SKUs from the selected orders are already in an active build batch — nothing to add.')
+      return
+    }
+
+    if (skipped.size > 0) {
+      const skippedList = Array.from(skipped).join(', ')
+      const ok = window.confirm(
+        `${skipped.size} SKU${skipped.size !== 1 ? 's' : ''} already exist in an active build batch and will be skipped:\n\n${skippedList}\n\nContinue with the remaining ${Object.keys(demand).length} SKU${Object.keys(demand).length !== 1 ? 's' : ''}?`
+      )
+      if (!ok) return
+    }
+
     const rows = Object.entries(demand).map(([skuId, qty]) => ({
       skuId, qty: String(qty), skuLookup: skuId,
     }))
