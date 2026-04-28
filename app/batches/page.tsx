@@ -2006,14 +2006,14 @@ export default function BatchesPage() {
                   /* ── Progress Table View ──────────────────────────────────── */
                   <>
                   {/* Part-first manufacturing checklist table */}
-                  <div className="mfg-table-wrap" style={{ overflowX: 'auto' }}>
+                  <div className="mfg-table-wrap" style={{ overflowX: 'auto', overflowY: 'visible' }}>
                     <table className="mfg-table" style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
                       <colgroup>
                         <col style={{ width: 170 }} />
                         <col style={{ width: 44 }} />
                         {activeStages.map((s) => <col key={s.stageKey} style={{ width: 84 }} />)}
                       </colgroup>
-                      <thead>
+                      <thead style={{ position: 'sticky', top: 0, zIndex: 20 }}>
                         <tr>
                           <th style={{ textAlign: 'left', padding: '8px 10px', background: 'var(--panel-2)', borderBottom: '2px solid var(--border)', fontSize: '0.72rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Part</th>
                           <th style={{ textAlign: 'center', padding: '8px 4px', background: 'var(--panel-2)', borderBottom: '2px solid var(--border)', fontSize: '0.72rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Qty</th>
@@ -2060,9 +2060,9 @@ export default function BatchesPage() {
                         {/* ── Sub-assembly groups ── */}
                         {Array.from(subAssemblyGroups.entries()).map(([saId, { subAssembly, items }]) => (
                           <>
-                            {/* SA header row */}
-                            <tr key={`sa-hdr-${saId}`}>
-                              <td colSpan={2 + activeStages.length} style={{ padding: '7px 12px', background: 'rgba(167,139,250,0.09)', borderTop: '2px solid rgba(167,139,250,0.22)', borderBottom: '1px solid var(--border)' }}>
+                            {/* SA header row — sticky below the column header */}
+                            <tr key={`sa-hdr-${saId}`} style={{ position: 'sticky', top: 52, zIndex: 10 }}>
+                              <td colSpan={2 + activeStages.length} style={{ padding: '7px 12px', background: 'rgba(20,20,30,0.97)', borderTop: '2px solid rgba(167,139,250,0.35)', borderBottom: '1px solid rgba(167,139,250,0.22)', boxShadow: '0 2px 8px rgba(0,0,0,0.25)' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                                   {subAssembly.image_file ? (
                                     <img
