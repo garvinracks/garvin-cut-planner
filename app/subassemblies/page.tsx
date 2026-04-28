@@ -282,6 +282,7 @@ export default function SubassembliesPage() {
       requires_weld: item.requires_weld,
     })
     setMessage('')
+    window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
   function duplicateSubassembly(item: SubAssembly) {

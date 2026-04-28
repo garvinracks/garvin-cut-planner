@@ -413,6 +413,7 @@ export default function PartsPage() {
 
   function startEdit(part: Part) {
     setEditingId(part.id)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
     setSelectedDxfFile(null)
     setWeightUnit('lbs')
     setForm({
