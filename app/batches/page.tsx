@@ -840,9 +840,24 @@ export default function BatchesPage() {
     })
 
     // --- Sheet groups (grouped by material + thickness) ---
-    const sheetGroupMap = new Map<string, SheetCutListGroup>()
+    // Step 1: aggregate total qty per part across all wItems entries.
+    // Key by part_number so that duplicate part records in the DB (same number,
+    // different UUID) and the same part appearing in multiple sub-assemblies are
+    // both collapsed into a single row.
+    const sheetPartAgg = new Map<string, { part: Part; totalQty: number }>()
     for (const { part, totalQty } of wItems.values()) {
       if (part.part_type !== 'sheet') continue
+      const existing = sheetPartAgg.get(part.part_number)
+      if (existing) {
+        existing.totalQty += totalQty
+      } else {
+        sheetPartAgg.set(part.part_number, { part, totalQty })
+      }
+    }
+
+    // Step 2: group the aggregated parts by material
+    const sheetGroupMap = new Map<string, SheetCutListGroup>()
+    for (const { part, totalQty } of sheetPartAgg.values()) {
       // Match by ID, material grade, name, or thickness (legacy)
       const mat = materials.find(
         (m) => m.material_type === 'sheet' && (
@@ -862,21 +877,15 @@ export default function BatchesPage() {
       if (!sheetGroupMap.has(groupKey)) {
         sheetGroupMap.set(groupKey, { materialId: groupKey, materialName: matName, thickness, parts: [] })
       }
-      // Deduplicate: same part in multiple sub-assemblies → merge qty into one card
-      const existingPart = sheetGroupMap.get(groupKey)!.parts.find((p) => p.partId === part.id)
-      if (existingPart) {
-        existingPart.qty += totalQty
-      } else {
-        sheetGroupMap.get(groupKey)!.parts.push({
-          partId: part.id,
-          partNumber: part.part_number,
-          description: part.description,
-          dxfFile: part.dxf_file,
-          qty: totalQty,
-          done: comps.has(`${part.id}:laser`) || comps.has(`${part.id}:sheet_bend`),
-          requiresLaser: part.requires_laser,
-        })
-      }
+      sheetGroupMap.get(groupKey)!.parts.push({
+        partId: part.id,
+        partNumber: part.part_number,
+        description: part.description,
+        dxfFile: part.dxf_file,
+        qty: totalQty,
+        done: comps.has(`${part.id}:laser`) || comps.has(`${part.id}:sheet_bend`),
+        requiresLaser: part.requires_laser,
+      })
     }
     const sheetGroups = Array.from(sheetGroupMap.values())
 
