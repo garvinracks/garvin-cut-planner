@@ -1881,7 +1881,7 @@ export default function BatchesPage() {
                                     <label style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 6, cursor: 'pointer' }}>
                                       <input
                                         type="checkbox"
-                                        checked={comps.has(`${p.partId}:laser`)}
+                                        checked={completions.has(`${p.partId}:laser`)}
                                         disabled={savingKeys.has(`${p.partId}:laser`)}
                                         onChange={(e) => void handleToggle(
                                           activeBatch.id, p.partId, 'laser', e.target.checked,
@@ -1889,8 +1889,8 @@ export default function BatchesPage() {
                                         )}
                                         style={{ width: 14, height: 14, accentColor: 'var(--success)' }}
                                       />
-                                      <span style={{ fontSize: '0.68rem', color: comps.has(`${p.partId}:laser`) ? 'var(--success)' : 'var(--muted)', fontWeight: 600 }}>
-                                        {comps.has(`${p.partId}:laser`) ? '✓ Lasered' : 'Mark lasered'}
+                                      <span style={{ fontSize: '0.68rem', color: completions.has(`${p.partId}:laser`) ? 'var(--success)' : 'var(--muted)', fontWeight: 600 }}>
+                                        {completions.has(`${p.partId}:laser`) ? '✓ Lasered' : 'Mark lasered'}
                                       </span>
                                     </label>
                                   )}
