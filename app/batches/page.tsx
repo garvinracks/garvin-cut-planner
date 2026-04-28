@@ -98,8 +98,8 @@ type View = 'list' | 'create' | 'detail' | 'traveler'
 const STAGES = [
   { key: 'stage_laser',      stageKey: 'laser',      partKey: 'requires_laser',      label: 'Laser' },
   { key: 'stage_sheet_bend', stageKey: 'sheet_bend', partKey: 'requires_sheet_bend', label: 'Sheet Bend' },
-  { key: 'stage_tube_bend',  stageKey: 'tube_bend',  partKey: 'requires_tube_bend',  label: 'Tube Bend' },
   { key: 'stage_saw',        stageKey: 'saw',        partKey: 'requires_saw',        label: 'Saw' },
+  { key: 'stage_tube_bend',  stageKey: 'tube_bend',  partKey: 'requires_tube_bend',  label: 'Tube Bend' },
   { key: 'stage_drill',      stageKey: 'drill',      partKey: 'requires_drill',      label: 'Drill Press' },
   { key: 'stage_weld',       stageKey: 'weld',       partKey: 'requires_weld',       label: 'Weld' },
 ] as const
@@ -1599,8 +1599,22 @@ export default function BatchesPage() {
 
                             {/* Cuts sub-section */}
                             <div style={{ padding: '0 0 4px' }}>
-                              <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--muted)', padding: '8px 16px 4px', borderBottom: '1px solid var(--border)' }}>
-                                Cuts
+                              <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--muted)', padding: '8px 16px 4px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <span>Cuts</span>
+                                <div style={{ display: 'flex', gap: 6 }}>
+                                  {grp.cuts.some((c) => !c.done) && (
+                                    <button type="button" className="btn btn-secondary" style={{ fontSize: '0.6rem', padding: '1px 7px', height: 20 }}
+                                      onClick={() => void handleBulkToggle(activeBatch.id, grp.cuts.map((c) => ({ id: c.partId, stageKey: 'saw' })), true, workItems, subAssemblyGroups)}>
+                                      ✓ All Sawn
+                                    </button>
+                                  )}
+                                  {grp.cuts.some((c) => c.done) && (
+                                    <button type="button" className="btn btn-secondary" style={{ fontSize: '0.6rem', padding: '1px 7px', height: 20 }}
+                                      onClick={() => void handleBulkToggle(activeBatch.id, grp.cuts.map((c) => ({ id: c.partId, stageKey: 'saw' })), false, workItems, subAssemblyGroups)}>
+                                      ✕ Clear
+                                    </button>
+                                  )}
+                                </div>
                               </div>
                               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                                 <thead>
@@ -1624,8 +1638,17 @@ export default function BatchesPage() {
                                         opacity: cut.done ? 0.6 : 1,
                                       }}
                                     >
-                                      <td style={{ padding: '8px 8px 8px 16px', fontSize: '1rem', textAlign: 'center', verticalAlign: 'middle' }}>
-                                        {cut.done ? '☑' : '☐'}
+                                      <td style={{ padding: '8px 8px 8px 16px', textAlign: 'center', verticalAlign: 'middle' }}>
+                                        <input
+                                          type="checkbox"
+                                          checked={cut.done}
+                                          disabled={savingKeys.has(`${cut.partId}:saw`)}
+                                          onChange={(e) => void handleToggle(
+                                            activeBatch.id, cut.partId, 'saw', e.target.checked,
+                                            workItems, subAssemblyGroups
+                                          )}
+                                          style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--success)' }}
+                                        />
                                       </td>
                                       <td style={{ padding: '8px', fontFamily: 'monospace', fontWeight: 700, fontSize: '0.82rem', verticalAlign: 'middle', color: 'var(--text-1)' }}>
                                         {cut.partNumber}
