@@ -488,8 +488,16 @@ export default function BatchesPage() {
     setSaveError('')
 
     // Always delete first (avoids duplicate-key issues regardless of DB constraints)
-    await supabase.from('batch_part_completions').delete()
+    const { error: deleteError } = await supabase.from('batch_part_completions').delete()
       .eq('batch_id', batchId).eq('part_id', itemId).eq('stage_key', stageKey)
+
+    if (deleteError) {
+      // Rollback optimistic uncheck
+      setCompletions(prevCompletions)
+      setSaveError(`Save failed: ${deleteError.message}. Please try again.`)
+      setSavingKeys((prev) => { const next = new Set(prev); next.delete(key); return next })
+      return
+    }
 
     if (checked) {
       const { error } = await supabase.from('batch_part_completions')
@@ -527,9 +535,17 @@ export default function BatchesPage() {
     setSaveError('')
 
     // Delete all first, then re-insert if checking
+    let deleteErr: { message: string } | null = null
     for (const item of items) {
-      await supabase.from('batch_part_completions').delete()
+      const { error } = await supabase.from('batch_part_completions').delete()
         .eq('batch_id', batchId).eq('part_id', item.id).eq('stage_key', item.stageKey)
+      if (error) { deleteErr = error; break }
+    }
+    if (deleteErr) {
+      setCompletions(prevCompletions)
+      setSaveError(`Save failed: ${deleteErr.message}. Please try again.`)
+      setSavingKeys((prev) => { const next = new Set(prev); for (const k of bulkKeys) next.delete(k); return next })
+      return
     }
     if (checked) {
       const { error } = await supabase.from('batch_part_completions')
@@ -1073,6 +1089,27 @@ export default function BatchesPage() {
 
     const batchName = activeBatch?.name ?? 'batch'
     const folder = cypCutFolder.trim().replace(/[/\\]+$/, '')  // strip trailing slashes
+
+    // ── Missing DXF warnings ─────────────────────────────────────────────────
+    const missingDxf = Array.from(partTotals.values()).filter(({ part }) => !part.dxf_file)
+    const missingPath = folder
+      ? Array.from(partTotals.values()).filter(({ part }) => part.dxf_file && !folder)
+      : []
+
+    if (missingDxf.length > 0) {
+      const names = missingDxf.map(({ part }) => part.part_number).join(', ')
+      const proceed = window.confirm(
+        `⚠️ ${missingDxf.length} part${missingDxf.length !== 1 ? 's' : ''} have no DXF file assigned:\n\n${names}\n\nThese will have a blank file path in the export and CypCut won't be able to load them.\n\nContinue anyway?`
+      )
+      if (!proceed) return
+    }
+
+    if (!folder) {
+      const proceed = window.confirm(
+        `⚠️ No DXF folder is set.\n\nThe export will use bare filenames (e.g. "34711.dxf") instead of absolute paths. CypCut may not be able to find the files.\n\nSet the DXF folder path above, or continue anyway?`
+      )
+      if (!proceed) return
+    }
 
     const rows = Array.from(partTotals.values()).map(({ part, totalQty }) => {
       const bare = part.dxf_file ?? ''
@@ -1837,13 +1874,51 @@ export default function BatchesPage() {
                       })}
 
                       {/* Sheet parts groups — card grid with DXF previews */}
-                      {sheetGroups.length > 0 && sheetGroups.map((sg) => (
+                      {sheetGroups.length > 0 && sheetGroups.map((sg) => {
+                        const laserParts = sg.parts.filter((p) => p.requiresLaser)
+                        const allLasered = laserParts.length > 0 && laserParts.every((p) => completions.has(`${p.partId}:laser`))
+                        const anyLasered = laserParts.some((p) => completions.has(`${p.partId}:laser`))
+                        return (
                         <div key={sg.materialId} style={{ marginBottom: 28, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
-                          <div style={{ background: 'var(--panel-2)', borderBottom: '1px solid var(--border)', padding: '10px 16px', borderLeft: '4px solid #60a5fa' }}>
-                            <div style={{ fontWeight: 800, fontSize: '1rem' }}>{sg.materialName}</div>
-                            <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 2 }}>
-                              {sg.parts.reduce((s, p) => s + p.qty, 0)} pieces needed · {sg.parts.length} part{sg.parts.length !== 1 ? 's' : ''}
+                          <div style={{ background: 'var(--panel-2)', borderBottom: '1px solid var(--border)', padding: '10px 16px', borderLeft: '4px solid #60a5fa', display: 'flex', alignItems: 'center', gap: 12 }}>
+                            <div style={{ flex: 1 }}>
+                              <div style={{ fontWeight: 800, fontSize: '1rem' }}>{sg.materialName}</div>
+                              <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 2 }}>
+                                {sg.parts.reduce((s, p) => s + p.qty, 0)} pieces needed · {sg.parts.length} part{sg.parts.length !== 1 ? 's' : ''}
+                              </div>
                             </div>
+                            {laserParts.length > 0 && (
+                              <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                                {!allLasered && (
+                                  <button
+                                    type="button"
+                                    className="btn btn-secondary"
+                                    style={{ fontSize: '0.68rem', padding: '2px 9px', height: 24 }}
+                                    onClick={() => void handleBulkToggle(
+                                      activeBatch.id,
+                                      laserParts.map((p) => ({ id: p.partId, stageKey: 'laser' })),
+                                      true, workItems, subAssemblyGroups
+                                    )}
+                                  >
+                                    ✓ All Lasered
+                                  </button>
+                                )}
+                                {anyLasered && (
+                                  <button
+                                    type="button"
+                                    className="btn btn-secondary"
+                                    style={{ fontSize: '0.68rem', padding: '2px 9px', height: 24 }}
+                                    onClick={() => void handleBulkToggle(
+                                      activeBatch.id,
+                                      laserParts.map((p) => ({ id: p.partId, stageKey: 'laser' })),
+                                      false, workItems, subAssemblyGroups
+                                    )}
+                                  >
+                                    ✕ Clear
+                                  </button>
+                                )}
+                              </div>
+                            )}
                           </div>
                           <div style={{ padding: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 10 }}>
                             {sg.parts.map((p) => (
@@ -1899,7 +1974,8 @@ export default function BatchesPage() {
                             ))}
                           </div>
                         </div>
-                      ))}
+                        )
+                      })}
                     </div>
                   ) : (
                   /* ── Progress Table View ──────────────────────────────────── */
