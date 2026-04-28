@@ -404,7 +404,7 @@ export default function BatchesPage() {
         (part.part_type === 'tube'
           ? m.tube_od === part.tube_od && m.tube_wall === part.tube_wall
           : m.id === part.material ||
-            (m.material != null && m.material === part.material) ||
+            (m.material != null && m.material === part.material && m.thickness === part.thickness) ||
             (m.name != null && m.name === part.material) ||
             m.thickness === part.material)
       )
@@ -806,7 +806,7 @@ export default function BatchesPage() {
       const mat = materials.find(
         (m) => m.material_type === 'sheet' && (
           m.id === part.material ||
-          (m.material != null && m.material === part.material) ||
+          (m.material != null && m.material === part.material && m.thickness === part.thickness) ||
           (m.name != null && m.name === part.material) ||
           m.thickness === part.material
         )
