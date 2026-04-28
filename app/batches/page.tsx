@@ -852,15 +852,21 @@ export default function BatchesPage() {
       if (!sheetGroupMap.has(groupKey)) {
         sheetGroupMap.set(groupKey, { materialId: groupKey, materialName: matName, thickness, parts: [] })
       }
-      sheetGroupMap.get(groupKey)!.parts.push({
-        partId: part.id,
-        partNumber: part.part_number,
-        description: part.description,
-        dxfFile: part.dxf_file,
-        qty: totalQty,
-        done: comps.has(`${part.id}:laser`) || comps.has(`${part.id}:sheet_bend`),
-        requiresLaser: part.requires_laser,
-      })
+      // Deduplicate: same part in multiple sub-assemblies → merge qty into one card
+      const existingPart = sheetGroupMap.get(groupKey)!.parts.find((p) => p.partId === part.id)
+      if (existingPart) {
+        existingPart.qty += totalQty
+      } else {
+        sheetGroupMap.get(groupKey)!.parts.push({
+          partId: part.id,
+          partNumber: part.part_number,
+          description: part.description,
+          dxfFile: part.dxf_file,
+          qty: totalQty,
+          done: comps.has(`${part.id}:laser`) || comps.has(`${part.id}:sheet_bend`),
+          requiresLaser: part.requires_laser,
+        })
+      }
     }
     const sheetGroups = Array.from(sheetGroupMap.values())
 
