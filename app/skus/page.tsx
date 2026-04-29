@@ -1961,9 +1961,19 @@ export default function SkusPage() {
                                   </div>
                                 </div>
 
-                                <span style={{ fontSize: '0.82rem', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
-                                  ×{row.qty}
-                                </span>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', flexShrink: 0 }}>
+                                  <span style={{ fontSize: '0.82rem', color: 'var(--muted)' }}>×</span>
+                                  <input
+                                    className="field-sm"
+                                    defaultValue={row.qty}
+                                    onBlur={(e) => {
+                                      const v = Number(e.target.value)
+                                      if (v > 0 && v !== row.qty) void handleUpdateSkuSubassemblyQty(row.id, v)
+                                    }}
+                                    style={{ width: 48, textAlign: 'center' }}
+                                    title="Sub-assembly quantity"
+                                  />
+                                </div>
 
                                 {(row.requires_weld || fullSa?.requires_weld) && (
                                   <span
