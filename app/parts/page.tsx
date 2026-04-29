@@ -1326,7 +1326,9 @@ export default function PartsPage() {
                   }}>
                     {group.map((part) => {
                       const isActive  = editingId === part.id
-                      const isSquare  = part.tube_shape === 'square' || (part.tube_od ?? '').toLowerCase().includes('x')
+                      const isSquare  = part.tube_shape === 'square'
+                        || (part.tube_od ?? '').toLowerCase().includes('x')
+                        || (part.material ?? '').toLowerCase().startsWith('square')
                       const dims      = ptype === 'sheet'
                         ? [part.thickness, part.material].filter(Boolean).join(' · ')
                         : [part.tube_od, part.tube_wall, part.material].filter(Boolean).join(' · ')

@@ -2101,7 +2101,7 @@ export default function SkusPage() {
                                                     tubeOd={subRow.tube_od ?? undefined}
                                                     tubeWall={subRow.tube_wall ?? undefined}
                                                     cutLength={subRow.cut_length ?? undefined}
-                                                    tubeShape={subRow.tube_shape === 'square' || (subRow.tube_od ?? '').toLowerCase().includes('x') ? 'square' : 'round'}
+                                                    tubeShape={subRow.tube_shape === 'square' || (subRow.tube_od ?? '').toLowerCase().includes('x') || (subRow.material ?? '').toLowerCase().startsWith('square') ? 'square' : 'round'}
                                                   />
                                                 </td>
                                                 <td style={{ fontWeight: 700, fontFamily: 'monospace', fontSize: '0.83rem' }}>
@@ -2263,7 +2263,7 @@ export default function SkusPage() {
                                       tubeOd={row.tube_od ?? undefined}
                                       tubeWall={row.tube_wall ?? undefined}
                                       cutLength={row.cut_length ?? undefined}
-                                      tubeShape={row.tube_shape === 'square' || (row.tube_od ?? '').toLowerCase().includes('x') ? 'square' : 'round'}
+                                      tubeShape={row.tube_shape === 'square' || (row.tube_od ?? '').toLowerCase().includes('x') || (row.material ?? '').toLowerCase().startsWith('square') ? 'square' : 'round'}
                                     />
                                   </td>
                                   <td style={{ fontWeight: 700, fontFamily: 'monospace', fontSize: '0.83rem' }}>
@@ -2349,7 +2349,7 @@ export default function SkusPage() {
                                       tubeOd={row.tube_od ?? undefined}
                                       tubeWall={row.tube_wall ?? undefined}
                                       cutLength={row.cut_length ?? undefined}
-                                      tubeShape={row.tube_shape === 'square' || (row.tube_od ?? '').toLowerCase().includes('x') ? 'square' : 'round'}
+                                      tubeShape={row.tube_shape === 'square' || (row.tube_od ?? '').toLowerCase().includes('x') || (row.material ?? '').toLowerCase().startsWith('square') ? 'square' : 'round'}
                                     />
                                   </td>
                                   <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>{row.part_number}</td>

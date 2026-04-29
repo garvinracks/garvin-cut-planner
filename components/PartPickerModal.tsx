@@ -13,6 +13,7 @@ export type PickablePart = {
   thickness: string | null
   tube_od: string | null
   tube_wall: string | null
+  tube_shape: string | null
   cut_length: number | null
 }
 
@@ -259,7 +260,9 @@ function PartCard({
   previewHeight: number
 }) {
   const isSheet = part.part_type === 'sheet'
-  const isSquare = (part.tube_od ?? '').toLowerCase().includes('x')
+  const isSquare = part.tube_shape === 'square'
+    || (part.tube_od ?? '').toLowerCase().includes('x')
+    || (part.material ?? '').toLowerCase().startsWith('square')
 
   const typeColor = isSheet
     ? { bg: 'rgba(100,160,220,0.15)', text: '#7ab4e8', border: 'rgba(100,160,220,0.25)' }
