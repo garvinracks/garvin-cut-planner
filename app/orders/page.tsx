@@ -1335,8 +1335,20 @@ export default function OrdersPage() {
                         const totalQty     = order.order_lines.reduce((s, l) => s + l.qty, 0)
                         const linesWithSku    = order.order_lines.filter((l) => l.sku_id)
                         const linesInBatch    = linesWithSku.filter((l) => l.sku_id && skuBatchStatus[l.sku_id])
-                        const unbatchedLines  = linesWithSku.filter((l) => l.sku_id && !skuBatchStatus[l.sku_id])
-                        const allBatched      = linesWithSku.length > 0 && linesInBatch.length === linesWithSku.length
+                        // A line is "covered" if it's in a batch OR has enough stock on hand
+                        const linesCovered    = linesWithSku.filter((l) => {
+                          if (!l.sku_id) return false
+                          if (skuBatchStatus[l.sku_id]) return true
+                          const onHand = inventory.find((i) => i.sku_id === l.sku_id)?.qty_on_hand ?? 0
+                          return onHand >= l.qty
+                        })
+                        // Only flag as "needs build" if NOT in a batch AND stock is insufficient
+                        const unbatchedLines  = linesWithSku.filter((l) => {
+                          if (!l.sku_id || skuBatchStatus[l.sku_id]) return false
+                          const onHand = inventory.find((i) => i.sku_id === l.sku_id)?.qty_on_hand ?? 0
+                          return onHand < l.qty
+                        })
+                        const allBatched      = linesWithSku.length > 0 && linesCovered.length === linesWithSku.length
                         const someBatched     = linesInBatch.length > 0 && !allBatched
                         const orderBatchStatuses = linesInBatch.map((l) => skuBatchStatus[l.sku_id!])
                         const topBatch = orderBatchStatuses.sort((a, b) =>
@@ -1445,14 +1457,16 @@ export default function OrdersPage() {
                                     </span>
                                   )}
                                   {isMultiSku && someBatched && (
-                                    /* Partial — warning badge + list unbatched SKUs inline */
+                                    /* Partial — warning badge + list only truly-unbuildable SKUs */
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                                       <span style={{ background: 'rgba(234,179,8,0.15)', color: '#facc15', borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700 }}>
-                                        ⚠ {linesInBatch.length}/{linesWithSku.length} in build
+                                        ⚠ {linesCovered.length}/{linesWithSku.length} covered
                                       </span>
-                                      <span style={{ fontSize: '0.68rem', color: 'var(--danger)', fontFamily: 'monospace', lineHeight: 1.4 }}>
-                                        {unbatchedLines.map((l) => l.ss_sku).join(', ')} needs build
-                                      </span>
+                                      {unbatchedLines.length > 0 && (
+                                        <span style={{ fontSize: '0.68rem', color: 'var(--danger)', fontFamily: 'monospace', lineHeight: 1.4 }}>
+                                          {unbatchedLines.map((l) => l.ss_sku).join(', ')} needs build
+                                        </span>
+                                      )}
                                     </div>
                                   )}
                                   {(!isMultiSku || (!allBatched && !someBatched)) && topBatch && (
