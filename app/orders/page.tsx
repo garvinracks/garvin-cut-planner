@@ -811,6 +811,7 @@ export default function OrdersPage() {
   }, [batchLines, activeBatches])
 
   const BATCH_STATUS_STYLE: Record<string, { label: string; bg: string; color: string }> = {
+    draft:       { label: 'Draft Batch', bg: 'rgba(100,116,139,0.2)', color: '#94a3b8' },
     planned:     { label: 'Planned',     bg: 'rgba(100,116,139,0.2)', color: '#94a3b8' },
     in_progress: { label: 'In Build',    bg: 'rgba(234,179,8,0.2)',   color: '#facc15' },
     at_powder:   { label: 'At Powder',   bg: 'rgba(167,139,250,0.2)', color: '#a78bfa' },
@@ -1557,15 +1558,26 @@ export default function OrdersPage() {
             /* ── By SKU view ─────────────────────────────────────────────────── */
             <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
               {skuGroupList.map((group) => {
-                const totalQty = group.orders.reduce((s, r) => s + r.qty, 0)
-                const inv      = inventory.find((i) => i.sku_id === group.sku_id)
-                const onHand   = inv?.qty_on_hand ?? 0
+                const totalQty   = group.orders.reduce((s, r) => s + r.qty, 0)
+                const inv        = inventory.find((i) => i.sku_id === group.sku_id)
+                const onHand     = inv?.qty_on_hand ?? 0
+                const groupBatch = skuBatchStatus[group.sku_id] ?? null
+                const isLocked   = groupBatch !== null
                 return (
-                  <div key={group.sku_id} style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+                  <div key={group.sku_id} style={{ border: `1px solid ${isLocked ? 'rgba(100,116,139,0.3)' : 'var(--border)'}`, borderRadius: 8, overflow: 'hidden', opacity: isLocked ? 0.65 : 1 }}>
                     {/* SKU group header */}
                     <div style={{ background: 'var(--panel-2)', padding: '10px 16px', display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
                       <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '0.9rem' }}>{group.sku_id}</span>
                       <span style={{ color: 'var(--text-2)', fontSize: '0.84rem' }}>{group.description}</span>
+                      {isLocked && (
+                        <span style={{
+                          background: BATCH_STATUS_STYLE[groupBatch.status]?.bg ?? 'rgba(100,116,139,0.2)',
+                          color: BATCH_STATUS_STYLE[groupBatch.status]?.color ?? '#94a3b8',
+                          borderRadius: 20, padding: '2px 10px', fontSize: '0.74rem', fontWeight: 700,
+                        }}>
+                          🔒 {BATCH_STATUS_STYLE[groupBatch.status]?.label ?? groupBatch.status} · {groupBatch.batchName}
+                        </span>
+                      )}
                       <div style={{ marginLeft: 'auto', display: 'flex', gap: 14, fontSize: '0.8rem' }}>
                         <span><strong style={{ color: 'var(--danger)' }}>{totalQty}</strong> <span style={{ color: 'var(--muted)' }}>needed</span></span>
                         <span><strong style={{ color: onHand > 0 ? 'var(--success)' : 'var(--muted)' }}>{onHand}</strong> <span style={{ color: 'var(--muted)' }}>on hand</span></span>
@@ -1580,9 +1592,11 @@ export default function OrdersPage() {
                       <thead>
                         <tr>
                           <th style={{ width: 32 }}>
-                            <input type="checkbox" style={{ cursor: 'pointer' }}
-                              checked={group.orders.every((r) => selectedIds.has(r.order.id))}
+                            <input type="checkbox" style={{ cursor: isLocked ? 'not-allowed' : 'pointer' }}
+                              disabled={isLocked}
+                              checked={!isLocked && group.orders.every((r) => selectedIds.has(r.order.id))}
                               onChange={() => {
+                                if (isLocked) return
                                 const allSelected = group.orders.every((r) => selectedIds.has(r.order.id))
                                 setSelectedIds((prev) => {
                                   const next = new Set(prev)
@@ -1609,11 +1623,12 @@ export default function OrdersPage() {
                           // For By-SKU view, the group is already filtered to a single SKU
                           const lineSkuBatch = skuBatchStatus[group.sku_id] ?? null
                           return (
-                            <tr key={order.id} style={{ background: selectedIds.has(order.id) ? 'var(--accent-soft)' : 'transparent' }}>
+                            <tr key={order.id} style={{ background: !isLocked && selectedIds.has(order.id) ? 'var(--accent-soft)' : 'transparent' }}>
                               <td>
-                                <input type="checkbox" style={{ cursor: 'pointer' }}
-                                  checked={selectedIds.has(order.id)}
-                                  onChange={() => toggleSelect(order.id)} />
+                                <input type="checkbox" style={{ cursor: isLocked ? 'not-allowed' : 'pointer' }}
+                                  disabled={isLocked}
+                                  checked={!isLocked && selectedIds.has(order.id)}
+                                  onChange={() => { if (!isLocked) toggleSelect(order.id) }} />
                               </td>
                               <td style={{ fontWeight: 700 }}>{order.order_number}</td>
                               <td>

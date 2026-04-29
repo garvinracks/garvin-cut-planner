@@ -1518,11 +1518,13 @@ export default function SkusPage() {
       return qty * (part.cut_length / mat.stock_length_in) * latestPrice
     }
 
-    // Sheet: weight-based with scrap rate
+    // Sheet: weight-based with scrap rate.
+    // Divide by (1 - scrap) rather than multiply by (1 + scrap): if 16% of the sheet
+    // is wasted, you need to purchase 1/0.84 = 1.190× the net weight, not 1.16×.
     if (!part.weight_lbs || !mat.unit_weight_lbs) return null
     const costPerLb = latestPrice / mat.unit_weight_lbs
-    const scrap = mat.scrap_rate ?? 0
-    return qty * part.weight_lbs * costPerLb * (1 + scrap)
+    const scrap = Math.min(mat.scrap_rate ?? 0, 0.99)
+    return qty * part.weight_lbs * costPerLb / (1 - scrap)
   }
 
   const matEstCost: number | null = (() => {
