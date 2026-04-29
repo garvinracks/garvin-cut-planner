@@ -127,7 +127,7 @@ export default function SubAssemblyPickerModal({ subassemblies, onSelect, onClos
                     textAlign: 'left',
                     transition: 'border-color 0.13s, background 0.13s',
                     width: '100%',
-                    overflow: 'hidden',
+                    overflow: 'visible',
                   }}
                   onMouseEnter={(e) => {
                     e.currentTarget.style.borderColor = 'var(--accent)'
@@ -139,23 +139,19 @@ export default function SubAssemblyPickerModal({ subassemblies, onSelect, onClos
                   }}
                 >
                   {/* Image / placeholder */}
-                  <div style={{ width: '100%', height: 130, minHeight: 130, flexShrink: 0, background: 'var(--panel)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', position: 'relative' }}>
-                    {imgUrl ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={imgUrl}
-                        alt={sa.name}
-                        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
-                        onError={(e) => {
-                          const el = e.currentTarget
-                          el.style.display = 'none'
-                          if (el.parentElement) el.parentElement.innerHTML = '<span style="font-size:2rem;opacity:0.25">🔧</span>'
-                        }}
-                      />
-                    ) : (
-                      <span style={{ fontSize: '2rem', opacity: 0.2 }}>🔧</span>
-                    )}
-                  </div>
+                  {imgUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={imgUrl}
+                      alt={sa.name}
+                      style={{ width: '100%', height: 130, objectFit: 'cover', display: 'block', borderRadius: '8px 8px 0 0', flexShrink: 0 }}
+                      onError={(e) => { e.currentTarget.style.display = 'none' }}
+                    />
+                  ) : (
+                    <div style={{ width: '100%', height: 130, flexShrink: 0, background: 'var(--panel)', borderRadius: '8px 8px 0 0', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <span style={{ fontSize: '2rem', opacity: 0.4 }}>🔧</span>
+                    </div>
+                  )}
 
                   {/* Info */}
                   <div style={{ padding: '10px 11px 11px', display: 'flex', flexDirection: 'column', gap: 4 }}>
