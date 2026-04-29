@@ -1333,9 +1333,12 @@ export default function OrdersPage() {
                         const alloc        = status ? ALLOC_STYLE[status] : null
                         const chStyle      = CH_STYLE[order.channel] ?? CH_STYLE.shopify
                         const totalQty     = order.order_lines.reduce((s, l) => s + l.qty, 0)
-                        const orderBatchStatuses = order.order_lines
-                          .filter((l) => l.sku_id && skuBatchStatus[l.sku_id])
-                          .map((l) => skuBatchStatus[l.sku_id!])
+                        const linesWithSku    = order.order_lines.filter((l) => l.sku_id)
+                        const linesInBatch    = linesWithSku.filter((l) => l.sku_id && skuBatchStatus[l.sku_id])
+                        const unbatchedLines  = linesWithSku.filter((l) => l.sku_id && !skuBatchStatus[l.sku_id])
+                        const allBatched      = linesWithSku.length > 0 && linesInBatch.length === linesWithSku.length
+                        const someBatched     = linesInBatch.length > 0 && !allBatched
+                        const orderBatchStatuses = linesInBatch.map((l) => skuBatchStatus[l.sku_id!])
                         const topBatch = orderBatchStatuses.sort((a, b) =>
                           (STATUS_PRIORITY[b.status] ?? 0) - (STATUS_PRIORITY[a.status] ?? 0)
                         )[0]
@@ -1427,8 +1430,29 @@ export default function OrdersPage() {
                               {/* Status — production + alloc */}
                               <td>
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
-                                  {/* Production status: shows for any SKU in a batch */}
-                                  {topBatch && (
+                                  {/* Production status */}
+                                  {isMultiSku && allBatched && topBatch && (
+                                    /* All SKUs covered — show a single "All in build" green badge */
+                                    <span
+                                      title={`All ${linesWithSku.length} SKUs are in a batch`}
+                                      style={{ background: 'rgba(34,197,94,0.15)', color: 'var(--success)', borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700, cursor: 'default' }}
+                                    >
+                                      ✓ All In Build
+                                    </span>
+                                  )}
+                                  {isMultiSku && someBatched && (
+                                    /* Partial — show warning + list unbatched SKUs */
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                      <span style={{ background: 'rgba(234,179,8,0.15)', color: '#facc15', borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700 }}>
+                                        ⚠ {linesInBatch.length}/{linesWithSku.length} in build
+                                      </span>
+                                      <span style={{ fontSize: '0.68rem', color: 'var(--danger)', fontFamily: 'monospace', lineHeight: 1.4 }}>
+                                        {unbatchedLines.map((l) => l.ss_sku).join(', ')} needs build
+                                      </span>
+                                    </div>
+                                  )}
+                                  {(!isMultiSku || (!allBatched && !someBatched)) && topBatch && (
+                                    /* Single-SKU order or no partial info — show top batch badge as before */
                                     <span
                                       title={topBatch.batchName}
                                       style={{
