@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createBrowserClient } from '@/lib/supabase'
 import DxfPartPreview from '@/components/DxfPartPreview'
 
@@ -214,6 +214,7 @@ const emptyForm = {
 
 export default function PartsPage() {
   const supabase = useMemo(() => createBrowserClient(), [])
+  const formTopRef = useRef<HTMLElement>(null)
   const [parts, setParts] = useState<Part[]>([])
   const [weightUnit, setWeightUnit] = useState<'lbs' | 'oz'>('lbs')
   const [materials, setMaterials] = useState<MaterialRow[]>([])
@@ -413,7 +414,8 @@ export default function PartsPage() {
 
   function startEdit(part: Part) {
     setEditingId(part.id)
-    window.scrollTo({ top: 0, behavior: 'smooth' })
+    // scrollIntoView is reliable on iOS Safari; window.scrollTo is not
+    setTimeout(() => formTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
     setSelectedDxfFile(null)
     setWeightUnit('lbs')
     setForm({
@@ -746,7 +748,7 @@ export default function PartsPage() {
         </div>
       </div>
 
-      <section className="card">
+      <section className="card" ref={formTopRef}>
         <div className="card-header">
           <h2 className="card-title">{editingId ? `Edit Part: ${editingId}` : 'Add Part'}</h2>
           <div className="card-subtitle">
