@@ -260,6 +260,16 @@ export default function MaterialsPage() {
   const batchAllocation = useMemo(() => {
     const alloc: Record<string, { totalQty: number; batches: Array<{ id: string; name: string; status: string; qty: number }> }> = {}
 
+    // For sheets: accumulate raw weight per (matId, batchId) first, then apply
+    // Math.ceil once per material per batch. Applying ceil per-part over-counts
+    // (e.g. 3 parts each needing 0.03 sheets → 1+1+1=3 instead of correct 1).
+    const sheetWeightAccum: Record<string, Record<string, number>> = {} // matId → batchId → lbs
+
+    function addSheetWeight(matId: string, batchId: string, lbs: number) {
+      if (!sheetWeightAccum[matId]) sheetWeightAccum[matId] = {}
+      sheetWeightAccum[matId][batchId] = (sheetWeightAccum[matId][batchId] ?? 0) + lbs
+    }
+
     function addAlloc(materialId: string, qty: number, batchId: string, batchName: string, batchStatus: string) {
       if (qty <= 0) return
       if (!alloc[materialId]) alloc[materialId] = { totalQty: 0, batches: [] }
@@ -290,9 +300,8 @@ export default function MaterialsPage() {
           if (part.part_type === 'tube' && part.cut_length && mat.stock_length_in) {
             const bars = Math.ceil((part.cut_length * totalPartQty) / mat.stock_length_in)
             addAlloc(mat.id, bars, batch.id, batch.name, batch.status)
-          } else if (part.part_type === 'sheet' && part.weight_lbs && mat.unit_weight_lbs) {
-            const sheets = Math.ceil((part.weight_lbs * totalPartQty) / (mat.unit_weight_lbs * (1 - (mat.scrap_rate ?? 0.15))))
-            addAlloc(mat.id, sheets, batch.id, batch.name, batch.status)
+          } else if (part.part_type === 'sheet' && part.weight_lbs) {
+            addSheetWeight(mat.id, batch.id, part.weight_lbs * totalPartQty)
           }
         }
         // Sub-assembly parts
@@ -307,14 +316,27 @@ export default function MaterialsPage() {
             if (part.part_type === 'tube' && part.cut_length && mat.stock_length_in) {
               const bars = Math.ceil((part.cut_length * totalPartQty) / mat.stock_length_in)
               addAlloc(mat.id, bars, batch.id, batch.name, batch.status)
-            } else if (part.part_type === 'sheet' && part.weight_lbs && mat.unit_weight_lbs) {
-              const sheets = Math.ceil((part.weight_lbs * totalPartQty) / (mat.unit_weight_lbs * (1 - (mat.scrap_rate ?? 0.15))))
-              addAlloc(mat.id, sheets, batch.id, batch.name, batch.status)
+            } else if (part.part_type === 'sheet' && part.weight_lbs) {
+              addSheetWeight(mat.id, batch.id, part.weight_lbs * totalPartQty)
             }
           }
         }
       }
     }
+
+    // Convert accumulated sheet weights → sheets (one Math.ceil per material per batch)
+    for (const [matId, batchWeights] of Object.entries(sheetWeightAccum)) {
+      const mat = rows.find((r) => r.id === matId)
+      if (!mat?.unit_weight_lbs) continue
+      const denominator = mat.unit_weight_lbs * (1 - (mat.scrap_rate ?? 0.15))
+      for (const [batchId, totalWeight] of Object.entries(batchWeights)) {
+        const batch = activeBatches.find((b) => b.id === batchId)
+        if (!batch) continue
+        const sheets = Math.ceil(totalWeight / denominator)
+        addAlloc(matId, sheets, batchId, batch.name, batch.status)
+      }
+    }
+
     return alloc
   }, [activeBatches, batchLines, skuParts, skuSubs, subParts, bomParts, rows])
 

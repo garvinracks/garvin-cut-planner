@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createBrowserClient } from '@/lib/supabase'
 import DxfPartPreview from '@/components/DxfPartPreview'
 import PartPickerModal from '@/components/PartPickerModal'
@@ -25,6 +25,7 @@ type Part = {
   thickness: string | null
   tube_od: string | null
   tube_wall: string | null
+  tube_shape: string | null
   cut_length: number | null
 }
 
@@ -45,6 +46,7 @@ const emptySubassemblyForm = {
 
 export default function SubassembliesPage() {
   const supabase = useMemo(() => createBrowserClient(), [])
+  const formTopRef = useRef<HTMLElement>(null)
 
   const [items, setItems] = useState<SubAssembly[]>([])
   const [parts, setParts] = useState<Part[]>([])
@@ -108,7 +110,7 @@ export default function SubassembliesPage() {
   async function loadParts() {
     const { data, error } = await supabase
       .from('parts')
-      .select('id, part_number, description, part_type, dxf_file, material, thickness, tube_od, tube_wall, cut_length')
+      .select('id, part_number, description, part_type, dxf_file, material, thickness, tube_od, tube_wall, tube_shape, cut_length')
       .order('part_number', { ascending: true })
 
     if (error) {
@@ -282,6 +284,8 @@ export default function SubassembliesPage() {
       requires_weld: item.requires_weld,
     })
     setMessage('')
+    // scrollIntoView is reliable on iOS Safari; window.scrollTo is not
+    setTimeout(() => formTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
   }
 
   function duplicateSubassembly(item: SubAssembly) {
@@ -498,7 +502,7 @@ WITH CHECK (bucket_id = 'subassembly-images');`}
         </div>
       )}
 
-      <section className="card">
+      <section className="card" ref={formTopRef}>
         <div className="card-header">
           <h2 className="card-title">{editingId ? `Edit Subassembly: ${editingId}` : 'Add Subassembly'}</h2>
           <div className="card-subtitle">

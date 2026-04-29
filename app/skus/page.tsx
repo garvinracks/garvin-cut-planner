@@ -90,6 +90,7 @@ type SkuPartRow = {
   part_type: 'tube' | 'sheet' | null
   dxf_file: string | null
   weight_lbs: number | null
+  material: string | null
   tube_od: string | null
   tube_wall: string | null
   tube_shape: string | null
@@ -105,6 +106,7 @@ type SubAssemblyPartRow = {
   part_type: 'tube' | 'sheet' | null
   dxf_file: string | null
   weight_lbs: number | null
+  material: string | null
   tube_od: string | null
   tube_wall: string | null
   tube_shape: string | null
@@ -119,6 +121,7 @@ type ExplodedPreviewRow = {
   part_type: 'tube' | 'sheet' | null
   dxf_file: string | null
   weight_lbs: number | null
+  material: string | null
   tube_od: string | null
   tube_wall: string | null
   tube_shape: string | null
@@ -142,6 +145,7 @@ type JoinedSkuPartRow = {
     part_type?: string | null
     dxf_file?: string | null
     weight_lbs?: number | null
+    material?: string | null
     tube_od?: string | null
     tube_wall?: string | null
     tube_shape?: string | null
@@ -291,7 +295,9 @@ export default function SkusPage() {
   const [materials, setMaterials] = useState<MaterialRow[]>([])
   const [latestPriceByMaterialId, setLatestPriceByMaterialId] = useState<Record<string, number>>({})
   const [latestPowderCostPerLb, setLatestPowderCostPerLb]     = useState<number | null>(null)
-  const [selectedSkuId, setSelectedSkuId] = useState('')
+  const [selectedSkuId, setSelectedSkuId] = useState(() =>
+    typeof window !== 'undefined' ? (sessionStorage.getItem('garvin:selected_sku') ?? '') : ''
+  )
 
   const [selectedSkuSubassemblies, setSelectedSkuSubassemblies] = useState<SkuSubAssemblyRow[]>([])
   const [selectedSkuParts, setSelectedSkuParts] = useState<SkuPartRow[]>([])
@@ -367,9 +373,10 @@ export default function SkusPage() {
     const rows = (data ?? []) as SKU[]
     setSkus(rows)
 
-    if (!selectedSkuId && rows.length > 0) {
-      setSelectedSkuId(rows[0].id)
-    }
+    // Restore saved selection; fall back to first SKU only if nothing was saved
+    const saved = typeof window !== 'undefined' ? sessionStorage.getItem('garvin:selected_sku') : null
+    const restoredId = saved && rows.find((r) => r.id === saved) ? saved : (rows[0]?.id ?? '')
+    if (restoredId) setSelectedSkuId(restoredId)
   }
 
   async function loadSubassemblies() {
@@ -434,6 +441,7 @@ export default function SkusPage() {
           part_type,
           dxf_file,
           weight_lbs,
+          material,
           tube_od,
           tube_wall,
           tube_shape,
@@ -457,6 +465,7 @@ export default function SkusPage() {
       part_type: (row.part?.part_type as 'tube' | 'sheet' | null) ?? null,
       dxf_file: row.part?.dxf_file ?? null,
       weight_lbs: row.part?.weight_lbs ?? null,
+      material: row.part?.material ?? null,
       tube_od: row.part?.tube_od ?? null,
       tube_wall: row.part?.tube_wall ?? null,
       tube_shape: row.part?.tube_shape ?? null,
@@ -506,8 +515,10 @@ export default function SkusPage() {
             part_type,
             dxf_file,
             weight_lbs,
+            material,
             tube_od,
             tube_wall,
+            tube_shape,
             cut_length
           )
         `)
@@ -546,6 +557,7 @@ export default function SkusPage() {
         part_type: (row.part?.part_type as 'tube' | 'sheet' | null) ?? null,
         dxf_file: row.part?.dxf_file ?? null,
         weight_lbs: row.part?.weight_lbs ?? null,
+        material: row.part?.material ?? null,
         tube_od: row.part?.tube_od ?? null,
         tube_wall: row.part?.tube_wall ?? null,
         tube_shape: row.part?.tube_shape ?? null,
@@ -601,6 +613,7 @@ export default function SkusPage() {
 
   useEffect(() => {
     if (selectedSkuId) {
+      sessionStorage.setItem('garvin:selected_sku', selectedSkuId)
       void loadSelectedSkuRelations(selectedSkuId)
     }
   }, [selectedSkuId])
@@ -1451,6 +1464,7 @@ export default function SkusPage() {
           part_type: row.part_type,
           dxf_file: row.dxf_file,
           weight_lbs: row.weight_lbs,
+          material: row.material,
           tube_od: row.tube_od,
           tube_wall: row.tube_wall,
           tube_shape: row.tube_shape,
@@ -1475,6 +1489,7 @@ export default function SkusPage() {
             part_type: subPart.part_type,
             dxf_file: subPart.dxf_file,
             weight_lbs: subPart.weight_lbs,
+            material: subPart.material,
             tube_od: subPart.tube_od,
             tube_wall: subPart.tube_wall,
             tube_shape: subPart.tube_shape,
@@ -1518,11 +1533,13 @@ export default function SkusPage() {
       return qty * (part.cut_length / mat.stock_length_in) * latestPrice
     }
 
-    // Sheet: weight-based with scrap rate
+    // Sheet: weight-based with scrap rate.
+    // Divide by (1 - scrap) rather than multiply by (1 + scrap): if 16% of the sheet
+    // is wasted, you need to purchase 1/0.84 = 1.190× the net weight, not 1.16×.
     if (!part.weight_lbs || !mat.unit_weight_lbs) return null
     const costPerLb = latestPrice / mat.unit_weight_lbs
-    const scrap = mat.scrap_rate ?? 0
-    return qty * part.weight_lbs * costPerLb * (1 + scrap)
+    const scrap = Math.min(mat.scrap_rate ?? 0, 0.99)
+    return qty * part.weight_lbs * costPerLb / (1 - scrap)
   }
 
   const matEstCost: number | null = (() => {
@@ -1947,9 +1964,19 @@ export default function SkusPage() {
                                   </div>
                                 </div>
 
-                                <span style={{ fontSize: '0.82rem', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
-                                  ×{row.qty}
-                                </span>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', flexShrink: 0 }}>
+                                  <span style={{ fontSize: '0.82rem', color: 'var(--muted)' }}>×</span>
+                                  <input
+                                    className="field-sm"
+                                    defaultValue={row.qty}
+                                    onBlur={(e) => {
+                                      const v = Number(e.target.value)
+                                      if (v > 0 && v !== row.qty) void handleUpdateSkuSubassemblyQty(row.id, v)
+                                    }}
+                                    style={{ width: 48, textAlign: 'center' }}
+                                    title="Sub-assembly quantity"
+                                  />
+                                </div>
 
                                 {(row.requires_weld || fullSa?.requires_weld) && (
                                   <span
@@ -2095,7 +2122,7 @@ export default function SkusPage() {
                                                     tubeOd={subRow.tube_od ?? undefined}
                                                     tubeWall={subRow.tube_wall ?? undefined}
                                                     cutLength={subRow.cut_length ?? undefined}
-                                                    tubeShape={subRow.tube_shape === 'square' || (subRow.tube_od ?? '').toLowerCase().includes('x') ? 'square' : 'round'}
+                                                    tubeShape={subRow.tube_shape === 'square' || (subRow.tube_od ?? '').toLowerCase().includes('x') || (subRow.material ?? '').toLowerCase().startsWith('square') ? 'square' : 'round'}
                                                   />
                                                 </td>
                                                 <td style={{ fontWeight: 700, fontFamily: 'monospace', fontSize: '0.83rem' }}>
@@ -2236,7 +2263,6 @@ export default function SkusPage() {
                               <th>Part #</th>
                               <th>Description</th>
                               <th>Qty</th>
-                              <th>Est. Cost</th>
                               <th></th>
                               <th></th>
                             </tr>
@@ -2258,7 +2284,7 @@ export default function SkusPage() {
                                       tubeOd={row.tube_od ?? undefined}
                                       tubeWall={row.tube_wall ?? undefined}
                                       cutLength={row.cut_length ?? undefined}
-                                      tubeShape={row.tube_shape === 'square' || (row.tube_od ?? '').toLowerCase().includes('x') ? 'square' : 'round'}
+                                      tubeShape={row.tube_shape === 'square' || (row.tube_od ?? '').toLowerCase().includes('x') || (row.material ?? '').toLowerCase().startsWith('square') ? 'square' : 'round'}
                                     />
                                   </td>
                                   <td style={{ fontWeight: 700, fontFamily: 'monospace', fontSize: '0.83rem' }}>
@@ -2277,13 +2303,6 @@ export default function SkusPage() {
                                       onBlur={(e) => void handleUpdateSkuPartQty(row.id, Number(e.target.value))}
                                       style={{ width: 52 }}
                                     />
-                                  </td>
-                                  <td style={{ whiteSpace: 'nowrap', fontSize: '0.83rem' }}>
-                                    {lineCost != null ? (
-                                      <span style={{ color: 'var(--success)', fontWeight: 600 }}>${lineCost.toFixed(2)}</span>
-                                    ) : (
-                                      <span style={{ color: 'var(--muted)' }}>—</span>
-                                    )}
                                   </td>
                                   <td>
                                     <button
@@ -2351,7 +2370,7 @@ export default function SkusPage() {
                                       tubeOd={row.tube_od ?? undefined}
                                       tubeWall={row.tube_wall ?? undefined}
                                       cutLength={row.cut_length ?? undefined}
-                                      tubeShape={row.tube_shape === 'square' || (row.tube_od ?? '').toLowerCase().includes('x') ? 'square' : 'round'}
+                                      tubeShape={row.tube_shape === 'square' || (row.tube_od ?? '').toLowerCase().includes('x') || (row.material ?? '').toLowerCase().startsWith('square') ? 'square' : 'round'}
                                     />
                                   </td>
                                   <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>{row.part_number}</td>

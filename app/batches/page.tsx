@@ -1,23 +1,25 @@
 'use client'
 
 /*
- * SQL migration — run before using sub-assembly weld tracking:
+ * SQL migrations:
  * ALTER TABLE sub_assemblies ADD COLUMN IF NOT EXISTS requires_weld boolean DEFAULT false;
+ * ALTER TABLE parts ADD COLUMN IF NOT EXISTS requires_notch boolean NOT NULL DEFAULT false;
+ * ALTER TABLE build_batches ADD COLUMN IF NOT EXISTS stage_notch boolean NOT NULL DEFAULT false;
  */
 
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createBrowserClient } from '@/lib/supabase'
+import { Helper } from 'dxf'
 import DxfPartPreview from '@/components/DxfPartPreview'
-import { downloadXlsx, xlsxToBuffer } from '@/lib/xlsx'
-import JSZip from 'jszip'
+import { downloadXlsx } from '@/lib/xlsx'
 import SkuPickerModal, { type PickableSKU } from '@/components/SkuPickerModal'
 
 const SUB_IMAGE_BUCKET = 'subassembly-images'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type BatchStatus = 'planned' | 'in_progress' | 'at_powder' | 'complete'
+type BatchStatus = 'draft' | 'planned' | 'in_progress' | 'at_powder' | 'complete'
 
 type BuildBatch = {
   id: string
@@ -28,8 +30,9 @@ type BuildBatch = {
   completed_at: string | null
   stage_laser: boolean
   stage_sheet_bend: boolean
-  stage_tube_bend: boolean
   stage_saw: boolean
+  stage_notch: boolean
+  stage_tube_bend: boolean
   stage_drill: boolean
   stage_weld: boolean
   powder_batch_id: string | null
@@ -60,8 +63,9 @@ type Part = {
   dxf_file: string | null
   requires_laser: boolean
   requires_sheet_bend: boolean
-  requires_tube_bend: boolean
   requires_saw: boolean
+  requires_notch: boolean
+  requires_tube_bend: boolean
   requires_drill: boolean
   requires_weld: boolean
 }
@@ -74,6 +78,7 @@ type SubAssembly = { id: string; name: string; requires_weld: boolean; image_fil
 type MaterialRecord = {
   id: string
   name: string | null
+  material: string | null
   material_type: string
   tube_od: string | null
   tube_wall: string | null
@@ -97,9 +102,10 @@ type View = 'list' | 'create' | 'detail' | 'traveler'
 const STAGES = [
   { key: 'stage_laser',      stageKey: 'laser',      partKey: 'requires_laser',      label: 'Laser' },
   { key: 'stage_sheet_bend', stageKey: 'sheet_bend', partKey: 'requires_sheet_bend', label: 'Sheet Bend' },
-  { key: 'stage_tube_bend',  stageKey: 'tube_bend',  partKey: 'requires_tube_bend',  label: 'Tube Bend' },
   { key: 'stage_saw',        stageKey: 'saw',        partKey: 'requires_saw',        label: 'Saw' },
   { key: 'stage_drill',      stageKey: 'drill',      partKey: 'requires_drill',      label: 'Drill Press' },
+  { key: 'stage_notch',      stageKey: 'notch',      partKey: 'requires_notch',      label: 'Notch' },
+  { key: 'stage_tube_bend',  stageKey: 'tube_bend',  partKey: 'requires_tube_bend',  label: 'Tube Bend' },
   { key: 'stage_weld',       stageKey: 'weld',       partKey: 'requires_weld',       label: 'Weld' },
 ] as const
 
@@ -116,6 +122,7 @@ function fmtCost(n: number | null) {
 }
 
 const STATUS_STYLE: Record<BatchStatus, { label: string; bg: string; color: string }> = {
+  draft:       { label: 'Draft',            bg: 'rgba(59,130,246,0.15)',  color: '#60a5fa' },
   planned:     { label: 'Planned',          bg: 'rgba(100,116,139,0.18)', color: '#94a3b8' },
   in_progress: { label: 'In Progress',      bg: 'rgba(234,179,8,0.18)',   color: '#facc15' },
   at_powder:   { label: 'At Powder Coater', bg: 'rgba(167,139,250,0.2)',  color: '#a78bfa' },
@@ -152,6 +159,8 @@ export default function BatchesPage() {
   const [loadingCompletions, setLoadingCompletions] = useState(false)
   const [saveError, setSaveError] = useState<string>('')
   const [savingKeys, setSavingKeys] = useState<Set<string>>(new Set())
+  // SA IDs that are complete but manually expanded by the user
+  const [expandedCompleteSaIds, setExpandedCompleteSaIds] = useState<Set<string>>(new Set())
 
   // Fulfills These Orders
   const [batchOrders, setBatchOrders] = useState<Array<{id:string; order_number:string; customer_name:string|null; notes:string|null; order_date:string|null}>>([])
@@ -167,6 +176,16 @@ export default function BatchesPage() {
 
   const [saving, setSaving]           = useState(false)
   const [sendingToPowder, setSendingToPowder] = useState(false)
+
+  // CypCut DXF folder — persisted in localStorage so user only sets it once
+  const [cypCutFolder, setCypCutFolder] = useState<string>('')
+  useEffect(() => {
+    const saved = typeof window !== 'undefined' ? (localStorage.getItem('cypcut_dxf_folder') ?? '') : ''
+    setCypCutFolder(saved)
+  }, [])
+
+  // Draft editing: lineId → qty string (for editing lines on a draft batch)
+  const [draftLineEdits, setDraftLineEdits] = useState<Record<string, string>>({})
 
   // ── Load ─────────────────────────────────────────────────────────────────────
 
@@ -187,12 +206,12 @@ export default function BatchesPage() {
       supabase.from('build_batches').select('*').order('created_at', { ascending: false }),
       supabase.from('build_batch_lines').select('*'),
       supabase.from('skus').select('id, description, category, active').order('id'),
-      supabase.from('parts').select('id, part_number, description, part_type, material, thickness, tube_od, tube_wall, tube_shape, cut_length, weight_lbs, dxf_file, requires_laser, requires_sheet_bend, requires_tube_bend, requires_saw, requires_drill, requires_weld'),
+      supabase.from('parts').select('id, part_number, description, part_type, material, thickness, tube_od, tube_wall, tube_shape, cut_length, weight_lbs, dxf_file, requires_laser, requires_sheet_bend, requires_saw, requires_notch, requires_tube_bend, requires_drill, requires_weld'),
       supabase.from('sku_parts').select('sku_id, part_id, qty'),
       supabase.from('sku_sub_assemblies').select('sku_id, sub_assembly_id, qty'),
       supabase.from('sub_assembly_parts').select('sub_assembly_id, part_id, qty'),
       supabase.from('sub_assemblies').select('id, name, requires_weld, image_file'),
-      supabase.from('materials').select('id, name, material_type, tube_od, tube_wall, thickness, unit_weight_lbs, stock_length_in, scrap_rate, qty_on_hand'),
+      supabase.from('materials').select('id, name, material, material_type, tube_od, tube_wall, thickness, unit_weight_lbs, stock_length_in, scrap_rate, qty_on_hand'),
       supabase.from('material_price_logs').select('material_id, price').order('date_purchased', { ascending: false }),
     ])
     const loadedBatches = (batchData ?? []) as BuildBatch[]
@@ -288,6 +307,7 @@ export default function BatchesPage() {
     }
     const s: CompletionSet = new Set((data ?? []).map((r: any) => `${r.part_id}:${r.stage_key}`))
     setCompletions(s)
+    setExpandedCompleteSaIds(new Set()) // reset manual expansions when opening a new batch
     setLoadingCompletions(false)
   }
 
@@ -391,7 +411,10 @@ export default function BatchesPage() {
         m.material_type === part.part_type &&
         (part.part_type === 'tube'
           ? m.tube_od === part.tube_od && m.tube_wall === part.tube_wall
-          : m.thickness === part.material)
+          : m.id === part.material ||
+            (m.material != null && m.material === part.material && m.thickness === part.thickness) ||
+            (m.name != null && m.name === part.material) ||
+            m.thickness === part.material)
       )
       if (!mat) continue
       const log = priceLogs.find((pl) => pl.material_id === mat.id)
@@ -468,8 +491,16 @@ export default function BatchesPage() {
     setSaveError('')
 
     // Always delete first (avoids duplicate-key issues regardless of DB constraints)
-    await supabase.from('batch_part_completions').delete()
+    const { error: deleteError } = await supabase.from('batch_part_completions').delete()
       .eq('batch_id', batchId).eq('part_id', itemId).eq('stage_key', stageKey)
+
+    if (deleteError) {
+      // Rollback optimistic uncheck
+      setCompletions(prevCompletions)
+      setSaveError(`Save failed: ${deleteError.message}. Please try again.`)
+      setSavingKeys((prev) => { const next = new Set(prev); next.delete(key); return next })
+      return
+    }
 
     if (checked) {
       const { error } = await supabase.from('batch_part_completions')
@@ -497,9 +528,19 @@ export default function BatchesPage() {
     workItems: Map<string, { part: Part; totalQty: number; subAssemblyId: string | null }>,
     subAssemblyGroupsForBatch: Map<string, { subAssembly: SubAssembly; items: Array<{ part: Part; totalQty: number }> }>
   ) {
+    // Deduplicate: same part can appear in multiple sub-assemblies, which would
+    // cause a unique-constraint violation when inserting the same row twice.
+    const seen = new Set<string>()
+    const uniqueItems = items.filter((i) => {
+      const k = `${i.id}:${i.stageKey}`
+      if (seen.has(k)) return false
+      seen.add(k)
+      return true
+    })
+
     const prevCompletions = new Set(completions)
     const newCompletions = new Set(completions)
-    const bulkKeys = items.map((i) => `${i.id}:${i.stageKey}`)
+    const bulkKeys = uniqueItems.map((i) => `${i.id}:${i.stageKey}`)
     if (checked) for (const k of bulkKeys) newCompletions.add(k)
     else for (const k of bulkKeys) newCompletions.delete(k)
     setCompletions(newCompletions)
@@ -507,13 +548,21 @@ export default function BatchesPage() {
     setSaveError('')
 
     // Delete all first, then re-insert if checking
-    for (const item of items) {
-      await supabase.from('batch_part_completions').delete()
+    let deleteErr: { message: string } | null = null
+    for (const item of uniqueItems) {
+      const { error } = await supabase.from('batch_part_completions').delete()
         .eq('batch_id', batchId).eq('part_id', item.id).eq('stage_key', item.stageKey)
+      if (error) { deleteErr = error; break }
+    }
+    if (deleteErr) {
+      setCompletions(prevCompletions)
+      setSaveError(`Save failed: ${deleteErr.message}. Please try again.`)
+      setSavingKeys((prev) => { const next = new Set(prev); for (const k of bulkKeys) next.delete(k); return next })
+      return
     }
     if (checked) {
       const { error } = await supabase.from('batch_part_completions')
-        .insert(items.map((item) => ({ batch_id: batchId, part_id: item.id, stage_key: item.stageKey })))
+        .insert(uniqueItems.map((item) => ({ batch_id: batchId, part_id: item.id, stage_key: item.stageKey })))
       if (error) {
         setCompletions(prevCompletions)
         setSaveError(`Save failed: ${error.message}. Please try again.`)
@@ -546,6 +595,44 @@ export default function BatchesPage() {
     const fresh = (await supabase.from('build_batches').select('*').eq('id', batch.id).single()).data
     setActiveBatch(fresh as BuildBatch)
     setView('detail')
+    setSaving(false)
+  }
+
+  async function saveDraft() {
+    if (!createName.trim()) { setMessage('Name is required.'); return }
+    const filledRows = createRows.filter((r) => r.skuId.trim() && r.qty.trim())
+    if (!filledRows.length) { setMessage('Add at least one SKU.'); return }
+    setSaving(true); setMessage('')
+    const { data: batch, error } = await supabase
+      .from('build_batches')
+      .insert({ name: createName.trim(), notes: createNotes.trim() || null, status: 'draft' })
+      .select('*').single()
+    if (error || !batch) { setMessage('Save failed: ' + (error?.message ?? 'unknown')); setSaving(false); return }
+    await supabase.from('build_batch_lines').insert(
+      filledRows.map((r) => ({ batch_id: batch.id, sku_id: r.skuId.trim(), qty: parseInt(r.qty) || 1 }))
+    )
+    setCreateName(''); setCreateNotes(''); setCreateRows([{ skuId: '', qty: '1', skuLookup: '' }])
+    await loadAll()
+    const fresh = (await supabase.from('build_batches').select('*').eq('id', batch.id).single()).data
+    setActiveBatch(fresh as BuildBatch)
+    setDraftLineEdits({})
+    setView('detail')
+    setSaving(false)
+  }
+
+  async function confirmDraft(batch: BuildBatch, editedLines: Record<string, string>) {
+    setSaving(true); setMessage('')
+    // Save any edited qtys first
+    const updates = Object.entries(editedLines)
+    for (const [lineId, qtyStr] of updates) {
+      const qty = parseInt(qtyStr) || 1
+      await supabase.from('build_batch_lines').update({ qty }).eq('id', lineId)
+    }
+    await supabase.from('build_batches').update({ status: 'planned' }).eq('id', batch.id)
+    await loadAll()
+    const fresh = (await supabase.from('build_batches').select('*').eq('id', batch.id).single()).data
+    setActiveBatch(fresh as BuildBatch)
+    setDraftLineEdits({})
     setSaving(false)
   }
 
@@ -650,6 +737,7 @@ export default function BatchesPage() {
       dxfFile: string | null
       qty: number
       done: boolean
+      requiresLaser: boolean
     }>
   }
 
@@ -721,16 +809,25 @@ export default function BatchesPage() {
         ? (saGroups.get(subAssemblyId)?.subAssembly.name ?? null)
         : null
 
-      tubeGroupMap.get(matId)!.cuts.push({
-        partId: part.id,
-        partNumber: part.part_number,
-        description: part.description,
-        cutLengthIn: part.cut_length ?? null,
-        qty: totalQty,
-        requiresBend: part.requires_tube_bend,
-        saLabel,
-        done: comps.has(`${part.id}:saw`),
-      })
+      // Deduplicate: same part used in multiple SAs → merge into one row
+      const existing = tubeGroupMap.get(matId)!.cuts.find((c) => c.partId === part.id)
+      if (existing) {
+        existing.qty += totalQty
+        if (saLabel && existing.saLabel !== saLabel) {
+          existing.saLabel = 'Multiple assemblies'
+        }
+      } else {
+        tubeGroupMap.get(matId)!.cuts.push({
+          partId: part.id,
+          partNumber: part.part_number,
+          description: part.description,
+          cutLengthIn: part.cut_length ?? null,
+          qty: totalQty,
+          requiresBend: part.requires_tube_bend,
+          saLabel,
+          done: comps.has(`${part.id}:saw`),
+        })
+      }
     }
 
     // Sort cuts within each group: longest first
@@ -746,13 +843,29 @@ export default function BatchesPage() {
     })
 
     // --- Sheet groups (grouped by material + thickness) ---
-    const sheetGroupMap = new Map<string, SheetCutListGroup>()
+    // Step 1: aggregate total qty per part across all wItems entries.
+    // Key by part_number so that duplicate part records in the DB (same number,
+    // different UUID) and the same part appearing in multiple sub-assemblies are
+    // both collapsed into a single row.
+    const sheetPartAgg = new Map<string, { part: Part; totalQty: number }>()
     for (const { part, totalQty } of wItems.values()) {
       if (part.part_type !== 'sheet') continue
-      // Match by ID first, then by name, then by thickness (legacy)
+      const existing = sheetPartAgg.get(part.part_number)
+      if (existing) {
+        existing.totalQty += totalQty
+      } else {
+        sheetPartAgg.set(part.part_number, { part, totalQty })
+      }
+    }
+
+    // Step 2: group the aggregated parts by material
+    const sheetGroupMap = new Map<string, SheetCutListGroup>()
+    for (const { part, totalQty } of sheetPartAgg.values()) {
+      // Match by ID, material grade, name, or thickness (legacy)
       const mat = materials.find(
         (m) => m.material_type === 'sheet' && (
           m.id === part.material ||
+          (m.material != null && m.material === part.material && m.thickness === part.thickness) ||
           (m.name != null && m.name === part.material) ||
           m.thickness === part.material
         )
@@ -774,6 +887,7 @@ export default function BatchesPage() {
         dxfFile: part.dxf_file,
         qty: totalQty,
         done: comps.has(`${part.id}:laser`) || comps.has(`${part.id}:sheet_bend`),
+        requiresLaser: part.requires_laser,
       })
     }
     const sheetGroups = Array.from(sheetGroupMap.values())
@@ -795,124 +909,199 @@ export default function BatchesPage() {
 
   // ── Print cut list ────────────────────────────────────────────────────────────
 
-  function printCutList(
+  async function printCutList(
     tubeGroups: CutListGroup[],
     sheetGroups: SheetCutListGroup[]
   ) {
     const batchName = activeBatch?.name ?? 'Batch'
+
+    // Open window immediately so browser doesn't block the popup
+    const w = window.open('', '_blank')
+    if (!w) { alert('Pop-up blocked — please allow pop-ups for this page.'); return }
+    w.document.write(`<html><head><title>Generating…</title></head><body style="font-family:sans-serif;padding:32px;color:#555">Generating cut list, please wait…</body></html>`)
+
+    // Fetch DXF SVGs for all sheet parts in parallel
+    const supabase = createBrowserClient()
+    const dxfSvgMap: Record<string, string> = {}
+    await Promise.all(
+      sheetGroups.flatMap((sg) => sg.parts)
+        .filter((p) => !!p.dxfFile)
+        .map(async (p) => {
+          try {
+            const { data: { publicUrl } } = supabase.storage.from('dxf-files').getPublicUrl(p.dxfFile!)
+            const res = await fetch(publicUrl)
+            if (!res.ok) return
+            const text = await res.text()
+            const helper = new Helper(text)
+            const rawSvg = helper.toSVG()
+            if (!rawSvg) return
+            // Normalize for print (white bg, dark strokes)
+            let svg = rawSvg.trim()
+              .replace(/<\?xml[\s\S]*?\?>/gi, '')
+              .replace(/<!DOCTYPE[\s\S]*?>/gi, '')
+            const vbMatch = svg.match(/viewBox="([^"]+)"/i)
+            if (vbMatch) {
+              const nums = vbMatch[1].trim().split(/[ ,]+/).map(Number)
+              if (nums.length === 4 && nums.every(Number.isFinite)) {
+                const [x, y, ww, hh] = nums
+                const pad = Math.max(ww, hh) * 0.12
+                svg = svg.replace(/viewBox="[^"]*"/i, `viewBox="${x-pad} ${y-pad} ${ww+pad*2} ${hh+pad*2}"`)
+              }
+            }
+            svg = svg.replace(/width="[^"]*"/i, 'width="100%"').replace(/height="[^"]*"/i, 'height="100%"')
+            if (!svg.includes('preserveAspectRatio=')) svg = svg.replace('<svg', '<svg preserveAspectRatio="xMidYMid meet"')
+            svg = svg.replace(/<svg([^>]*)>/, `<svg$1><style>* { fill: none !important; stroke: #333 !important; stroke-width: 1.5 !important; stroke-linecap: round !important; stroke-linejoin: round !important; vector-effect: non-scaling-stroke !important; }</style>`)
+            dxfSvgMap[p.partId] = svg
+          } catch { /* skip if DXF unavailable */ }
+        })
+    )
+
+    const PRINT_COLORS = ['#2563eb','#7c3aed','#db2777','#ea580c','#0d9488','#65a30d','#d97706','#0891b2','#be123c','#4d7c0f']
+
     let html = `<!DOCTYPE html><html><head><title>Cut List \u2014 ${batchName}</title>
 <style>
-  body { font-family: sans-serif; padding: 24px; color: #111; }
-  h1 { margin: 0 0 4px; font-size: 1.4rem; }
-  .subtitle { color: #666; font-size: 0.85rem; margin-bottom: 24px; }
-  .material-group { margin-bottom: 28px; page-break-inside: avoid; }
-  .material-header { background: #f0f0f0; padding: 8px 12px; border-left: 4px solid #333; margin-bottom: 8px; }
-  .material-name { font-weight: bold; font-size: 1rem; }
-  .material-stats { font-size: 0.8rem; color: #555; margin-top: 2px; }
-  .section-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: #888; font-weight: 700; padding: 4px 0 2px; border-bottom: 1px solid #ccc; margin: 10px 0 6px; }
+  body { font-family: Arial, sans-serif; padding: 20px; color: #111; background: #fff; }
+  h1 { margin: 0 0 4px; font-size: 1.3rem; }
+  .subtitle { color: #666; font-size: 0.82rem; margin-bottom: 20px; }
+  .material-group { margin-bottom: 24px; page-break-inside: avoid; border: 1px solid #ccc; border-radius: 6px; overflow: hidden; }
+  .material-header { background: #f0f0f0; padding: 8px 12px; border-left: 4px solid #333; }
+  .tube-header { border-left-color: #2563eb; }
+  .sheet-header { border-left-color: #0891b2; }
+  .material-name { font-weight: bold; font-size: 0.95rem; }
+  .material-stats { font-size: 0.75rem; color: #555; margin-top: 2px; }
+  .section-label { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.1em; color: #888; font-weight: 700; padding: 6px 12px 3px; background: #fafafa; border-bottom: 1px solid #e5e5e5; }
   table { width: 100%; border-collapse: collapse; }
-  th { text-align: left; padding: 6px 8px; border-bottom: 2px solid #333; font-size: 0.78rem; text-transform: uppercase; }
-  td { padding: 5px 8px; border-bottom: 1px solid #ddd; font-size: 0.85rem; }
+  th { text-align: left; padding: 5px 8px; border-bottom: 2px solid #333; font-size: 0.72rem; text-transform: uppercase; background: #fafafa; }
+  td { padding: 4px 8px; border-bottom: 1px solid #eee; font-size: 0.82rem; vertical-align: middle; }
   .mono { font-family: monospace; font-weight: bold; }
-  .bend-badge { background: #e0e0e0; border-radius: 3px; padding: 1px 5px; font-size: 0.72rem; }
-  .totals-row td { background: #f8f8f8; font-weight: bold; border-top: 2px solid #333; }
-  .done-row td { color: #888; text-decoration: line-through; }
-  .sa-label { font-size: 0.72rem; color: #888; }
-  @media print { body { padding: 12px; } }
+  .bend-badge { background: #fef3c7; border: 1px solid #d97706; border-radius: 3px; padding: 1px 5px; font-size: 0.66rem; font-weight: 700; color: #92400e; }
+  .totals-row td { background: #f5f5f5; font-weight: bold; border-top: 2px solid #333; }
+  .done-row td { color: #aaa; text-decoration: line-through; }
+  .sa-label { font-size: 0.68rem; color: #888; }
+  /* Tube nesting */
+  .nest-wrap { padding: 10px 12px 12px; border-top: 1px solid #e5e5e5; background: #fafafa; }
+  .nest-title { font-size: 0.66rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: #888; margin-bottom: 8px; }
+  .nest-bar-label { font-size: 0.62rem; color: #888; font-family: monospace; margin-bottom: 3px; }
+  .nest-bar { height: 26px; border-radius: 4px; overflow: hidden; border: 1px solid #ccc; display: flex; margin-bottom: 6px; }
+  .nest-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; }
+  .nest-legend-item { display: flex; align-items: center; gap: 5px; font-size: 0.66rem; font-family: monospace; }
+  .nest-swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  /* Sheet part cards */
+  .parts-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; padding: 10px; }
+  .part-card { border: 1px solid #ddd; border-radius: 6px; overflow: hidden; }
+  .part-card.done { opacity: 0.5; }
+  .part-dxf { height: 110px; background: #f7f7f7; display: flex; align-items: center; justify-content: center; }
+  .part-dxf svg { width: 100%; height: 100%; }
+  .part-info { padding: 6px 8px; }
+  .part-num { font-family: monospace; font-weight: 700; font-size: 0.74rem; color: #1d4ed8; }
+  .part-qty { font-weight: 800; font-size: 0.82rem; float: right; }
+  .part-desc { font-size: 0.68rem; color: #666; margin-top: 2px; line-height: 1.3; }
+  @media print { body { padding: 10px; } .material-group { page-break-inside: avoid; } }
 </style></head><body>
 <h1>Cut List \u2014 ${batchName}</h1>
 <div class="subtitle">Printed ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}</div>`
 
+    // ── Tube groups ───────────────────────────────────────────────────────────
     for (const grp of tubeGroups) {
       const totalIn = grp.cuts.reduce((s, c) => s + (c.cutLengthIn ?? 0) * c.qty, 0)
-      const stockNeeded = grp.stockLengthIn
-        ? Math.ceil(totalIn / grp.stockLengthIn)
-        : null
-      const scrapIn = stockNeeded && grp.stockLengthIn
-        ? stockNeeded * grp.stockLengthIn - totalIn
-        : null
+      const stockNeeded = grp.stockLengthIn ? Math.ceil(totalIn / grp.stockLengthIn) : null
+      const scrapIn = stockNeeded && grp.stockLengthIn ? stockNeeded * grp.stockLengthIn - totalIn : null
       const totalPcs = grp.cuts.reduce((s, c) => s + c.qty, 0)
+      const partIds = [...new Set(grp.cuts.map((c) => c.partId))]
+      const colorMap: Record<string, string> = {}
+      partIds.forEach((id, i) => { colorMap[id] = PRINT_COLORS[i % PRINT_COLORS.length] })
 
       html += `<div class="material-group">
-<div class="material-header">
-  <div class="material-name">${grp.tubeOd ?? '?'} Tube \xd7 ${grp.tubeWall ?? '?'} wall</div>
-  <div class="material-stats">Stock: ${grp.stockLengthIn ? grp.stockLengthIn + '"' : 'unknown'} &nbsp;|&nbsp; ${totalPcs} pieces &nbsp;|&nbsp; ${totalIn.toFixed(1)}" total</div>
+<div class="material-header tube-header">
+  <div class="material-name">${grp.tubeOd ?? '?'} Tube &times; ${grp.tubeWall ?? '?'} wall</div>
+  <div class="material-stats">Stock: ${grp.stockLengthIn ? grp.stockLengthIn + '"' : 'unknown'} &nbsp;&bull;&nbsp; ${totalPcs} pieces &nbsp;&bull;&nbsp; ${totalIn.toFixed(1)}" total${stockNeeded != null ? ` &nbsp;&bull;&nbsp; <strong>${stockNeeded} bar${stockNeeded !== 1 ? 's' : ''} needed</strong>` : ''}</div>
 </div>
 <div class="section-label">Cuts</div>
 <table>
-<thead><tr><th style="width:90px">Part #</th><th>Description</th><th style="width:40px;text-align:center">Qty</th><th style="width:60px;text-align:right">Length</th><th style="width:60px;text-align:right">Total</th><th style="width:50px"></th></tr></thead>
+<thead><tr><th style="width:90px">Part #</th><th>Description</th><th style="width:40px;text-align:center">Qty</th><th style="width:64px;text-align:right">Length</th><th style="width:64px;text-align:right">Total</th><th style="width:50px"></th></tr></thead>
 <tbody>`
       for (const c of grp.cuts) {
         const rowClass = c.done ? ' class="done-row"' : ''
+        const dot = `<span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${colorMap[c.partId]};margin-right:5px;flex-shrink:0"></span>`
         const desc = (c.description ?? '').length > 42 ? (c.description ?? '').slice(0, 42) + '\u2026' : (c.description ?? '\u2014')
-        html += `<tr${rowClass}>
-  <td class="mono">${c.partNumber}</td>
-  <td>${desc}${c.saLabel ? `<br><span class="sa-label">${c.saLabel}</span>` : ''}</td>
-  <td style="text-align:center">${c.qty}&times;</td>
-  <td style="text-align:right">${c.cutLengthIn != null ? c.cutLengthIn + '"' : '\u2014'}</td>
-  <td style="text-align:right">${c.cutLengthIn != null ? (c.cutLengthIn * c.qty) + '"' : '\u2014'}</td>
-  <td>${c.requiresBend ? '<span class="bend-badge">BEND</span>' : ''}</td>
-</tr>`
+        html += `<tr${rowClass}><td class="mono">${dot}${c.partNumber}</td><td>${desc}${c.saLabel ? `<br><span class="sa-label">${c.saLabel}</span>` : ''}</td><td style="text-align:center">${c.qty}&times;</td><td style="text-align:right">${c.cutLengthIn != null ? c.cutLengthIn + '"' : '\u2014'}</td><td style="text-align:right">${c.cutLengthIn != null ? (c.cutLengthIn * c.qty) + '"' : '\u2014'}</td><td>${c.requiresBend ? '<span class="bend-badge">BEND</span>' : ''}</td></tr>`
       }
-      html += `</tbody>
-<tfoot><tr class="totals-row">
-  <td colspan="2">Total</td>
-  <td style="text-align:center">${totalPcs} pcs</td>
-  <td style="text-align:right" colspan="2">${totalIn.toFixed(1)}"</td>
-  <td></td>
-</tr></tfoot>
-</table>`
-      if (stockNeeded != null) {
-        html += `<div style="font-size:0.8rem;color:#555;margin-top:6px;padding:4px 0;">
-  Stock required: ${stockNeeded} \xd7 ${grp.stockLengthIn}" = ${(stockNeeded * (grp.stockLengthIn!)).toFixed(0)}" available &rarr; ${scrapIn?.toFixed(1)}" scrap
-</div>`
+      html += `</tbody><tfoot><tr class="totals-row"><td colspan="2">Total</td><td style="text-align:center">${totalPcs}&times;</td><td style="text-align:right" colspan="2">${totalIn.toFixed(1)}"</td><td></td></tr></tfoot></table>`
+
+      // Tube nesting diagram
+      if (grp.stockLengthIn && grp.stockLengthIn > 0) {
+        const bars = nestTubeCuts(grp.cuts, grp.stockLengthIn)
+        if (bars.length > 0) {
+          html += `<div class="nest-wrap"><div class="nest-title">Stock Layout &mdash; ${bars.length} bar${bars.length !== 1 ? 's' : ''}</div>`
+          for (let bi = 0; bi < bars.length; bi++) {
+            const bar = bars[bi]
+            const scrapLen = Math.max(0, grp.stockLengthIn - (bar.used - 0.125))
+            const scrapPct = (scrapLen / grp.stockLengthIn) * 100
+            html += `<div class="nest-bar-label">Bar ${bi + 1} / ${grp.stockLengthIn}"</div><div class="nest-bar">`
+            for (const seg of bar.segments) {
+              const pct = (seg.len / grp.stockLengthIn) * 100
+              const color = colorMap[seg.cut.partId]
+              const label = pct > 16 ? `${seg.cut.partNumber} &middot; ${seg.len}"` : pct > 7 ? `${seg.len}"` : ''
+              html += `<div style="width:${pct}%;background:${color};border-right:2px solid rgba(0,0,0,0.15);display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0"><span style="font-size:0.58rem;font-weight:700;color:#fff;white-space:nowrap;padding:0 3px;text-shadow:0 1px 2px rgba(0,0,0,0.4)">${label}</span></div>`
+            }
+            if (scrapPct > 0.5) {
+              html += `<div style="flex:1;background:#f0f0f0;display:flex;align-items:center;justify-content:center"><span style="font-size:0.58rem;color:#aaa;white-space:nowrap">${scrapPct > 5 ? scrapLen.toFixed(1) + '" scrap' : ''}</span></div>`
+            }
+            html += `</div>`
+          }
+          // Legend
+          html += `<div class="nest-legend">`
+          for (const c of grp.cuts) {
+            html += `<div class="nest-legend-item"><div class="nest-swatch" style="background:${colorMap[c.partId]}"></div>${c.partNumber}${c.cutLengthIn != null ? ` ${c.cutLengthIn}"` : ''} &times;${c.qty}</div>`
+          }
+          html += `</div></div>`
+        }
       }
 
-      // Bends sub-section
+      // Bends
       const bendParts = grp.cuts.filter((c) => c.requiresBend)
       if (bendParts.length > 0) {
-        html += `<div class="section-label">Bends</div>
-<table>
-<thead><tr><th style="width:90px">Part #</th><th>Description</th><th style="width:40px;text-align:center">Qty</th><th style="width:60px;text-align:right">Length</th></tr></thead>
-<tbody>`
+        html += `<div class="section-label">Bends</div><table><thead><tr><th style="width:90px">Part #</th><th>Description</th><th style="width:40px;text-align:center">Qty</th><th style="width:64px;text-align:right">Length</th></tr></thead><tbody>`
         for (const c of bendParts) {
           const desc = (c.description ?? '').length > 42 ? (c.description ?? '').slice(0, 42) + '\u2026' : (c.description ?? '\u2014')
           html += `<tr><td class="mono">${c.partNumber}</td><td>${desc}</td><td style="text-align:center">${c.qty}&times;</td><td style="text-align:right">${c.cutLengthIn != null ? c.cutLengthIn + '"' : '\u2014'}</td></tr>`
         }
         html += `</tbody></table>`
       }
-
       html += `</div>`
     }
 
+    // ── Sheet groups ──────────────────────────────────────────────────────────
     for (const sg of sheetGroups) {
       const totalPieces = sg.parts.reduce((s, p) => s + p.qty, 0)
       html += `<div class="material-group">
-<div class="material-header">
+<div class="material-header sheet-header">
   <div class="material-name">${sg.materialName}</div>
-  <div class="material-stats">${totalPieces} pieces needed</div>
+  <div class="material-stats">${totalPieces} pieces needed &nbsp;&bull;&nbsp; ${sg.parts.length} part${sg.parts.length !== 1 ? 's' : ''}</div>
 </div>
-<table>
-<thead><tr><th style="width:90px">Part #</th><th>Description</th><th style="width:100px;text-align:center">Pieces Needed</th></tr></thead>
-<tbody>`
+<div class="parts-grid">`
       for (const p of sg.parts) {
-        const rowClass = p.done ? ' class="done-row"' : ''
-        const desc = (p.description ?? '').length > 42 ? (p.description ?? '').slice(0, 42) + '\u2026' : (p.description ?? '\u2014')
-        html += `<tr${rowClass}>
-  <td class="mono">${p.partNumber}</td>
-  <td>${desc}</td>
-  <td style="text-align:center">${p.qty} pieces needed</td>
-</tr>`
+        const desc = (p.description ?? '').length > 36 ? (p.description ?? '').slice(0, 36) + '\u2026' : (p.description ?? '')
+        const svgContent = dxfSvgMap[p.partId] ?? `<div style="color:#ccc;font-size:0.7rem;text-align:center">${p.partNumber}<br>No preview</div>`
+        const hasSvg = !!dxfSvgMap[p.partId]
+        html += `<div class="part-card${p.done ? ' done' : ''}">
+  <div class="part-dxf" style="${hasSvg ? '' : 'align-items:center;justify-content:center;flex-direction:column;gap:4px'}">${svgContent}</div>
+  <div class="part-info">
+    <span class="part-num">${p.partNumber}</span><span class="part-qty">${p.done ? '✓' : '&times;' + p.qty}</span>
+    ${desc ? `<div class="part-desc">${desc}</div>` : ''}
+  </div>
+</div>`
       }
-      html += `</tbody></table></div>`
+      html += `</div></div>`
     }
 
     html += `<script>window.onload=function(){window.print()}<\/script></body></html>`
-    const w = window.open('', '_blank')
-    if (w) { w.document.write(html); w.document.close() }
+    w.document.open()
+    w.document.write(html)
+    w.document.close()
   }
 
-  async function exportBatchCypCut(wItems: Map<string, { part: Part; totalQty: number; subAssemblyId: string | null }>) {
+  function exportBatchCypCut(wItems: Map<string, { part: Part; totalQty: number; subAssemblyId: string | null }>) {
     // Deduplicate by part.id — same part may appear across multiple SAs
     const partTotals = new Map<string, { part: Part; totalQty: number }>()
     for (const [, wi] of wItems) {
@@ -926,46 +1115,41 @@ export default function BatchesPage() {
     }
     if (partTotals.size === 0) { alert('No sheet parts in this batch.'); return }
 
-    const supabase = createBrowserClient()
-    const zip = new JSZip()
     const batchName = activeBatch?.name ?? 'batch'
+    const folder = cypCutFolder.trim().replace(/[/\\]+$/, '')  // strip trailing slashes
 
-    // Build XLSX rows — FilePath is just the bare filename; DXFs will be in same folder
-    const rows = Array.from(partTotals.values()).map(({ part, totalQty }) => ({
-      PartName: [part.thickness, part.material ? `[${part.material}]` : null, part.part_number].filter(Boolean).join(' '),
-      Amount: Math.ceil(totalQty * 1.05),
-      FilePath: part.dxf_file ?? '',
-    }))
+    // ── Missing DXF warnings ─────────────────────────────────────────────────
+    const missingDxf = Array.from(partTotals.values()).filter(({ part }) => !part.dxf_file)
+    const missingPath = folder
+      ? Array.from(partTotals.values()).filter(({ part }) => part.dxf_file && !folder)
+      : []
 
-    // Add XLSX to ZIP
-    const xlsxBytes = xlsxToBuffer('PartsDefinition', rows)
-    zip.file(`cypcut-${batchName}.xlsx`, xlsxBytes)
+    if (missingDxf.length > 0) {
+      const names = missingDxf.map(({ part }) => part.part_number).join(', ')
+      const proceed = window.confirm(
+        `⚠️ ${missingDxf.length} part${missingDxf.length !== 1 ? 's' : ''} have no DXF file assigned:\n\n${names}\n\nThese will have a blank file path in the export and CypCut won't be able to load them.\n\nContinue anyway?`
+      )
+      if (!proceed) return
+    }
 
-    // Fetch each DXF from Supabase storage and add to ZIP
-    const fetchPromises = Array.from(partTotals.values())
-      .filter(({ part }) => !!part.dxf_file)
-      .map(async ({ part }) => {
-        const filename = part.dxf_file!
-        const { data: { publicUrl } } = supabase.storage.from('dxf-files').getPublicUrl(filename)
-        try {
-          const res = await fetch(publicUrl)
-          if (!res.ok) throw new Error(`${res.status}`)
-          const buf = await res.arrayBuffer()
-          zip.file(filename, buf)
-        } catch (err) {
-          console.warn(`[CypCut] Could not fetch DXF for ${filename}:`, err)
-        }
-      })
+    if (!folder) {
+      const proceed = window.confirm(
+        `⚠️ No DXF folder is set.\n\nThe export will use bare filenames (e.g. "34711.dxf") instead of absolute paths. CypCut may not be able to find the files.\n\nSet the DXF folder path above, or continue anyway?`
+      )
+      if (!proceed) return
+    }
 
-    await Promise.all(fetchPromises)
+    const rows = Array.from(partTotals.values()).map(({ part, totalQty }) => {
+      const bare = part.dxf_file ?? ''
+      const filePath = folder ? `${folder}\\${bare}` : bare
+      return {
+        PartName: [part.thickness, part.material ? `[${part.material}]` : null, part.part_number].filter(Boolean).join(' '),
+        Amount: Math.ceil(totalQty * 1.05),
+        FilePath: filePath,
+      }
+    })
 
-    const zipBlob = await zip.generateAsync({ type: 'blob' })
-    const url = URL.createObjectURL(zipBlob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `cypcut-${batchName}.zip`
-    a.click()
-    URL.revokeObjectURL(url)
+    downloadXlsx(`cypcut-${batchName}.xlsx`, 'PartsDefinition', rows)
   }
 
   function exportBatchTubeXlsx(wItems: Map<string, { part: Part; totalQty: number; subAssemblyId: string | null }>) {
@@ -1066,7 +1250,7 @@ export default function BatchesPage() {
                         <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
                           <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small"
                             isTube={part.part_type === 'tube'} tubeFallback={true}
-                            tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={part.tube_shape === 'square' || part.tube_od?.toLowerCase().includes('x') ? 'square' : 'round'} />
+                            tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={part.tube_shape === 'square' || part.tube_od?.toLowerCase().includes('x') || (part.material ?? '').toLowerCase().startsWith('square') ? 'square' : 'round'} />
                           <div style={{ fontSize: '0.7rem', fontFamily: 'monospace', fontWeight: 700, color: '#555', marginTop: 4 }}>{part.part_number}</div>
                         </td>
                         <td style={{ textAlign: 'center', fontWeight: 700, verticalAlign: 'middle' }}>{totalQty}</td>
@@ -1244,6 +1428,11 @@ export default function BatchesPage() {
               <span style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>Created {fmtDate(activeBatch.created_at)}</span>
               {activeBatch.completed_at && <span style={{ color: 'var(--success)', fontSize: '0.82rem' }}>Completed {fmtDate(activeBatch.completed_at)}</span>}
               <div className="batch-action-bar" style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {activeBatch.status === 'draft' && (
+                  <button className="btn btn-primary" disabled={saving} onClick={() => confirmDraft(activeBatch, draftLineEdits)}>
+                    {saving ? 'Saving…' : '✓ Confirm Batch'}
+                  </button>
+                )}
                 {activeBatch.status === 'planned' && (
                   <button className="btn btn-primary" onClick={() => updateStatus(activeBatch, 'in_progress')}>▶ Start Build</button>
                 )}
@@ -1269,6 +1458,44 @@ export default function BatchesPage() {
             {activeBatch.notes && <div style={{ marginTop: 10, color: 'var(--text-2)', fontSize: '0.85rem' }}>{activeBatch.notes}</div>}
           </div>
         </section>
+
+        {/* ── Draft editing card ────────────────────────────────────────────── */}
+        {activeBatch.status === 'draft' && (
+          <section className="card">
+            <div className="card-header">
+              <h2 className="card-title">Review &amp; Confirm Quantities</h2>
+              <div className="card-subtitle">Edit quantities if needed, then click "Confirm Batch" to mark as Planned and start building.</div>
+            </div>
+            <div className="card-body" style={{ padding: 0 }}>
+              <div className="table-wrap">
+                <table className="table">
+                  <thead><tr><th>SKU</th><th>Description</th><th style={{ textAlign: 'center', width: 100 }}>Qty</th></tr></thead>
+                  <tbody>
+                    {batchLines.map((line) => {
+                      const sku = skus.find((s) => s.id === line.sku_id)
+                      const qtyVal = draftLineEdits[line.id] ?? String(line.qty)
+                      return (
+                        <tr key={line.id}>
+                          <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>{line.sku_id}</td>
+                          <td style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>{sku?.description ?? '—'}</td>
+                          <td style={{ textAlign: 'center' }}>
+                            <input
+                              type="number" min="1" step="1"
+                              className="field"
+                              style={{ width: 80, textAlign: 'center', padding: '4px 8px' }}
+                              value={qtyVal}
+                              onChange={(e) => setDraftLineEdits((prev) => ({ ...prev, [line.id]: e.target.value }))}
+                            />
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* Next Up banner */}
         {activeBatch.status === 'in_progress' && nextUpText && (
@@ -1385,19 +1612,33 @@ export default function BatchesPage() {
                     <div>
                       {/* Cut list action buttons */}
                       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--panel-2)', border: '1px solid var(--border)', borderRadius: 8, padding: '4px 10px' }}>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--muted)', whiteSpace: 'nowrap' }}>DXF&nbsp;folder:</span>
+                          <input
+                            className="field"
+                            style={{ width: 240, fontSize: '0.78rem', padding: '3px 8px', fontFamily: 'monospace' }}
+                            value={cypCutFolder}
+                            onChange={(e) => {
+                              setCypCutFolder(e.target.value)
+                              localStorage.setItem('cypcut_dxf_folder', e.target.value)
+                            }}
+                            placeholder="C:\Users\charl\Part DXF"
+                            title="Folder where your DXF files live — set once, remembered forever"
+                          />
+                        </div>
                         <button
                           type="button"
                           className="btn btn-secondary"
                           style={{ fontSize: '0.82rem' }}
                           onClick={() => exportBatchCypCut(workItems)}
                         >
-                          &#x1F4E6; Export CypCut Bundle
+                          &#x1F4CA; Export CypCut XLSX
                         </button>
                         <button
                           type="button"
                           className="btn btn-secondary"
                           style={{ fontSize: '0.82rem' }}
-                          onClick={() => printCutList(tubeGroups, sheetGroups)}
+                          onClick={() => void printCutList(tubeGroups, sheetGroups)}
                         >
                           &#x1F5A8; Print Cut List
                         </button>
@@ -1439,8 +1680,22 @@ export default function BatchesPage() {
 
                             {/* Cuts sub-section */}
                             <div style={{ padding: '0 0 4px' }}>
-                              <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--muted)', padding: '8px 16px 4px', borderBottom: '1px solid var(--border)' }}>
-                                Cuts
+                              <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--muted)', padding: '8px 16px 4px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <span>Cuts</span>
+                                <div style={{ display: 'flex', gap: 6 }}>
+                                  {grp.cuts.some((c) => !c.done) && (
+                                    <button type="button" className="btn btn-secondary" style={{ fontSize: '0.6rem', padding: '1px 7px', height: 20 }}
+                                      onClick={() => void handleBulkToggle(activeBatch.id, grp.cuts.map((c) => ({ id: c.partId, stageKey: 'saw' })), true, workItems, subAssemblyGroups)}>
+                                      ✓ All Sawn
+                                    </button>
+                                  )}
+                                  {grp.cuts.some((c) => c.done) && (
+                                    <button type="button" className="btn btn-secondary" style={{ fontSize: '0.6rem', padding: '1px 7px', height: 20 }}
+                                      onClick={() => void handleBulkToggle(activeBatch.id, grp.cuts.map((c) => ({ id: c.partId, stageKey: 'saw' })), false, workItems, subAssemblyGroups)}>
+                                      ✕ Clear
+                                    </button>
+                                  )}
+                                </div>
                               </div>
                               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                                 <thead>
@@ -1464,8 +1719,17 @@ export default function BatchesPage() {
                                         opacity: cut.done ? 0.6 : 1,
                                       }}
                                     >
-                                      <td style={{ padding: '8px 8px 8px 16px', fontSize: '1rem', textAlign: 'center', verticalAlign: 'middle' }}>
-                                        {cut.done ? '☑' : '☐'}
+                                      <td style={{ padding: '8px 8px 8px 16px', textAlign: 'center', verticalAlign: 'middle' }}>
+                                        <input
+                                          type="checkbox"
+                                          checked={cut.done}
+                                          disabled={savingKeys.has(`${cut.partId}:saw`)}
+                                          onChange={(e) => void handleToggle(
+                                            activeBatch.id, cut.partId, 'saw', e.target.checked,
+                                            workItems, subAssemblyGroups
+                                          )}
+                                          style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--success)' }}
+                                        />
                                       </td>
                                       <td style={{ padding: '8px', fontFamily: 'monospace', fontWeight: 700, fontSize: '0.82rem', verticalAlign: 'middle', color: 'var(--text-1)' }}>
                                         {cut.partNumber}
@@ -1638,13 +1902,51 @@ export default function BatchesPage() {
                       })}
 
                       {/* Sheet parts groups — card grid with DXF previews */}
-                      {sheetGroups.length > 0 && sheetGroups.map((sg) => (
+                      {sheetGroups.length > 0 && sheetGroups.map((sg) => {
+                        const laserParts = sg.parts.filter((p) => p.requiresLaser)
+                        const allLasered = laserParts.length > 0 && laserParts.every((p) => completions.has(`${p.partId}:laser`))
+                        const anyLasered = laserParts.some((p) => completions.has(`${p.partId}:laser`))
+                        return (
                         <div key={sg.materialId} style={{ marginBottom: 28, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
-                          <div style={{ background: 'var(--panel-2)', borderBottom: '1px solid var(--border)', padding: '10px 16px', borderLeft: '4px solid #60a5fa' }}>
-                            <div style={{ fontWeight: 800, fontSize: '1rem' }}>{sg.materialName}</div>
-                            <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 2 }}>
-                              {sg.parts.reduce((s, p) => s + p.qty, 0)} pieces needed · {sg.parts.length} part{sg.parts.length !== 1 ? 's' : ''}
+                          <div style={{ background: 'var(--panel-2)', borderBottom: '1px solid var(--border)', padding: '10px 16px', borderLeft: '4px solid #60a5fa', display: 'flex', alignItems: 'center', gap: 12 }}>
+                            <div style={{ flex: 1 }}>
+                              <div style={{ fontWeight: 800, fontSize: '1rem' }}>{sg.materialName}</div>
+                              <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 2 }}>
+                                {sg.parts.reduce((s, p) => s + p.qty, 0)} pieces needed · {sg.parts.length} part{sg.parts.length !== 1 ? 's' : ''}
+                              </div>
                             </div>
+                            {laserParts.length > 0 && (
+                              <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                                {!allLasered && (
+                                  <button
+                                    type="button"
+                                    className="btn btn-secondary"
+                                    style={{ fontSize: '0.68rem', padding: '2px 9px', height: 24 }}
+                                    onClick={() => void handleBulkToggle(
+                                      activeBatch.id,
+                                      laserParts.map((p) => ({ id: p.partId, stageKey: 'laser' })),
+                                      true, workItems, subAssemblyGroups
+                                    )}
+                                  >
+                                    ✓ All Lasered
+                                  </button>
+                                )}
+                                {anyLasered && (
+                                  <button
+                                    type="button"
+                                    className="btn btn-secondary"
+                                    style={{ fontSize: '0.68rem', padding: '2px 9px', height: 24 }}
+                                    onClick={() => void handleBulkToggle(
+                                      activeBatch.id,
+                                      laserParts.map((p) => ({ id: p.partId, stageKey: 'laser' })),
+                                      false, workItems, subAssemblyGroups
+                                    )}
+                                  >
+                                    ✕ Clear
+                                  </button>
+                                )}
+                              </div>
+                            )}
                           </div>
                           <div style={{ padding: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 10 }}>
                             {sg.parts.map((p) => (
@@ -1678,28 +1980,43 @@ export default function BatchesPage() {
                                       {p.description.length > 38 ? p.description.slice(0, 38) + '…' : p.description}
                                     </div>
                                   )}
-                                  {p.done && (
-                                    <div style={{ fontSize: '0.68rem', color: 'var(--success)', marginTop: 4, fontWeight: 700 }}>✓ Done</div>
+                                  {p.requiresLaser && (
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 6, cursor: 'pointer' }}>
+                                      <input
+                                        type="checkbox"
+                                        checked={completions.has(`${p.partId}:laser`)}
+                                        disabled={savingKeys.has(`${p.partId}:laser`)}
+                                        onChange={(e) => void handleToggle(
+                                          activeBatch.id, p.partId, 'laser', e.target.checked,
+                                          workItems, subAssemblyGroups
+                                        )}
+                                        style={{ width: 14, height: 14, accentColor: 'var(--success)' }}
+                                      />
+                                      <span style={{ fontSize: '0.68rem', color: completions.has(`${p.partId}:laser`) ? 'var(--success)' : 'var(--muted)', fontWeight: 600 }}>
+                                        {completions.has(`${p.partId}:laser`) ? '✓ Lasered' : 'Mark lasered'}
+                                      </span>
+                                    </label>
                                   )}
                                 </div>
                               </div>
                             ))}
                           </div>
                         </div>
-                      ))}
+                        )
+                      })}
                     </div>
                   ) : (
                   /* ── Progress Table View ──────────────────────────────────── */
                   <>
                   {/* Part-first manufacturing checklist table */}
-                  <div className="mfg-table-wrap" style={{ overflowX: 'auto' }}>
+                  <div className="mfg-table-wrap" style={{ overflow: 'auto', maxHeight: 'calc(100vh - 160px)', minHeight: 300 }}>
                     <table className="mfg-table" style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
                       <colgroup>
                         <col style={{ width: 170 }} />
                         <col style={{ width: 44 }} />
                         {activeStages.map((s) => <col key={s.stageKey} style={{ width: 84 }} />)}
                       </colgroup>
-                      <thead>
+                      <thead style={{ position: 'sticky', top: 0, zIndex: 20 }}>
                         <tr>
                           <th style={{ textAlign: 'left', padding: '8px 10px', background: 'var(--panel-2)', borderBottom: '2px solid var(--border)', fontSize: '0.72rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Part</th>
                           <th style={{ textAlign: 'center', padding: '8px 4px', background: 'var(--panel-2)', borderBottom: '2px solid var(--border)', fontSize: '0.72rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Qty</th>
@@ -1744,11 +2061,36 @@ export default function BatchesPage() {
                       </thead>
                       <tbody>
                         {/* ── Sub-assembly groups ── */}
-                        {Array.from(subAssemblyGroups.entries()).map(([saId, { subAssembly, items }]) => (
+                        {(() => {
+                          // Helper: is every op in this SA group done?
+                          function isSaComplete(saId: string, subAssembly: SubAssembly, items: Array<{ part: Part; totalQty: number }>) {
+                            const partsDone = items.every(({ part }) =>
+                              activeStages.every(({ stageKey, partKey }) => {
+                                if (stageKey === 'weld') return true // weld tracked at SA level
+                                return !part[partKey as keyof Part] || completions.has(`${part.id}:${stageKey}`)
+                              })
+                            )
+                            const weldDone = !subAssembly.requires_weld || completions.has(`${saId}:weld`)
+                            return partsDone && weldDone
+                          }
+
+                          // Sort: incomplete SAs first, complete ones at the bottom
+                          const sortedEntries = Array.from(subAssemblyGroups.entries()).sort(([aId, { subAssembly: aSa, items: aItems }], [bId, { subAssembly: bSa, items: bItems }]) => {
+                            const aC = isSaComplete(aId, aSa, aItems)
+                            const bC = isSaComplete(bId, bSa, bItems)
+                            if (aC === bC) return 0
+                            return aC ? 1 : -1
+                          })
+
+                          return sortedEntries.map(([saId, { subAssembly, items }]) => {
+                            const isComplete = isSaComplete(saId, subAssembly, items)
+                            const isExpanded = !isComplete || expandedCompleteSaIds.has(saId)
+
+                            return (
                           <>
-                            {/* SA header row */}
-                            <tr key={`sa-hdr-${saId}`}>
-                              <td colSpan={2 + activeStages.length} style={{ padding: '7px 12px', background: 'rgba(167,139,250,0.09)', borderTop: '2px solid rgba(167,139,250,0.22)', borderBottom: '1px solid var(--border)' }}>
+                            {/* SA header row — sticky below the column header */}
+                            <tr key={`sa-hdr-${saId}`} style={{ position: 'sticky', top: 52, zIndex: 10 }}>
+                              <td colSpan={2 + activeStages.length} style={{ padding: '7px 12px', background: isComplete ? 'rgba(34,197,94,0.08)' : 'var(--panel-2)', borderTop: `2px solid ${isComplete ? 'rgba(34,197,94,0.4)' : '#a78bfa'}`, borderBottom: '1px solid var(--border)' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                                   {subAssembly.image_file ? (
                                     <img
@@ -1762,15 +2104,34 @@ export default function BatchesPage() {
                                       🔧
                                     </div>
                                   )}
-                                  <div>
-                                    <div style={{ fontSize: '0.65rem', color: '#a78bfa', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Sub-Assembly</div>
+                                  <div style={{ flex: 1 }}>
+                                    <div style={{ fontSize: '0.65rem', color: isComplete ? 'var(--success)' : '#a78bfa', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Sub-Assembly</div>
                                     <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>{subAssembly.name}</div>
                                   </div>
+                                  {isComplete && (
+                                    <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--success)', background: 'rgba(34,197,94,0.12)', border: '1px solid rgba(34,197,94,0.3)', borderRadius: 20, padding: '2px 9px', whiteSpace: 'nowrap' }}>
+                                      ✓ Complete
+                                    </span>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => setExpandedCompleteSaIds(prev => {
+                                      const next = new Set(prev)
+                                      if (isComplete) {
+                                        if (next.has(saId)) next.delete(saId); else next.add(saId)
+                                      }
+                                      return next
+                                    })}
+                                    style={{ background: 'transparent', border: 'none', cursor: isComplete ? 'pointer' : 'default', color: 'var(--muted)', fontSize: '0.8rem', padding: '2px 6px', opacity: isComplete ? 1 : 0, pointerEvents: isComplete ? 'auto' : 'none' }}
+                                    title={isComplete ? (isExpanded ? 'Collapse' : 'Expand') : undefined}
+                                  >
+                                    {isExpanded ? '▲' : '▼'}
+                                  </button>
                                 </div>
                               </td>
                             </tr>
-                            {/* Part rows — weld column is merged across all rows via rowspan on first part */}
-                            {(() => {
+                            {/* Part rows — only shown when expanded; weld column merged via rowspan */}
+                            {isExpanded && (() => {
                               const saWeldDone = completions.has(`${saId}:weld`)
                               const saWeldBlocked = items.some((i) => STAGES.some((s) => {
                                 if (s.stageKey === 'weld') return false
@@ -1789,7 +2150,7 @@ export default function BatchesPage() {
                                     <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
                                       <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small"
                                         isTube={part.part_type === 'tube'} tubeFallback={true}
-                                        tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={part.tube_shape === 'square' || part.tube_od?.toLowerCase().includes('x') ? 'square' : 'round'} />
+                                        tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={part.tube_shape === 'square' || part.tube_od?.toLowerCase().includes('x') || (part.material ?? '').toLowerCase().startsWith('square') ? 'square' : 'round'} />
                                       <div style={{ fontSize: '0.68rem', fontFamily: 'monospace', fontWeight: 700, color: 'var(--muted)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{part.part_number}</div>
                                       {part.description && <div style={{ fontSize: '0.62rem', color: 'var(--muted)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>{part.description}</div>}
                                     </td>
@@ -1847,7 +2208,9 @@ export default function BatchesPage() {
                               })
                             })()}
                           </>
-                        ))}
+                            )
+                          })
+                        })()}
 
                         {/* ── Direct parts ── */}
                         {directItems.length > 0 && (
@@ -1864,7 +2227,7 @@ export default function BatchesPage() {
                                   <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
                                     <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small"
                                       isTube={part.part_type === 'tube'} tubeFallback={true}
-                                      tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={part.tube_shape === 'square' || part.tube_od?.toLowerCase().includes('x') ? 'square' : 'round'} />
+                                      tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={part.tube_shape === 'square' || part.tube_od?.toLowerCase().includes('x') || (part.material ?? '').toLowerCase().startsWith('square') ? 'square' : 'round'} />
                                     <div style={{ fontSize: '0.68rem', fontFamily: 'monospace', fontWeight: 700, color: 'var(--muted)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{part.part_number}</div>
                                     {part.description && <div style={{ fontSize: '0.62rem', color: 'var(--muted)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>{part.description}</div>}
                                   </td>
@@ -2024,6 +2387,7 @@ export default function BatchesPage() {
             <div className="btn-row">
               <button className="btn btn-secondary" onClick={() => setCreateRows((prev) => [...prev, { skuId: '', qty: '1', skuLookup: '' }])}>+ Add Row</button>
               <button className="btn btn-secondary" onClick={() => setSkuPickerOpen(true)}>Browse SKUs</button>
+              <button className="btn btn-secondary" disabled={saving} onClick={saveDraft} title="Save quantities to confirm later">{saving ? 'Saving…' : '💾 Save Draft'}</button>
               <button className="btn btn-primary" disabled={saving} onClick={createBatch}>{saving ? 'Saving…' : 'Create Batch'}</button>
             </div>
           </div>
@@ -2124,9 +2488,11 @@ export default function BatchesPage() {
                   {batches.map((batch) => {
                     const ss = STATUS_STYLE[batch.status]
                     const skuCount = lines.filter((l) => l.batch_id === batch.id).length
-                    const done = batchCompletionCounts[batch.id] ?? 0
+                    const rawDone = batchCompletionCounts[batch.id] ?? 0
                     const total = batchTotalOps[batch.id] ?? 0
-                    const pct = total > 0 ? Math.round((done / total) * 100) : (batch.status === 'complete' ? 100 : 0)
+                    // Cap done at total — stale completion records can push rawDone above total
+                    const done = Math.min(rawDone, total)
+                    const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : (batch.status === 'complete' ? 100 : 0)
                     return (
                       <tr key={batch.id} style={{ cursor: 'pointer' }} onClick={() => { setActiveBatch(batch); setView('detail') }}>
                         <td style={{ fontWeight: 700 }}>{batch.name}</td>
@@ -2137,6 +2503,8 @@ export default function BatchesPage() {
                             <span style={{ color: 'var(--success)', fontSize: '0.8rem', fontWeight: 700 }}>✓ Done</span>
                           ) : batch.status === 'at_powder' ? (
                             <span style={{ color: '#a78bfa', fontSize: '0.8rem', fontWeight: 700 }}>🎨 At Powder</span>
+                          ) : batch.status === 'draft' ? (
+                            <span style={{ color: '#60a5fa', fontSize: '0.8rem' }}>Pending confirmation</span>
                           ) : batch.status === 'planned' ? (
                             <span style={{ color: 'var(--muted)', fontSize: '0.8rem' }}>Not started</span>
                           ) : (

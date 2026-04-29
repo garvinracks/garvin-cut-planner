@@ -440,7 +440,7 @@ export default function OrdersPage() {
   async function loadBatches() {
     const [{ data: bl }, { data: ab }] = await Promise.all([
       supabase.from('build_batch_lines').select('batch_id, sku_id'),
-      supabase.from('build_batches').select('id, name, status').in('status', ['planned', 'in_progress', 'at_powder']),
+      supabase.from('build_batches').select('id, name, status').in('status', ['draft', 'planned', 'in_progress', 'at_powder']),
     ])
     setBatchLines((bl ?? []) as BatchLine[])
     setActiveBatches((ab ?? []) as ActiveBatch[])
@@ -614,13 +614,42 @@ export default function OrdersPage() {
 
   function sendToBatch() {
     const selected = orders.filter((o) => selectedIds.has(o.id))
+
+    // Build the set of SKUs already present in any active batch (draft → at_powder)
+    const activeBatchIds = new Set(activeBatches.map((b) => b.id))
+    const skusInActiveBatches = new Set(
+      batchLines
+        .filter((bl) => activeBatchIds.has(bl.batch_id))
+        .map((bl) => bl.sku_id)
+    )
+
     const demand: Record<string, number> = {}
+    const skipped = new Set<string>()
+
     for (const order of selected) {
       for (const line of order.order_lines) {
         if (!line.sku_id) continue
+        if (skusInActiveBatches.has(line.sku_id)) {
+          skipped.add(line.sku_id)
+          continue
+        }
         demand[line.sku_id] = (demand[line.sku_id] ?? 0) + line.qty
       }
     }
+
+    if (Object.keys(demand).length === 0) {
+      alert('All SKUs from the selected orders are already in an active build batch — nothing to add.')
+      return
+    }
+
+    if (skipped.size > 0) {
+      const skippedList = Array.from(skipped).join(', ')
+      const ok = window.confirm(
+        `${skipped.size} SKU${skipped.size !== 1 ? 's' : ''} already exist in an active build batch and will be skipped:\n\n${skippedList}\n\nContinue with the remaining ${Object.keys(demand).length} SKU${Object.keys(demand).length !== 1 ? 's' : ''}?`
+      )
+      if (!ok) return
+    }
+
     const rows = Object.entries(demand).map(([skuId, qty]) => ({
       skuId, qty: String(qty), skuLookup: skuId,
     }))
@@ -782,6 +811,7 @@ export default function OrdersPage() {
   }, [batchLines, activeBatches])
 
   const BATCH_STATUS_STYLE: Record<string, { label: string; bg: string; color: string }> = {
+    draft:       { label: 'Draft Batch', bg: 'rgba(100,116,139,0.2)', color: '#94a3b8' },
     planned:     { label: 'Planned',     bg: 'rgba(100,116,139,0.2)', color: '#94a3b8' },
     in_progress: { label: 'In Build',    bg: 'rgba(234,179,8,0.2)',   color: '#facc15' },
     at_powder:   { label: 'At Powder',   bg: 'rgba(167,139,250,0.2)', color: '#a78bfa' },
@@ -1303,9 +1333,24 @@ export default function OrdersPage() {
                         const alloc        = status ? ALLOC_STYLE[status] : null
                         const chStyle      = CH_STYLE[order.channel] ?? CH_STYLE.shopify
                         const totalQty     = order.order_lines.reduce((s, l) => s + l.qty, 0)
-                        const orderBatchStatuses = order.order_lines
-                          .filter((l) => l.sku_id && skuBatchStatus[l.sku_id])
-                          .map((l) => skuBatchStatus[l.sku_id!])
+                        const linesWithSku    = order.order_lines.filter((l) => l.sku_id)
+                        const linesInBatch    = linesWithSku.filter((l) => l.sku_id && skuBatchStatus[l.sku_id])
+                        // A line is "covered" if it's in a batch OR has enough stock on hand
+                        const linesCovered    = linesWithSku.filter((l) => {
+                          if (!l.sku_id) return false
+                          if (skuBatchStatus[l.sku_id]) return true
+                          const onHand = inventory.find((i) => i.sku_id === l.sku_id)?.qty_on_hand ?? 0
+                          return onHand >= l.qty
+                        })
+                        // Only flag as "needs build" if NOT in a batch AND stock is insufficient
+                        const unbatchedLines  = linesWithSku.filter((l) => {
+                          if (!l.sku_id || skuBatchStatus[l.sku_id]) return false
+                          const onHand = inventory.find((i) => i.sku_id === l.sku_id)?.qty_on_hand ?? 0
+                          return onHand < l.qty
+                        })
+                        const allBatched      = linesWithSku.length > 0 && linesCovered.length === linesWithSku.length
+                        const someBatched     = linesInBatch.length > 0 && !allBatched
+                        const orderBatchStatuses = linesInBatch.map((l) => skuBatchStatus[l.sku_id!])
                         const topBatch = orderBatchStatuses.sort((a, b) =>
                           (STATUS_PRIORITY[b.status] ?? 0) - (STATUS_PRIORITY[a.status] ?? 0)
                         )[0]
@@ -1397,8 +1442,35 @@ export default function OrdersPage() {
                               {/* Status — production + alloc */}
                               <td>
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
-                                  {/* Production status: shows for any SKU in a batch */}
-                                  {topBatch && (
+                                  {/* Production status */}
+                                  {isMultiSku && allBatched && topBatch && (
+                                    /* All SKUs covered — same colour as single-SKU batch badge */
+                                    <span
+                                      title={`All ${linesWithSku.length} SKUs are in a batch`}
+                                      style={{
+                                        background: BATCH_STATUS_STYLE[topBatch.status]?.bg,
+                                        color: BATCH_STATUS_STYLE[topBatch.status]?.color,
+                                        borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700, cursor: 'default',
+                                      }}
+                                    >
+                                      ✓ All In Build
+                                    </span>
+                                  )}
+                                  {isMultiSku && someBatched && (
+                                    /* Partial — warning badge + list only truly-unbuildable SKUs */
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                      <span style={{ background: 'rgba(234,179,8,0.15)', color: '#facc15', borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700 }}>
+                                        ⚠ {linesCovered.length}/{linesWithSku.length} covered
+                                      </span>
+                                      {unbatchedLines.length > 0 && (
+                                        <span style={{ fontSize: '0.68rem', color: 'var(--danger)', fontFamily: 'monospace', lineHeight: 1.4 }}>
+                                          {unbatchedLines.map((l) => l.ss_sku).join(', ')} needs build
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+                                  {(!isMultiSku || (!allBatched && !someBatched)) && topBatch && (
+                                    /* Single-SKU order — top batch badge, clickable */
                                     <span
                                       title={topBatch.batchName}
                                       style={{
@@ -1415,22 +1487,30 @@ export default function OrdersPage() {
                                       {BATCH_STATUS_STYLE[topBatch.status]?.label}
                                     </span>
                                   )}
-                                  {/* Allocation status: shown once stock is allocated */}
-                                  {allocated && alloc && (
+                                  {/* Allocation status */}
+                                  {allocated && alloc && status === 'ready' && (
+                                    /* "Ready / In Stock" — always worth showing + Ship button */
                                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                                       <span style={{ fontSize: '0.78rem', color: alloc.color, fontWeight: 600, whiteSpace: 'nowrap' }}>
                                         {alloc.icon} {alloc.label}
                                       </span>
-                                      {status === 'ready' && (
-                                        <button
-                                          className="btn btn-primary"
-                                          style={{ height: 24, fontSize: '0.72rem', padding: '0 8px', flexShrink: 0 }}
-                                          onClick={(e) => { e.stopPropagation(); setShippingOrderId(order.id); setShippingCost('') }}
-                                        >
-                                          Ship →
-                                        </button>
-                                      )}
+                                      <button
+                                        className="btn btn-primary"
+                                        style={{ height: 24, fontSize: '0.72rem', padding: '0 8px', flexShrink: 0 }}
+                                        onClick={(e) => { e.stopPropagation(); setShippingOrderId(order.id); setShippingCost('') }}
+                                      >
+                                        Ship →
+                                      </button>
                                     </div>
+                                  )}
+                                  {allocated && alloc && status !== 'ready' && !topBatch && (
+                                    /* "Build Needed" / "Partial" — only show when nothing is in a batch yet */
+                                    <span style={{
+                                      background: 'rgba(239,68,68,0.12)', color: 'var(--danger)',
+                                      borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 600,
+                                    }}>
+                                      {alloc.icon} {alloc.label}
+                                    </span>
                                   )}
                                 </div>
                               </td>
@@ -1528,15 +1608,26 @@ export default function OrdersPage() {
             /* ── By SKU view ─────────────────────────────────────────────────── */
             <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
               {skuGroupList.map((group) => {
-                const totalQty = group.orders.reduce((s, r) => s + r.qty, 0)
-                const inv      = inventory.find((i) => i.sku_id === group.sku_id)
-                const onHand   = inv?.qty_on_hand ?? 0
+                const totalQty   = group.orders.reduce((s, r) => s + r.qty, 0)
+                const inv        = inventory.find((i) => i.sku_id === group.sku_id)
+                const onHand     = inv?.qty_on_hand ?? 0
+                const groupBatch = skuBatchStatus[group.sku_id] ?? null
+                const isLocked   = groupBatch !== null
                 return (
-                  <div key={group.sku_id} style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+                  <div key={group.sku_id} style={{ border: `1px solid ${isLocked ? 'rgba(100,116,139,0.3)' : 'var(--border)'}`, borderRadius: 8, overflow: 'hidden', opacity: isLocked ? 0.65 : 1 }}>
                     {/* SKU group header */}
                     <div style={{ background: 'var(--panel-2)', padding: '10px 16px', display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
                       <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '0.9rem' }}>{group.sku_id}</span>
                       <span style={{ color: 'var(--text-2)', fontSize: '0.84rem' }}>{group.description}</span>
+                      {isLocked && (
+                        <span style={{
+                          background: BATCH_STATUS_STYLE[groupBatch.status]?.bg ?? 'rgba(100,116,139,0.2)',
+                          color: BATCH_STATUS_STYLE[groupBatch.status]?.color ?? '#94a3b8',
+                          borderRadius: 20, padding: '2px 10px', fontSize: '0.74rem', fontWeight: 700,
+                        }}>
+                          🔒 {BATCH_STATUS_STYLE[groupBatch.status]?.label ?? groupBatch.status} · {groupBatch.batchName}
+                        </span>
+                      )}
                       <div style={{ marginLeft: 'auto', display: 'flex', gap: 14, fontSize: '0.8rem' }}>
                         <span><strong style={{ color: 'var(--danger)' }}>{totalQty}</strong> <span style={{ color: 'var(--muted)' }}>needed</span></span>
                         <span><strong style={{ color: onHand > 0 ? 'var(--success)' : 'var(--muted)' }}>{onHand}</strong> <span style={{ color: 'var(--muted)' }}>on hand</span></span>
@@ -1551,9 +1642,11 @@ export default function OrdersPage() {
                       <thead>
                         <tr>
                           <th style={{ width: 32 }}>
-                            <input type="checkbox" style={{ cursor: 'pointer' }}
-                              checked={group.orders.every((r) => selectedIds.has(r.order.id))}
+                            <input type="checkbox" style={{ cursor: isLocked ? 'not-allowed' : 'pointer' }}
+                              disabled={isLocked}
+                              checked={!isLocked && group.orders.every((r) => selectedIds.has(r.order.id))}
                               onChange={() => {
+                                if (isLocked) return
                                 const allSelected = group.orders.every((r) => selectedIds.has(r.order.id))
                                 setSelectedIds((prev) => {
                                   const next = new Set(prev)
@@ -1580,11 +1673,12 @@ export default function OrdersPage() {
                           // For By-SKU view, the group is already filtered to a single SKU
                           const lineSkuBatch = skuBatchStatus[group.sku_id] ?? null
                           return (
-                            <tr key={order.id} style={{ background: selectedIds.has(order.id) ? 'var(--accent-soft)' : 'transparent' }}>
+                            <tr key={order.id} style={{ background: !isLocked && selectedIds.has(order.id) ? 'var(--accent-soft)' : 'transparent' }}>
                               <td>
-                                <input type="checkbox" style={{ cursor: 'pointer' }}
-                                  checked={selectedIds.has(order.id)}
-                                  onChange={() => toggleSelect(order.id)} />
+                                <input type="checkbox" style={{ cursor: isLocked ? 'not-allowed' : 'pointer' }}
+                                  disabled={isLocked}
+                                  checked={!isLocked && selectedIds.has(order.id)}
+                                  onChange={() => { if (!isLocked) toggleSelect(order.id) }} />
                               </td>
                               <td style={{ fontWeight: 700 }}>{order.order_number}</td>
                               <td>

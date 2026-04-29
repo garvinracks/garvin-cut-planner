@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createBrowserClient } from '@/lib/supabase'
 import DxfPartPreview from '@/components/DxfPartPreview'
 
@@ -10,9 +10,10 @@ import DxfPartPreview from '@/components/DxfPartPreview'
 export const STAGE_KEYS = [
   'requires_laser',
   'requires_sheet_bend',
-  'requires_tube_bend',
   'requires_saw',
   'requires_drill',
+  'requires_notch',
+  'requires_tube_bend',
   'requires_weld',
 ] as const
 export type StageKey = typeof STAGE_KEYS[number]
@@ -20,9 +21,10 @@ export type StageKey = typeof STAGE_KEYS[number]
 export const STAGE_LABELS: Record<StageKey, string> = {
   requires_laser:      'Laser',
   requires_sheet_bend: 'Sheet Bend',
-  requires_tube_bend:  'Tube Bend',
   requires_saw:        'Saw',
   requires_drill:      'Drill Press',
+  requires_notch:      'Notch',
+  requires_tube_bend:  'Tube Bend',
   requires_weld:       'Weld',
 }
 
@@ -42,8 +44,9 @@ type Part = {
   weight_lbs: number | null
   requires_laser:      boolean
   requires_sheet_bend: boolean
-  requires_tube_bend:  boolean
   requires_saw:        boolean
+  requires_notch:      boolean
+  requires_tube_bend:  boolean
   requires_drill:      boolean
   requires_weld:       boolean
   requires_powder:     boolean
@@ -61,33 +64,6 @@ type MaterialRow = {
 }
 
 const DXF_BUCKET = 'dxf-files'
-
-type PartOperation = {
-  id: string
-  part_id: string
-  step: number
-  operation: string
-  notes: string | null
-}
-
-const OPERATION_OPTIONS = [
-  'Laser Cut',
-  'Plasma Cut',
-  'Bend',
-  'Roll',
-  'Punch',
-  'Drill',
-  'Tap',
-  'MIG Weld',
-  'TIG Weld',
-  'Grind / Deburr',
-  'Paint',
-  'Powder Coat',
-  'Hardware',
-  'Assembly',
-]
-
-const emptyOpForm = { operation: 'Laser Cut', notes: '' }
 
 type PartRevision = {
   id: string
@@ -201,8 +177,9 @@ const emptyForm = {
   notes: '',
   requires_laser:      false,
   requires_sheet_bend: false,
-  requires_tube_bend:  false,
   requires_saw:        false,
+  requires_notch:      false,
+  requires_tube_bend:  false,
   requires_drill:      false,
   requires_weld:       false,
   requires_powder:     false,
@@ -210,6 +187,7 @@ const emptyForm = {
 
 export default function PartsPage() {
   const supabase = useMemo(() => createBrowserClient(), [])
+  const formTopRef = useRef<HTMLElement>(null)
   const [parts, setParts] = useState<Part[]>([])
   const [weightUnit, setWeightUnit] = useState<'lbs' | 'oz'>('lbs')
   const [materials, setMaterials] = useState<MaterialRow[]>([])
@@ -223,12 +201,6 @@ export default function PartsPage() {
   const [selectedDxfFile, setSelectedDxfFile] = useState<File | null>(null)
   const [previewPart, setPreviewPart] = useState<Part | null>(null)
 
-  // Operation routing
-  const [operations, setOperations] = useState<PartOperation[]>([])
-  const [opForm, setOpForm] = useState(emptyOpForm)
-  const [savingOp, setSavingOp] = useState(false)
-  const [opMessage, setOpMessage] = useState('')
-  const [loadingOps, setLoadingOps] = useState(false)
 
   // Usage map
   const [usageRefs, setUsageRefs] = useState<UsageRef[]>([])
@@ -380,8 +352,6 @@ export default function PartsPage() {
     setForm(emptyForm)
     setSelectedDxfFile(null)
     setMessage('')
-    setOperations([])
-    setOpMessage('')
     setUsageRefs([])
     setRevisions([])
   }
@@ -409,6 +379,8 @@ export default function PartsPage() {
 
   function startEdit(part: Part) {
     setEditingId(part.id)
+    // scrollIntoView is reliable on iOS Safari; window.scrollTo is not
+    setTimeout(() => formTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
     setSelectedDxfFile(null)
     setWeightUnit('lbs')
     setForm({
@@ -423,15 +395,14 @@ export default function PartsPage() {
       notes: part.notes || '',
       requires_laser:      part.requires_laser,
       requires_sheet_bend: part.requires_sheet_bend,
-      requires_tube_bend:  part.requires_tube_bend,
       requires_saw:        part.requires_saw,
+      requires_notch:      part.requires_notch ?? false,
+      requires_tube_bend:  part.requires_tube_bend,
       requires_drill:      part.requires_drill,
       requires_weld:       part.requires_weld,
       requires_powder:     part.requires_powder,
     })
     setMessage('')
-    setOpMessage('')
-    void loadOperations(part.id)
     void loadUsage(part.id)
     void loadRevisions(part.id)
   }
@@ -452,8 +423,9 @@ export default function PartsPage() {
       notes: part.notes || '',
       requires_laser:      part.requires_laser,
       requires_sheet_bend: part.requires_sheet_bend,
-      requires_tube_bend:  part.requires_tube_bend,
       requires_saw:        part.requires_saw,
+      requires_notch:      part.requires_notch ?? false,
+      requires_tube_bend:  part.requires_tube_bend,
       requires_drill:      part.requires_drill,
       requires_weld:       part.requires_weld,
       requires_powder:     part.requires_powder,
@@ -522,8 +494,9 @@ export default function PartsPage() {
         notes: form.notes.trim() || null,
         requires_laser:      form.requires_laser,
         requires_sheet_bend: form.requires_sheet_bend,
-        requires_tube_bend:  form.requires_tube_bend,
         requires_saw:        form.requires_saw,
+        requires_notch:      form.requires_notch,
+        requires_tube_bend:  form.requires_tube_bend,
         requires_drill:      form.requires_drill,
         requires_weld:       form.requires_weld,
         requires_powder:     form.requires_powder,
@@ -541,6 +514,34 @@ export default function PartsPage() {
         Number.isNaN(payload.cut_length)
       ) {
         setMessage('Cut Length must be a valid number.')
+        setSaving(false)
+        return
+      }
+
+      // ── ID rename: insert new + re-point all FK refs + delete old ──────────────
+      if (editingId && editingId !== payload.id) {
+        const newId = payload.id
+        const currentPart = parts.find((p) => p.id === editingId)
+        const { error: insertErr } = await supabase.from('parts').insert({
+          ...payload,
+          dxf_file: currentPart?.dxf_file ?? null,
+        })
+        if (insertErr) {
+          setMessage(`Rename failed: ${insertErr.message}`)
+          setSaving(false)
+          return
+        }
+        await Promise.all([
+          supabase.from('part_operations').update({ part_id: newId }).eq('part_id', editingId),
+          supabase.from('sku_parts').update({ part_id: newId }).eq('part_id', editingId),
+          supabase.from('sub_assembly_parts').update({ part_id: newId }).eq('part_id', editingId),
+          supabase.from('batch_part_completions').update({ part_id: newId }).eq('part_id', editingId),
+          supabase.from('part_revisions').update({ part_id: newId }).eq('part_id', editingId),
+        ])
+        await supabase.from('parts').delete().eq('id', editingId)
+        setMessage(`Renamed ${editingId} → ${newId}.`)
+        setEditingId(newId)
+        await loadParts()
         setSaving(false)
         return
       }
@@ -585,62 +586,6 @@ export default function PartsPage() {
       startNew()
       await loadParts()
     }
-  }
-
-  async function loadOperations(partId: string) {
-    setLoadingOps(true)
-    const { data, error } = await supabase
-      .from('part_operations')
-      .select('*')
-      .eq('part_id', partId)
-      .order('step', { ascending: true })
-    if (!error) setOperations((data ?? []) as PartOperation[])
-    setLoadingOps(false)
-  }
-
-  async function handleAddOperation(e: React.FormEvent) {
-    e.preventDefault()
-    if (!editingId) return
-    setSavingOp(true)
-    setOpMessage('')
-    const nextStep = operations.length > 0 ? Math.max(...operations.map((o) => o.step)) + 1 : 1
-    const { error } = await supabase.from('part_operations').insert({
-      part_id: editingId,
-      step: nextStep,
-      operation: opForm.operation,
-      notes: opForm.notes.trim() || null,
-    })
-    if (error) {
-      setOpMessage(`Failed: ${error.message}`)
-    } else {
-      setOpForm(emptyOpForm)
-      await loadOperations(editingId)
-    }
-    setSavingOp(false)
-  }
-
-  async function handleDeleteOperation(id: string) {
-    if (!editingId) return
-    await supabase.from('part_operations').delete().eq('id', id)
-    await loadOperations(editingId)
-    // Re-number steps sequentially
-    const updated = operations.filter((o) => o.id !== id)
-    for (let i = 0; i < updated.length; i++) {
-      await supabase.from('part_operations').update({ step: i + 1 }).eq('id', updated[i].id)
-    }
-    await loadOperations(editingId)
-  }
-
-  async function handleMoveOperation(id: string, direction: 'up' | 'down') {
-    if (!editingId) return
-    const idx = operations.findIndex((o) => o.id === id)
-    const swapIdx = direction === 'up' ? idx - 1 : idx + 1
-    if (swapIdx < 0 || swapIdx >= operations.length) return
-    const a = operations[idx]
-    const b = operations[swapIdx]
-    await supabase.from('part_operations').update({ step: b.step }).eq('id', a.id)
-    await supabase.from('part_operations').update({ step: a.step }).eq('id', b.id)
-    await loadOperations(editingId)
   }
 
   async function loadUsage(partId: string) {
@@ -738,7 +683,7 @@ export default function PartsPage() {
         </div>
       </div>
 
-      <section className="card">
+      <section className="card" ref={formTopRef}>
         <div className="card-header">
           <h2 className="card-title">{editingId ? `Edit Part: ${editingId}` : 'Add Part'}</h2>
           <div className="card-subtitle">
@@ -756,13 +701,19 @@ export default function PartsPage() {
               }}
             >
               <div>
-                <label className="label">ID</label>
+                <label className="label">
+                  ID
+                  {editingId && editingId !== form.id.trim() && (
+                    <span style={{ color: 'var(--warning)', fontSize: '0.7rem', textTransform: 'none', letterSpacing: 0 }}>
+                      {' '}— will rename from {editingId}
+                    </span>
+                  )}
+                </label>
                 <input
                   className="field"
                   value={form.id}
                   onChange={(e) => updateField('id', e.target.value)}
                   placeholder="44307-T1"
-                  disabled={!!editingId}
                 />
               </div>
 
@@ -992,134 +943,6 @@ export default function PartsPage() {
         </div>
       </section>
 
-      {/* ── Operation Routing ── */}
-      {editingId && (
-        <section className="card">
-          <div className="card-header">
-            <h2 className="card-title">Manufacturing Route</h2>
-            <div className="card-subtitle">
-              Define the ordered operations this part goes through — e.g. Laser Cut → Bend → Weld.
-            </div>
-          </div>
-
-          <div className="card-body">
-            {/* Route flow display */}
-            {operations.length > 0 && (
-              <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginBottom: 20 }}>
-                {operations.map((op, i) => (
-                  <div key={op.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <div style={{
-                      background: 'var(--accent-soft)',
-                      border: '1px solid var(--accent-border)',
-                      borderRadius: 20,
-                      padding: '4px 14px',
-                      fontSize: '0.82rem',
-                      fontWeight: 700,
-                      color: '#ffd7c4',
-                      whiteSpace: 'nowrap',
-                    }}>
-                      {op.step}. {op.operation}
-                    </div>
-                    {i < operations.length - 1 && (
-                      <span style={{ color: 'var(--muted)', fontSize: '1rem' }}>→</span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div className="grid-2" style={{ alignItems: 'start', gap: 24 }}>
-              {/* Add operation form */}
-              <form onSubmit={handleAddOperation}>
-                <div className="group-title" style={{ marginBottom: 12 }}>Add Step</div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                  <div>
-                    <label className="label">Operation</label>
-                    <select
-                      className="select"
-                      value={opForm.operation}
-                      onChange={(e) => setOpForm((p) => ({ ...p, operation: e.target.value }))}
-                    >
-                      {OPERATION_OPTIONS.map((op) => (
-                        <option key={op} value={op}>{op}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="label">Notes (optional)</label>
-                    <input
-                      className="field"
-                      value={opForm.notes}
-                      onChange={(e) => setOpForm((p) => ({ ...p, notes: e.target.value }))}
-                      placeholder="e.g. 90° bend, 4 places"
-                    />
-                  </div>
-                </div>
-                <div className="btn-row" style={{ marginTop: 12 }}>
-                  <button type="submit" disabled={savingOp} className="btn btn-primary">
-                    {savingOp ? 'Adding…' : 'Add Step'}
-                  </button>
-                </div>
-                {opMessage && <div className="message">{opMessage}</div>}
-              </form>
-
-              {/* Steps table */}
-              <div>
-                <div className="group-title" style={{ marginBottom: 12 }}>
-                  Steps {loadingOps ? '(loading…)' : `(${operations.length})`}
-                </div>
-                {operations.length === 0 ? (
-                  <div className="empty">No operations added yet.</div>
-                ) : (
-                  <div className="table-wrap">
-                    <table className="table">
-                      <thead>
-                        <tr>
-                          <th style={{ width: 40 }}>#</th>
-                          <th>Operation</th>
-                          <th>Notes</th>
-                          <th style={{ width: 100 }}></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {operations.map((op, i) => (
-                          <tr key={op.id}>
-                            <td style={{ fontWeight: 700, color: 'var(--accent)' }}>{op.step}</td>
-                            <td style={{ fontWeight: 600 }}>{op.operation}</td>
-                            <td style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>{op.notes || ''}</td>
-                            <td>
-                              <div style={{ display: 'flex', gap: 4 }}>
-                                <button
-                                  className="btn btn-secondary"
-                                  style={{ padding: '3px 7px', fontSize: '0.78rem' }}
-                                  onClick={() => handleMoveOperation(op.id, 'up')}
-                                  disabled={i === 0}
-                                >↑</button>
-                                <button
-                                  className="btn btn-secondary"
-                                  style={{ padding: '3px 7px', fontSize: '0.78rem' }}
-                                  onClick={() => handleMoveOperation(op.id, 'down')}
-                                  disabled={i === operations.length - 1}
-                                >↓</button>
-                                <button
-                                  className="btn btn-danger"
-                                  style={{ padding: '3px 7px', fontSize: '0.78rem' }}
-                                  onClick={() => handleDeleteOperation(op.id)}
-                                >✕</button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        </section>
-      )}
-
       {/* ── Part Usage Map + Revision Log ── */}
       {editingId && (
         <div className="grid-2" style={{ alignItems: 'start' }}>
@@ -1282,7 +1105,9 @@ export default function PartsPage() {
                   }}>
                     {group.map((part) => {
                       const isActive  = editingId === part.id
-                      const isSquare  = part.tube_shape === 'square' || (part.tube_od ?? '').toLowerCase().includes('x')
+                      const isSquare  = part.tube_shape === 'square'
+                        || (part.tube_od ?? '').toLowerCase().includes('x')
+                        || (part.material ?? '').toLowerCase().startsWith('square')
                       const dims      = ptype === 'sheet'
                         ? [part.thickness, part.material].filter(Boolean).join(' · ')
                         : [part.tube_od, part.tube_wall, part.material].filter(Boolean).join(' · ')
