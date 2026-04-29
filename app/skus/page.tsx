@@ -105,6 +105,7 @@ type SubAssemblyPartRow = {
   part_type: 'tube' | 'sheet' | null
   dxf_file: string | null
   weight_lbs: number | null
+  material: string | null
   tube_od: string | null
   tube_wall: string | null
   tube_shape: string | null
@@ -142,6 +143,7 @@ type JoinedSkuPartRow = {
     part_type?: string | null
     dxf_file?: string | null
     weight_lbs?: number | null
+    material?: string | null
     tube_od?: string | null
     tube_wall?: string | null
     tube_shape?: string | null
@@ -437,6 +439,7 @@ export default function SkusPage() {
           part_type,
           dxf_file,
           weight_lbs,
+          material,
           tube_od,
           tube_wall,
           tube_shape,
@@ -460,6 +463,7 @@ export default function SkusPage() {
       part_type: (row.part?.part_type as 'tube' | 'sheet' | null) ?? null,
       dxf_file: row.part?.dxf_file ?? null,
       weight_lbs: row.part?.weight_lbs ?? null,
+      material: row.part?.material ?? null,
       tube_od: row.part?.tube_od ?? null,
       tube_wall: row.part?.tube_wall ?? null,
       tube_shape: row.part?.tube_shape ?? null,
