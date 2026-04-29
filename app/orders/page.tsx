@@ -1432,16 +1432,20 @@ export default function OrdersPage() {
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
                                   {/* Production status */}
                                   {isMultiSku && allBatched && topBatch && (
-                                    /* All SKUs covered — show a single "All in build" green badge */
+                                    /* All SKUs covered — same colour as single-SKU batch badge */
                                     <span
                                       title={`All ${linesWithSku.length} SKUs are in a batch`}
-                                      style={{ background: 'rgba(34,197,94,0.15)', color: 'var(--success)', borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700, cursor: 'default' }}
+                                      style={{
+                                        background: BATCH_STATUS_STYLE[topBatch.status]?.bg,
+                                        color: BATCH_STATUS_STYLE[topBatch.status]?.color,
+                                        borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700, cursor: 'default',
+                                      }}
                                     >
                                       ✓ All In Build
                                     </span>
                                   )}
                                   {isMultiSku && someBatched && (
-                                    /* Partial — show warning + list unbatched SKUs */
+                                    /* Partial — warning badge + list unbatched SKUs inline */
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                                       <span style={{ background: 'rgba(234,179,8,0.15)', color: '#facc15', borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700 }}>
                                         ⚠ {linesInBatch.length}/{linesWithSku.length} in build
@@ -1452,7 +1456,7 @@ export default function OrdersPage() {
                                     </div>
                                   )}
                                   {(!isMultiSku || (!allBatched && !someBatched)) && topBatch && (
-                                    /* Single-SKU order or no partial info — show top batch badge as before */
+                                    /* Single-SKU order — top batch badge, clickable */
                                     <span
                                       title={topBatch.batchName}
                                       style={{
@@ -1469,22 +1473,30 @@ export default function OrdersPage() {
                                       {BATCH_STATUS_STYLE[topBatch.status]?.label}
                                     </span>
                                   )}
-                                  {/* Allocation status: shown once stock is allocated */}
-                                  {allocated && alloc && (
+                                  {/* Allocation status */}
+                                  {allocated && alloc && status === 'ready' && (
+                                    /* "Ready / In Stock" — always worth showing + Ship button */
                                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                                       <span style={{ fontSize: '0.78rem', color: alloc.color, fontWeight: 600, whiteSpace: 'nowrap' }}>
                                         {alloc.icon} {alloc.label}
                                       </span>
-                                      {status === 'ready' && (
-                                        <button
-                                          className="btn btn-primary"
-                                          style={{ height: 24, fontSize: '0.72rem', padding: '0 8px', flexShrink: 0 }}
-                                          onClick={(e) => { e.stopPropagation(); setShippingOrderId(order.id); setShippingCost('') }}
-                                        >
-                                          Ship →
-                                        </button>
-                                      )}
+                                      <button
+                                        className="btn btn-primary"
+                                        style={{ height: 24, fontSize: '0.72rem', padding: '0 8px', flexShrink: 0 }}
+                                        onClick={(e) => { e.stopPropagation(); setShippingOrderId(order.id); setShippingCost('') }}
+                                      >
+                                        Ship →
+                                      </button>
                                     </div>
+                                  )}
+                                  {allocated && alloc && status !== 'ready' && !topBatch && (
+                                    /* "Build Needed" / "Partial" — only show when nothing is in a batch yet */
+                                    <span style={{
+                                      background: 'rgba(239,68,68,0.12)', color: 'var(--danger)',
+                                      borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 600,
+                                    }}>
+                                      {alloc.icon} {alloc.label}
+                                    </span>
                                   )}
                                 </div>
                               </td>
