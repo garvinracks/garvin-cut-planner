@@ -555,6 +555,34 @@ export default function PartsPage() {
         return
       }
 
+      // ── ID rename: insert new + re-point all FK refs + delete old ──────────────
+      if (editingId && editingId !== payload.id) {
+        const newId = payload.id
+        const currentPart = parts.find((p) => p.id === editingId)
+        const { error: insertErr } = await supabase.from('parts').insert({
+          ...payload,
+          dxf_file: currentPart?.dxf_file ?? null,
+        })
+        if (insertErr) {
+          setMessage(`Rename failed: ${insertErr.message}`)
+          setSaving(false)
+          return
+        }
+        await Promise.all([
+          supabase.from('part_operations').update({ part_id: newId }).eq('part_id', editingId),
+          supabase.from('sku_parts').update({ part_id: newId }).eq('part_id', editingId),
+          supabase.from('sub_assembly_parts').update({ part_id: newId }).eq('part_id', editingId),
+          supabase.from('batch_part_completions').update({ part_id: newId }).eq('part_id', editingId),
+          supabase.from('part_revisions').update({ part_id: newId }).eq('part_id', editingId),
+        ])
+        await supabase.from('parts').delete().eq('id', editingId)
+        setMessage(`Renamed ${editingId} → ${newId}.`)
+        setEditingId(newId)
+        await loadParts()
+        setSaving(false)
+        return
+      }
+
       if (editingId) {
         const oldPart = parts.find((p) => p.id === editingId)
         if (oldPart) await logRevision(editingId, oldPart, payload)
@@ -766,13 +794,19 @@ export default function PartsPage() {
               }}
             >
               <div>
-                <label className="label">ID</label>
+                <label className="label">
+                  ID
+                  {editingId && editingId !== form.id.trim() && (
+                    <span style={{ color: 'var(--warning)', fontSize: '0.7rem', textTransform: 'none', letterSpacing: 0 }}>
+                      {' '}— will rename from {editingId}
+                    </span>
+                  )}
+                </label>
                 <input
                   className="field"
                   value={form.id}
                   onChange={(e) => updateField('id', e.target.value)}
                   placeholder="44307-T1"
-                  disabled={!!editingId}
                 />
               </div>
 
