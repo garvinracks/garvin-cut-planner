@@ -139,16 +139,17 @@ export default function SubAssemblyPickerModal({ subassemblies, onSelect, onClos
                   }}
                 >
                   {/* Image / placeholder */}
-                  <div style={{ width: '100%', height: 110, background: 'var(--panel)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+                  <div style={{ width: '100%', height: 130, minHeight: 130, flexShrink: 0, background: 'var(--panel)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', position: 'relative' }}>
                     {imgUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
                       <img
                         src={imgUrl}
                         alt={sa.name}
-                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
                         onError={(e) => {
                           const el = e.currentTarget
                           el.style.display = 'none'
-                          el.parentElement!.innerHTML = '<span style="font-size:2rem;opacity:0.25">🔧</span>'
+                          if (el.parentElement) el.parentElement.innerHTML = '<span style="font-size:2rem;opacity:0.25">🔧</span>'
                         }}
                       />
                     ) : (
