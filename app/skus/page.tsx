@@ -121,6 +121,7 @@ type ExplodedPreviewRow = {
   part_type: 'tube' | 'sheet' | null
   dxf_file: string | null
   weight_lbs: number | null
+  material: string | null
   tube_od: string | null
   tube_wall: string | null
   tube_shape: string | null
@@ -1463,6 +1464,7 @@ export default function SkusPage() {
           part_type: row.part_type,
           dxf_file: row.dxf_file,
           weight_lbs: row.weight_lbs,
+          material: row.material,
           tube_od: row.tube_od,
           tube_wall: row.tube_wall,
           tube_shape: row.tube_shape,
@@ -1487,6 +1489,7 @@ export default function SkusPage() {
             part_type: subPart.part_type,
             dxf_file: subPart.dxf_file,
             weight_lbs: subPart.weight_lbs,
+            material: subPart.material,
             tube_od: subPart.tube_od,
             tube_wall: subPart.tube_wall,
             tube_shape: subPart.tube_shape,
