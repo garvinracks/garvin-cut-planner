@@ -291,7 +291,9 @@ export default function SkusPage() {
   const [materials, setMaterials] = useState<MaterialRow[]>([])
   const [latestPriceByMaterialId, setLatestPriceByMaterialId] = useState<Record<string, number>>({})
   const [latestPowderCostPerLb, setLatestPowderCostPerLb]     = useState<number | null>(null)
-  const [selectedSkuId, setSelectedSkuId] = useState('')
+  const [selectedSkuId, setSelectedSkuId] = useState(() =>
+    typeof window !== 'undefined' ? (sessionStorage.getItem('garvin:selected_sku') ?? '') : ''
+  )
 
   const [selectedSkuSubassemblies, setSelectedSkuSubassemblies] = useState<SkuSubAssemblyRow[]>([])
   const [selectedSkuParts, setSelectedSkuParts] = useState<SkuPartRow[]>([])
@@ -367,9 +369,10 @@ export default function SkusPage() {
     const rows = (data ?? []) as SKU[]
     setSkus(rows)
 
-    if (!selectedSkuId && rows.length > 0) {
-      setSelectedSkuId(rows[0].id)
-    }
+    // Restore saved selection; fall back to first SKU only if nothing was saved
+    const saved = typeof window !== 'undefined' ? sessionStorage.getItem('garvin:selected_sku') : null
+    const restoredId = saved && rows.find((r) => r.id === saved) ? saved : (rows[0]?.id ?? '')
+    if (restoredId) setSelectedSkuId(restoredId)
   }
 
   async function loadSubassemblies() {
@@ -601,6 +604,7 @@ export default function SkusPage() {
 
   useEffect(() => {
     if (selectedSkuId) {
+      sessionStorage.setItem('garvin:selected_sku', selectedSkuId)
       void loadSelectedSkuRelations(selectedSkuId)
     }
   }, [selectedSkuId])
