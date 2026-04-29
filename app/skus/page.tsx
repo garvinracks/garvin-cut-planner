@@ -2236,7 +2236,6 @@ export default function SkusPage() {
                               <th>Part #</th>
                               <th>Description</th>
                               <th>Qty</th>
-                              <th>Est. Cost</th>
                               <th></th>
                               <th></th>
                             </tr>
@@ -2277,13 +2276,6 @@ export default function SkusPage() {
                                       onBlur={(e) => void handleUpdateSkuPartQty(row.id, Number(e.target.value))}
                                       style={{ width: 52 }}
                                     />
-                                  </td>
-                                  <td style={{ whiteSpace: 'nowrap', fontSize: '0.83rem' }}>
-                                    {lineCost != null ? (
-                                      <span style={{ color: 'var(--success)', fontWeight: 600 }}>${lineCost.toFixed(2)}</span>
-                                    ) : (
-                                      <span style={{ color: 'var(--muted)' }}>—</span>
-                                    )}
                                   </td>
                                   <td>
                                     <button
