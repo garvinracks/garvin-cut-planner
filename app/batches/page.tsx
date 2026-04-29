@@ -159,6 +159,8 @@ export default function BatchesPage() {
   const [loadingCompletions, setLoadingCompletions] = useState(false)
   const [saveError, setSaveError] = useState<string>('')
   const [savingKeys, setSavingKeys] = useState<Set<string>>(new Set())
+  // SA IDs that are complete but manually expanded by the user
+  const [expandedCompleteSaIds, setExpandedCompleteSaIds] = useState<Set<string>>(new Set())
 
   // Fulfills These Orders
   const [batchOrders, setBatchOrders] = useState<Array<{id:string; order_number:string; customer_name:string|null; notes:string|null; order_date:string|null}>>([])
@@ -305,6 +307,7 @@ export default function BatchesPage() {
     }
     const s: CompletionSet = new Set((data ?? []).map((r: any) => `${r.part_id}:${r.stage_key}`))
     setCompletions(s)
+    setExpandedCompleteSaIds(new Set()) // reset manual expansions when opening a new batch
     setLoadingCompletions(false)
   }
 
@@ -2058,11 +2061,36 @@ export default function BatchesPage() {
                       </thead>
                       <tbody>
                         {/* ── Sub-assembly groups ── */}
-                        {Array.from(subAssemblyGroups.entries()).map(([saId, { subAssembly, items }]) => (
+                        {(() => {
+                          // Helper: is every op in this SA group done?
+                          function isSaComplete(saId: string, subAssembly: SubAssembly, items: Array<{ part: Part; totalQty: number }>) {
+                            const partsDone = items.every(({ part }) =>
+                              activeStages.every(({ stageKey, partKey }) => {
+                                if (stageKey === 'weld') return true // weld tracked at SA level
+                                return !part[partKey as keyof Part] || completions.has(`${part.id}:${stageKey}`)
+                              })
+                            )
+                            const weldDone = !subAssembly.requires_weld || completions.has(`${saId}:weld`)
+                            return partsDone && weldDone
+                          }
+
+                          // Sort: incomplete SAs first, complete ones at the bottom
+                          const sortedEntries = Array.from(subAssemblyGroups.entries()).sort(([aId, { subAssembly: aSa, items: aItems }], [bId, { subAssembly: bSa, items: bItems }]) => {
+                            const aC = isSaComplete(aId, aSa, aItems)
+                            const bC = isSaComplete(bId, bSa, bItems)
+                            if (aC === bC) return 0
+                            return aC ? 1 : -1
+                          })
+
+                          return sortedEntries.map(([saId, { subAssembly, items }]) => {
+                            const isComplete = isSaComplete(saId, subAssembly, items)
+                            const isExpanded = !isComplete || expandedCompleteSaIds.has(saId)
+
+                            return (
                           <>
                             {/* SA header row — sticky below the column header */}
                             <tr key={`sa-hdr-${saId}`} style={{ position: 'sticky', top: 52, zIndex: 10 }}>
-                              <td colSpan={2 + activeStages.length} style={{ padding: '7px 12px', background: 'var(--panel-2)', borderTop: '2px solid #a78bfa', borderBottom: '1px solid var(--border)' }}>
+                              <td colSpan={2 + activeStages.length} style={{ padding: '7px 12px', background: isComplete ? 'rgba(34,197,94,0.08)' : 'var(--panel-2)', borderTop: `2px solid ${isComplete ? 'rgba(34,197,94,0.4)' : '#a78bfa'}`, borderBottom: '1px solid var(--border)' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                                   {subAssembly.image_file ? (
                                     <img
@@ -2076,15 +2104,34 @@ export default function BatchesPage() {
                                       🔧
                                     </div>
                                   )}
-                                  <div>
-                                    <div style={{ fontSize: '0.65rem', color: '#a78bfa', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Sub-Assembly</div>
+                                  <div style={{ flex: 1 }}>
+                                    <div style={{ fontSize: '0.65rem', color: isComplete ? 'var(--success)' : '#a78bfa', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Sub-Assembly</div>
                                     <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>{subAssembly.name}</div>
                                   </div>
+                                  {isComplete && (
+                                    <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--success)', background: 'rgba(34,197,94,0.12)', border: '1px solid rgba(34,197,94,0.3)', borderRadius: 20, padding: '2px 9px', whiteSpace: 'nowrap' }}>
+                                      ✓ Complete
+                                    </span>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => setExpandedCompleteSaIds(prev => {
+                                      const next = new Set(prev)
+                                      if (isComplete) {
+                                        if (next.has(saId)) next.delete(saId); else next.add(saId)
+                                      }
+                                      return next
+                                    })}
+                                    style={{ background: 'transparent', border: 'none', cursor: isComplete ? 'pointer' : 'default', color: 'var(--muted)', fontSize: '0.8rem', padding: '2px 6px', opacity: isComplete ? 1 : 0, pointerEvents: isComplete ? 'auto' : 'none' }}
+                                    title={isComplete ? (isExpanded ? 'Collapse' : 'Expand') : undefined}
+                                  >
+                                    {isExpanded ? '▲' : '▼'}
+                                  </button>
                                 </div>
                               </td>
                             </tr>
-                            {/* Part rows — weld column is merged across all rows via rowspan on first part */}
-                            {(() => {
+                            {/* Part rows — only shown when expanded; weld column merged via rowspan */}
+                            {isExpanded && (() => {
                               const saWeldDone = completions.has(`${saId}:weld`)
                               const saWeldBlocked = items.some((i) => STAGES.some((s) => {
                                 if (s.stageKey === 'weld') return false
@@ -2161,7 +2208,9 @@ export default function BatchesPage() {
                               })
                             })()}
                           </>
-                        ))}
+                            )
+                          })
+                        })()}
 
                         {/* ── Direct parts ── */}
                         {directItems.length > 0 && (
@@ -2439,9 +2488,11 @@ export default function BatchesPage() {
                   {batches.map((batch) => {
                     const ss = STATUS_STYLE[batch.status]
                     const skuCount = lines.filter((l) => l.batch_id === batch.id).length
-                    const done = batchCompletionCounts[batch.id] ?? 0
+                    const rawDone = batchCompletionCounts[batch.id] ?? 0
                     const total = batchTotalOps[batch.id] ?? 0
-                    const pct = total > 0 ? Math.round((done / total) * 100) : (batch.status === 'complete' ? 100 : 0)
+                    // Cap done at total — stale completion records can push rawDone above total
+                    const done = Math.min(rawDone, total)
+                    const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : (batch.status === 'complete' ? 100 : 0)
                     return (
                       <tr key={batch.id} style={{ cursor: 'pointer' }} onClick={() => { setActiveBatch(batch); setView('detail') }}>
                         <td style={{ fontWeight: 700 }}>{batch.name}</td>
