@@ -24,6 +24,7 @@ type SKU = {
   bolt_kit_cost: number | null
   packaging_cost: number | null
   labor_cost_per_unit: number | null
+  setup_complete: boolean
 }
 
 const SUB_IMAGE_BUCKET = 'subassembly-images'
@@ -1423,6 +1424,21 @@ export default function SkusPage() {
     setDuplicateBusyId('')
   }
 
+  // ── Setup-complete toggle ─────────────────────────────────────────────────────
+
+  async function toggleSetupComplete(sku: SKU) {
+    const next = !sku.setup_complete
+    const { error } = await supabase
+      .from('skus')
+      .update({ setup_complete: next })
+      .eq('id', sku.id)
+    if (error) {
+      setMessage(`Could not update setup status: ${error.message}`)
+      return
+    }
+    setSkus((prev) => prev.map((s) => s.id === sku.id ? { ...s, setup_complete: next } : s))
+  }
+
   // ── Computed values ───────────────────────────────────────────────────────────
 
   const filteredSkus = skus.filter((sku) => {
@@ -1728,14 +1744,26 @@ export default function SkusPage() {
                                 if (!isSelected) e.currentTarget.style.background = 'transparent'
                               }}
                             >
-                              <div
-                                style={{
-                                  fontWeight: 700,
-                                  fontSize: '0.88rem',
-                                  color: isSelected ? 'var(--accent-text)' : 'var(--text)',
-                                }}
-                              >
-                                {sku.id}
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4 }}>
+                                <div
+                                  style={{
+                                    fontWeight: 700,
+                                    fontSize: '0.88rem',
+                                    color: isSelected ? 'var(--accent-text)' : 'var(--text)',
+                                  }}
+                                >
+                                  {sku.id}
+                                </div>
+                                {!sku.setup_complete && (
+                                  <span style={{
+                                    fontSize: '0.6rem', fontWeight: 700, padding: '1px 5px',
+                                    borderRadius: 4, background: 'rgba(251,146,60,0.15)',
+                                    color: '#fb923c', border: '1px solid rgba(251,146,60,0.3)',
+                                    whiteSpace: 'nowrap', flexShrink: 0,
+                                  }}>
+                                    ⚠ Setup
+                                  </span>
+                                )}
                               </div>
                               <div
                                 style={{
@@ -1805,7 +1833,7 @@ export default function SkusPage() {
                         </div>
                       </div>
 
-                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                         <button
                           type="button"
                           className="btn btn-secondary"
@@ -1822,6 +1850,26 @@ export default function SkusPage() {
                           disabled={duplicateBusyId === selectedSku.id}
                         >
                           {duplicateBusyId === selectedSku.id ? 'Duplicating...' : 'Duplicate'}
+                        </button>
+                        {/* Setup-complete toggle */}
+                        <button
+                          type="button"
+                          onClick={() => void toggleSetupComplete(selectedSku)}
+                          style={{
+                            fontSize: '0.82rem',
+                            padding: '5px 12px',
+                            borderRadius: 6,
+                            border: `1px solid ${selectedSku.setup_complete ? 'rgba(34,197,94,0.4)' : 'rgba(251,146,60,0.5)'}`,
+                            background: selectedSku.setup_complete ? 'rgba(34,197,94,0.12)' : 'rgba(251,146,60,0.1)',
+                            color: selectedSku.setup_complete ? '#4ade80' : '#fb923c',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 5,
+                          }}
+                        >
+                          {selectedSku.setup_complete ? '✓ Setup Complete' : '⚠ Mark Setup Complete'}
                         </button>
                       </div>
                     </div>
