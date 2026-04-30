@@ -338,7 +338,7 @@ export default function PartsPage() {
       const next = { ...prev, [name]: value }
       if (name === 'part_type') {
         next.material_id = ''
-        if (value === 'tube') {
+        if (value === 'tube' || value === 'flat_bar') {
           next.dxf_file = ''
           setSelectedDxfFile(null)
         }
@@ -367,10 +367,12 @@ export default function PartsPage() {
         )
       }
 
+      // For tubes and flat bars match on OD/wall + tube_shape
       return (
         (material.material || '') === (part.material || '') &&
         (material.tube_od || '') === (part.tube_od || '') &&
-        (material.tube_wall || '') === (part.tube_wall || '')
+        (material.tube_wall || '') === (part.tube_wall || '') &&
+        (material.tube_shape ?? 'round') === (part.tube_shape ?? 'round')
       )
     })
 
@@ -383,11 +385,12 @@ export default function PartsPage() {
     setTimeout(() => formTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
     setSelectedDxfFile(null)
     setWeightUnit('lbs')
+    const formPartType = part.part_type === 'tube' && part.tube_shape === 'flat_bar' ? 'flat_bar' : part.part_type
     setForm({
       id: part.id,
       part_number: part.part_number,
       description: part.description,
-      part_type: part.part_type,
+      part_type: formPartType,
       material_id: findMatchingMaterialId(part),
       cut_length: part.cut_length == null ? '' : String(part.cut_length),
       weight_lbs: part.weight_lbs == null ? '' : String(part.weight_lbs),
@@ -411,11 +414,12 @@ export default function PartsPage() {
     setEditingId(null)
     setSelectedDxfFile(null)
     setWeightUnit('lbs')
+    const formPartType = part.part_type === 'tube' && part.tube_shape === 'flat_bar' ? 'flat_bar' : part.part_type
     setForm({
       id: `${part.id}-COPY`,
       part_number: `${part.part_number}-COPY`,
       description: part.description,
-      part_type: part.part_type,
+      part_type: formPartType,
       material_id: findMatchingMaterialId(part),
       cut_length: part.cut_length == null ? '' : String(part.cut_length),
       weight_lbs: part.weight_lbs == null ? '' : String(part.weight_lbs),
@@ -434,7 +438,7 @@ export default function PartsPage() {
   }
 
   async function uploadSelectedDxfIfNeeded() {
-    if (form.part_type !== 'sheet') return form.dxf_file.trim() || null
+    if (form.part_type !== 'sheet') return form.dxf_file.trim() || null  // tube & flat_bar have no DXF
     if (!selectedDxfFile) return form.dxf_file.trim() || null
 
     const fileName = selectedDxfFile.name.trim()
@@ -473,20 +477,25 @@ export default function PartsPage() {
     try {
       const uploadedDxfFileName = await uploadSelectedDxfIfNeeded()
 
+      const isFlatBar = form.part_type === 'flat_bar'
+      const dbPartType: 'tube' | 'sheet' = form.part_type === 'sheet' ? 'sheet' : 'tube'
+      const isTubeForm = form.part_type === 'tube' || isFlatBar
       const payload = {
         id: form.id.trim(),
         part_number: form.part_number.trim(),
         description: form.description.trim(),
-        part_type: form.part_type as 'tube' | 'sheet',
+        part_type: dbPartType,
         material: selectedMaterial.material || null,
         thickness: form.part_type === 'sheet' ? selectedMaterial.thickness || null : null,
-        tube_od: form.part_type === 'tube' ? selectedMaterial.tube_od || null : null,
-        tube_wall: form.part_type === 'tube' ? selectedMaterial.tube_wall || null : null,
-        tube_shape: form.part_type === 'tube'
-          ? (selectedMaterial.tube_shape ?? (/x|×/i.test(selectedMaterial.tube_od ?? '') ? 'square' : 'round'))
-          : 'round',
+        tube_od: isTubeForm ? selectedMaterial.tube_od || null : null,
+        tube_wall: isTubeForm ? selectedMaterial.tube_wall || null : null,
+        tube_shape: isFlatBar
+          ? 'flat_bar'
+          : form.part_type === 'tube'
+            ? (selectedMaterial.tube_shape ?? (/x|×/i.test(selectedMaterial.tube_od ?? '') ? 'square' : 'round'))
+            : 'round',
         cut_length:
-          form.part_type === 'tube' && form.cut_length.trim() !== ''
+          isTubeForm && form.cut_length.trim() !== ''
             ? Number(form.cut_length)
             : null,
         weight_lbs: form.weight_lbs.trim() !== '' ? Number(form.weight_lbs) : null,
@@ -663,12 +672,17 @@ export default function PartsPage() {
       .includes(q)
   })
 
-  const sheetParts = filteredParts.filter((part) => part.part_type === 'sheet')
-  const tubeParts = filteredParts.filter((part) => part.part_type === 'tube')
+  const sheetParts    = filteredParts.filter((part) => part.part_type === 'sheet')
+  const tubeParts     = filteredParts.filter((part) => part.part_type === 'tube' && part.tube_shape !== 'flat_bar')
+  const flatBarParts  = filteredParts.filter((part) => part.part_type === 'tube' && part.tube_shape === 'flat_bar')
 
-  const tubeMaterials = materials.filter((material) => material.material_type === 'tube')
-  const sheetMaterials = materials.filter((material) => material.material_type === 'sheet')
-  const visibleMaterials = form.part_type === 'tube' ? tubeMaterials : sheetMaterials
+  const tubeMaterials    = materials.filter((m) => m.material_type === 'tube' && m.tube_shape !== 'flat_bar')
+  const flatBarMaterials = materials.filter((m) => m.material_type === 'tube' && m.tube_shape === 'flat_bar')
+  const sheetMaterials   = materials.filter((m) => m.material_type === 'sheet')
+  const visibleMaterials =
+    form.part_type === 'tube'     ? tubeMaterials :
+    form.part_type === 'flat_bar' ? flatBarMaterials :
+    sheetMaterials
   const selectedMaterial = materials.find((m) => m.id === form.material_id) || null
 
   return (
@@ -745,7 +759,8 @@ export default function PartsPage() {
                   onChange={(e) => updateField('part_type', e.target.value)}
                 >
                   <option value="sheet">Sheet</option>
-                  <option value="tube">Tube</option>
+                  <option value="tube">Tube (Round / Square)</option>
+                  <option value="flat_bar">Flat Bar</option>
                 </select>
               </div>
 
@@ -808,12 +823,12 @@ export default function PartsPage() {
                 </>
               ) : (
                 <div>
-                  <label className="label">Cut Length</label>
+                  <label className="label">Cut Length (inches)</label>
                   <input
                     className="field"
                     value={form.cut_length}
                     onChange={(e) => updateField('cut_length', e.target.value)}
-                    placeholder="32.5"
+                    placeholder={form.part_type === 'flat_bar' ? '24' : '32.5'}
                   />
                 </div>
               )}
@@ -878,13 +893,11 @@ export default function PartsPage() {
                   <strong>Selected material:</strong>{' '}
                   {selectedMaterial.name}
                   {form.part_type === 'sheet' ? (
-                    <span>
-                      {' '}· Thickness: {selectedMaterial.thickness || '—'} · Material: {selectedMaterial.material || '—'}
-                    </span>
+                    <span> · Thickness: {selectedMaterial.thickness || '—'} · Material: {selectedMaterial.material || '—'}</span>
+                  ) : form.part_type === 'flat_bar' ? (
+                    <span> · Width: {selectedMaterial.tube_od || '—'} · Thickness: {selectedMaterial.tube_wall || '—'} · Material: {selectedMaterial.material || '—'}</span>
                   ) : (
-                    <span>
-                      {' '}· OD: {selectedMaterial.tube_od || '—'} · Wall: {selectedMaterial.tube_wall || '—'} · Material: {selectedMaterial.material || '—'}
-                    </span>
+                    <span> · OD: {selectedMaterial.tube_od || '—'} · Wall: {selectedMaterial.tube_wall || '—'} · Material: {selectedMaterial.material || '—'}</span>
                   )}
                 </div>
               )}
@@ -905,9 +918,11 @@ export default function PartsPage() {
                 <label className="label">Manufacturing Stages</label>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 18px', marginTop: 6 }}>
                   {(STAGE_KEYS.filter((k) => {
-                    // Hide sheet-bend for tube parts and tube-bend for sheet parts
-                    if (form.part_type === 'tube' && k === 'requires_sheet_bend') return false
-                    if (form.part_type === 'sheet' && k === 'requires_tube_bend') return false
+                    if (form.part_type === 'tube'     && k === 'requires_sheet_bend') return false
+                    if (form.part_type === 'sheet'    && k === 'requires_tube_bend')  return false
+                    // Flat bar: no sheet bending or tube bending
+                    if (form.part_type === 'flat_bar' && k === 'requires_sheet_bend') return false
+                    if (form.part_type === 'flat_bar' && k === 'requires_tube_bend')  return false
                     return true
                   })).map((key) => (
                     <label key={key} style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer', fontSize: '0.88rem', color: 'var(--text-2)' }}>
@@ -1074,16 +1089,16 @@ export default function PartsPage() {
         </div>
 
         <div className="card-body section-stack" style={{ gap: 28 }}>
-          {(['sheet', 'tube'] as const).map((ptype) => {
-            const group = ptype === 'sheet' ? sheetParts : tubeParts
-            const typeColor = ptype === 'sheet'
-              ? { bg: 'rgba(100,160,220,0.15)', text: '#7ab4e8', border: 'rgba(100,160,220,0.25)' }
-              : { bg: 'rgba(220,150,80,0.15)', text: '#e0a050', border: 'rgba(220,150,80,0.25)' }
+          {([
+            { ptype: 'sheet',    label: 'Sheet Parts',    group: sheetParts,   typeColor: { bg: 'rgba(100,160,220,0.15)', text: '#7ab4e8', border: 'rgba(100,160,220,0.25)' } },
+            { ptype: 'tube',     label: 'Tube Parts',     group: tubeParts,    typeColor: { bg: 'rgba(220,150,80,0.15)',  text: '#e0a050', border: 'rgba(220,150,80,0.25)'  } },
+            { ptype: 'flat_bar', label: 'Flat Bar Parts', group: flatBarParts, typeColor: { bg: 'rgba(220,80,80,0.15)',   text: '#f87171', border: 'rgba(220,80,80,0.25)'   } },
+          ] as const).map(({ ptype, label, group, typeColor }) => {
 
             return (
               <div key={ptype}>
                 <div className="group-title" style={{ marginBottom: 12 }}>
-                  {ptype === 'sheet' ? 'Sheet Parts' : 'Tube Parts'}
+                  {label}
                   {group.length > 0 && (
                     <span style={{
                       marginLeft: 8, fontSize: '0.68rem', background: 'var(--panel-2)',
@@ -1095,7 +1110,7 @@ export default function PartsPage() {
                 {loading ? (
                   <div className="empty">Loading…</div>
                 ) : group.length === 0 ? (
-                  <div className="empty">No matching {ptype} parts.</div>
+                  <div className="empty">No matching {label.toLowerCase()}.</div>
                 ) : (
                   <div style={{
                     display: 'grid',
@@ -1107,7 +1122,6 @@ export default function PartsPage() {
                       const isActive  = editingId === part.id
                       const tubeShapeVal = part.tube_shape === 'flat_bar' ? 'flat_bar'
                         : (part.tube_shape === 'square' || /x|×/i.test(part.tube_od ?? '') || (part.material ?? '').toLowerCase().startsWith('square')) ? 'square' : 'round'
-                      const isSquare  = tubeShapeVal === 'square'
                       const dims      = ptype === 'sheet'
                         ? [part.thickness, part.material].filter(Boolean).join(' · ')
                         : [part.tube_od, part.tube_wall, part.material].filter(Boolean).join(' · ')
@@ -1140,7 +1154,7 @@ export default function PartsPage() {
                               dxfFile={part.dxf_file}
                               partNumber={part.part_number}
                               size="fill"
-                              isTube={ptype === 'tube'}
+                              isTube={ptype === 'tube' || ptype === 'flat_bar'}
                               tubeFallback={true}
                               tubeOd={part.tube_od}
                               tubeWall={part.tube_wall}
