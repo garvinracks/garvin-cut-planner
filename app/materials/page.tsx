@@ -106,7 +106,7 @@ function buildMaterialName(form: typeof emptyForm) {
   if (form.material_type === 'sheet') {
     return [form.sheet_thickness.trim(), mat].filter(Boolean).join(' ')
   }
-  if (form.tube_shape === 'flat_bar') {
+  if (form.material_type === 'flat_bar') {
     const width = form.tube_dimension.trim()
     const thk = form.wall_thickness.trim()
     return ['Flat Bar', width && thk ? `${width} × ${thk}` : width || thk, mat].filter(Boolean).join(' ')
@@ -120,6 +120,9 @@ function buildMaterialName(form: typeof emptyForm) {
 function buildMaterialId(form: typeof emptyForm) {
   if (form.material_type === 'sheet') {
     return ['sheet', slugify(form.sheet_thickness), slugify(form.material)].filter(Boolean).join('-')
+  }
+  if (form.material_type === 'flat_bar') {
+    return ['flat-bar', slugify(form.tube_dimension), slugify(form.wall_thickness), slugify(form.material)].filter(Boolean).join('-')
   }
   return ['tube', slugify(form.tube_shape), slugify(form.tube_dimension), slugify(form.wall_thickness), slugify(form.material)].filter(Boolean).join('-')
 }
@@ -350,8 +353,11 @@ export default function MaterialsPage() {
   function updateField(name: string, value: string) {
     setForm((prev) => {
       const next = { ...prev, [name]: value }
-      if (name === 'material_type' && value === 'sheet') { next.tube_shape = 'round'; next.tube_dimension = ''; next.wall_thickness = '' }
-      if (name === 'material_type' && value === 'tube') next.sheet_thickness = ''
+      if (name === 'material_type') {
+        if (value === 'sheet')    { next.tube_shape = 'round'; next.tube_dimension = ''; next.wall_thickness = '' }
+        if (value === 'tube')     { next.tube_shape = 'round'; next.sheet_thickness = '' }
+        if (value === 'flat_bar') { next.tube_shape = 'flat_bar'; next.sheet_thickness = '' }
+      }
       return next
     })
   }
@@ -373,9 +379,11 @@ export default function MaterialsPage() {
     const isTube = row.material_type === 'tube'
     // Prefer the stored tube_shape column; fall back to deriving from tube_od for old rows
     const tubeShape = row.tube_shape ?? (/x|×/i.test(row.tube_od ?? '') ? 'square' : 'round')
+    const isFlatBar = isTube && tubeShape === 'flat_bar'
     setEditingId(row.id)
     setForm({
-      material_type: row.material_type,
+      // Use 'flat_bar' as the form type so the correct fields appear
+      material_type: isFlatBar ? 'flat_bar' : row.material_type,
       tube_shape: isTube ? tubeShape : 'round',
       material: row.material || '',
       sheet_thickness: !isTube ? row.thickness || '' : '',
@@ -399,14 +407,17 @@ export default function MaterialsPage() {
     const generatedId = editingId || buildMaterialId(form)
     if (!generatedName) { setMessage('Fill out the material fields first.'); setSaving(false); return }
 
+    const isFlatBarForm = form.material_type === 'flat_bar'
+    const dbMaterialType = form.material_type === 'sheet' ? 'sheet' : 'tube'
+    const isTubeForm = form.material_type === 'tube' || isFlatBarForm
     const payload = {
       id: generatedId, name: generatedName,
-      material_type: form.material_type as 'tube' | 'sheet',
+      material_type: dbMaterialType as 'tube' | 'sheet',
       material: form.material.trim() || null,
       thickness: form.material_type === 'sheet' ? form.sheet_thickness.trim() || null : null,
-      tube_shape: form.material_type === 'tube' ? form.tube_shape : 'round',
-      tube_od: form.material_type === 'tube' ? form.tube_dimension.trim() || null : null,
-      tube_wall: form.material_type === 'tube' ? form.wall_thickness.trim() || null : null,
+      tube_shape: isFlatBarForm ? 'flat_bar' : form.material_type === 'tube' ? form.tube_shape : 'round',
+      tube_od: isTubeForm ? form.tube_dimension.trim() || null : null,
+      tube_wall: isTubeForm ? form.wall_thickness.trim() || null : null,
       notes: form.notes.trim() || null,
       unit_weight_lbs: form.unit_weight_lbs.trim() ? parseFloat(form.unit_weight_lbs) : null,
       scrap_rate: form.scrap_rate.trim() ? parseFloat(form.scrap_rate) / 100 : null,
@@ -537,8 +548,9 @@ export default function MaterialsPage() {
     if (!q) return true
     return [row.name, row.material_type, row.material || '', row.thickness || '', row.tube_od || '', row.tube_wall || ''].join(' ').toLowerCase().includes(q)
   })
-  const filteredTubes  = filteredRows.filter((r) => r.material_type === 'tube')
-  const filteredSheets = filteredRows.filter((r) => r.material_type === 'sheet')
+  const filteredSheets   = filteredRows.filter((r) => r.material_type === 'sheet')
+  const filteredTubes    = filteredRows.filter((r) => r.material_type === 'tube' && r.tube_shape !== 'flat_bar')
+  const filteredFlatBars = filteredRows.filter((r) => r.material_type === 'tube' && r.tube_shape === 'flat_bar')
 
   const generatedName = buildMaterialName(form)
 
@@ -628,21 +640,24 @@ export default function MaterialsPage() {
                         onChange={(e) => {
                           const m = rows.find((r) => r.id === e.target.value)
                           updateDeliveryLine(idx, 'material_id', e.target.value)
-                          // Pre-fill bar length from material default
+                          // Pre-fill bar length from material default (tube or flat bar)
                           if (m?.material_type === 'tube' && m.stock_length_in) {
                             updateDeliveryLine(idx, 'length_per_bar_in', String(m.stock_length_in))
-                          } else {
+                          } else if (m?.material_type !== 'tube') {
                             updateDeliveryLine(idx, 'length_per_bar_in', '')
                           }
                         }}
                       >
                         <option value="">— select material —</option>
-                        {['tube', 'sheet'].map((type) => {
-                          const typeRows = rows.filter((r) => r.material_type === type)
-                          if (typeRows.length === 0) return null
+                        {[
+                          { key: 'sheet',    label: 'Sheet',    rows: rows.filter((r) => r.material_type === 'sheet') },
+                          { key: 'tube',     label: 'Tube',     rows: rows.filter((r) => r.material_type === 'tube' && r.tube_shape !== 'flat_bar') },
+                          { key: 'flat_bar', label: 'Flat Bar', rows: rows.filter((r) => r.material_type === 'tube' && r.tube_shape === 'flat_bar') },
+                        ].map(({ key, label, rows: groupRows }) => {
+                          if (groupRows.length === 0) return null
                           return (
-                            <optgroup key={type} label={type === 'tube' ? 'Tube' : 'Sheet'}>
-                              {typeRows.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                            <optgroup key={key} label={label}>
+                              {groupRows.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
                             </optgroup>
                           )
                         })}
@@ -858,6 +873,54 @@ export default function MaterialsPage() {
                   </div>
                 )}
 
+                {/* Flat bar materials */}
+                {filteredFlatBars.length > 0 && (
+                  <div>
+                    <div style={{ padding: '5px 12px', fontSize: '0.7rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#fca5a5', background: 'rgba(220,38,38,0.08)', borderBottom: '1px solid rgba(220,38,38,0.18)' }}>
+                      Flat Bar ({filteredFlatBars.length})
+                    </div>
+                    {filteredFlatBars.map((row) => {
+                      const alloc = batchAllocation[row.id]
+                      const allocated = alloc?.totalQty ?? 0
+                      const onHand = row.qty_on_hand ?? 0
+                      const available = onHand - allocated
+                      const isSelected = editingId === row.id
+                      return (
+                        <div
+                          key={row.id}
+                          id={`mat-row-${row.id}`}
+                          onClick={() => startEdit(row)}
+                          style={{
+                            padding: '8px 12px',
+                            cursor: 'pointer',
+                            borderBottom: '1px solid var(--border)',
+                            background: isSelected ? 'var(--accent-soft)' : 'transparent',
+                            borderLeft: isSelected ? '3px solid var(--accent)' : '3px solid transparent',
+                          }}
+                          onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = 'var(--panel-2)' }}
+                          onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = 'transparent' }}
+                        >
+                          <div style={{ fontWeight: 700, fontSize: '0.85rem' }}>{row.name}</div>
+                          <div style={{ fontSize: '0.72rem', color: 'var(--muted)', marginTop: 1 }}>
+                            {row.tube_od} × {row.tube_wall} · {row.stock_length_in ? `${row.stock_length_in}″ bar` : 'no length set'}
+                          </div>
+                          <div style={{ display: 'flex', gap: 8, marginTop: 3, fontSize: '0.75rem' }}>
+                            <span style={{ color: onHand > 0 ? 'var(--success)' : 'var(--muted)' }}>
+                              {onHand ?? '?'} bars
+                            </span>
+                            {allocated > 0 && <span style={{ color: '#facc15' }}>−{allocated} alloc</span>}
+                            {allocated > 0 && (
+                              <span style={{ color: available >= 0 ? 'var(--text-2)' : 'var(--danger)', fontWeight: 700 }}>
+                                = {available} avail
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
                 {filteredRows.length === 0 && (
                   <div className="empty" style={{ padding: 20 }}>No materials found.</div>
                 )}
@@ -944,7 +1007,8 @@ export default function MaterialsPage() {
                     <label className="label">Type</label>
                     <select className="select" value={form.material_type} onChange={(e) => updateField('material_type', e.target.value)}>
                       <option value="sheet">Sheet</option>
-                      <option value="tube">Tube</option>
+                      <option value="tube">Tube (Round / Square)</option>
+                      <option value="flat_bar">Flat Bar</option>
                     </select>
                   </div>
 
@@ -954,7 +1018,6 @@ export default function MaterialsPage() {
                       <select className="select" value={form.tube_shape} onChange={(e) => updateField('tube_shape', e.target.value)}>
                         <option value="round">Round Tube</option>
                         <option value="square">Square Tube</option>
-                        <option value="flat_bar">Flat Bar</option>
                       </select>
                     </div>
                   )}
@@ -969,14 +1032,14 @@ export default function MaterialsPage() {
                       <label className="label">Thickness</label>
                       <input className="field" value={form.sheet_thickness} onChange={(e) => updateField('sheet_thickness', e.target.value)} placeholder="3/16" />
                     </div>
-                  ) : form.tube_shape === 'flat_bar' ? (
+                  ) : form.material_type === 'flat_bar' ? (
                     <>
                       <div>
-                        <label className="label">Width</label>
+                        <label className="label">Width (inches)</label>
                         <input className="field" value={form.tube_dimension} onChange={(e) => updateField('tube_dimension', e.target.value)} placeholder="2" />
                       </div>
                       <div>
-                        <label className="label">Thickness</label>
+                        <label className="label">Thickness (inches)</label>
                         <input className="field" value={form.wall_thickness} onChange={(e) => updateField('wall_thickness', e.target.value)} placeholder=".25" />
                       </div>
                     </>
@@ -999,14 +1062,17 @@ export default function MaterialsPage() {
                   </div>
 
                   <div>
-                    <label className="label">Unit Weight (lbs) — one {form.material_type === 'sheet' ? 'sheet' : form.tube_shape === 'flat_bar' ? 'bar' : 'stick'}</label>
+                    <label className="label">
+                      Unit Weight (lbs) — one{' '}
+                      {form.material_type === 'sheet' ? 'sheet' : form.material_type === 'flat_bar' ? 'bar' : 'stick'}
+                    </label>
                     <input className="field" type="number" step="0.01" min="0" value={form.unit_weight_lbs} onChange={(e) => updateField('unit_weight_lbs', e.target.value)} placeholder="130" />
                   </div>
 
-                  {form.material_type === 'tube' && (
+                  {(form.material_type === 'tube' || form.material_type === 'flat_bar') && (
                     <div>
                       <label className="label">
-                        Default Stock Length (inches)
+                        Stock Length (inches)
                         <span style={{ color: 'var(--muted)', fontWeight: 400, marginLeft: 6, fontSize: '0.75rem' }}>20ft = 240, 24ft = 288</span>
                       </label>
                       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -1035,7 +1101,9 @@ export default function MaterialsPage() {
                   <div>
                     <label className="label">
                       Stock On Hand
-                      <span style={{ color: 'var(--muted)', fontWeight: 400, marginLeft: 6, fontSize: '0.75rem' }}>{form.material_type === 'tube' ? '— bars' : '— sheets'}</span>
+                      <span style={{ color: 'var(--muted)', fontWeight: 400, marginLeft: 6, fontSize: '0.75rem' }}>
+                        {form.material_type === 'sheet' ? '— sheets' : '— bars'}
+                      </span>
                     </label>
                     <input className="field" type="number" step="0.5" min="0" value={form.qty_on_hand} onChange={(e) => updateField('qty_on_hand', e.target.value)} placeholder="0" />
                   </div>
