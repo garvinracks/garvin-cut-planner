@@ -150,7 +150,8 @@ export default function BatchesPage() {
   const [loading, setLoading]         = useState(true)
   const [message, setMessage]         = useState('')
   const [activeBatch, setActiveBatch] = useState<BuildBatch | null>(null)
-  const [batchCompletionCounts, setBatchCompletionCounts] = useState<Record<string, number>>({})
+  // batchId → Set of "partId:stageKey" strings actually recorded in DB
+  const [batchCompletionSets, setBatchCompletionSets] = useState<Record<string, Set<string>>>({})
   const [batchViewTab, setBatchViewTab] = useState<'progress' | 'cutlist'>('progress')
 
   // Per-part/sub-assembly completions for the active batch: Set<"id:stageKey">
@@ -226,13 +227,17 @@ export default function BatchesPage() {
     setMaterials((matData ?? []) as MaterialRecord[])
     setPriceLogs((plData ?? []) as PriceLog[])
 
-    // Load completion counts for the batch list progress column
-    const { data: allComps } = await supabase.from('batch_part_completions').select('batch_id')
-    const counts: Record<string, number> = {}
-    for (const c of (allComps ?? [])) {
-      counts[(c as any).batch_id] = (counts[(c as any).batch_id] ?? 0) + 1
+    // Load completions for the batch list progress column — store full keys
+    // so we can intersect against valid op keys (prevents stale records inflating %)
+    const { data: allComps } = await supabase
+      .from('batch_part_completions')
+      .select('batch_id, part_id, stage_key')
+    const compSets: Record<string, Set<string>> = {}
+    for (const c of (allComps ?? []) as Array<{ batch_id: string; part_id: string; stage_key: string }>) {
+      if (!compSets[c.batch_id]) compSets[c.batch_id] = new Set()
+      compSets[c.batch_id].add(`${c.part_id}:${c.stage_key}`)
     }
-    setBatchCompletionCounts(counts)
+    setBatchCompletionSets(compSets)
 
     // batchTotalOps is now a useMemo — no longer computed here
 
@@ -367,9 +372,10 @@ export default function BatchesPage() {
   }
 
   // Computed using the same logic as the detail-view allWorkOps — ensures list %
-  // and detail % always agree.
-  const batchTotalOps = useMemo<Record<string, number>>(() => {
-    const result: Record<string, number> = {}
+  // and detail % always agree. Stores the full op-key Set so the list view can
+  // intersect against actual DB completions (preventing stale records inflating %).
+  const batchOpKeys = useMemo<Record<string, Set<string>>>(() => {
+    const result: Record<string, Set<string>> = {}
     for (const batch of batches) {
       const batchLines = lines.filter((l) => l.batch_id === batch.id)
       const workItems  = buildWorkItems(batchLines)
@@ -382,18 +388,18 @@ export default function BatchesPage() {
           if (sa && !saMap.has(subAssemblyId)) saMap.set(subAssemblyId, sa)
         }
       }
-      const seenOps = new Set<string>()
+      const opKeys = new Set<string>()
       for (const { part } of workItems.values()) {
         for (const stage of STAGES) {
           if (stage.stageKey === 'weld' && saPartIds.has(part.id)) continue
           if (!part[stage.partKey as keyof Part]) continue
-          seenOps.add(`${part.id}:${stage.stageKey}`)
+          opKeys.add(`${part.id}:${stage.stageKey}`)
         }
       }
       for (const [saId, sa] of saMap.entries()) {
-        if (sa.requires_weld) seenOps.add(`${saId}:weld`)
+        if (sa.requires_weld) opKeys.add(`${saId}:weld`)
       }
-      result[batch.id] = seenOps.size
+      result[batch.id] = opKeys
     }
     return result
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2532,10 +2538,13 @@ export default function BatchesPage() {
                   {batches.map((batch) => {
                     const ss = STATUS_STYLE[batch.status]
                     const skuCount = lines.filter((l) => l.batch_id === batch.id).length
-                    const rawDone = batchCompletionCounts[batch.id] ?? 0
-                    const total = batchTotalOps[batch.id] ?? 0
-                    // Cap done at total — stale completion records can push rawDone above total
-                    const done = Math.min(rawDone, total)
+                    const opKeys   = batchOpKeys[batch.id]
+                    const compSet  = batchCompletionSets[batch.id]
+                    const total    = opKeys?.size ?? 0
+                    // Intersect completions against valid op keys — stale DB records are ignored
+                    const done     = opKeys && compSet
+                      ? Array.from(compSet).filter((k) => opKeys.has(k)).length
+                      : 0
                     const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : (batch.status === 'complete' ? 100 : 0)
                     return (
                       <tr key={batch.id} style={{ cursor: 'pointer' }} onClick={() => { setActiveBatch(batch); setView('detail') }}>
