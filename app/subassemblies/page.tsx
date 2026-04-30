@@ -86,7 +86,7 @@ export default function SubassembliesPage() {
     const { data, error } = await supabase
       .from('sub_assemblies')
       .select('*')
-      .order('name', { ascending: true })
+      .order('id', { ascending: true })
 
     if (error) {
       setMessage(`Load failed: ${error.message}`)
@@ -454,11 +454,13 @@ export default function SubassembliesPage() {
     }
   }
 
-  const filteredItems = items.filter((item) => {
-    const q = search.trim().toLowerCase()
-    if (!q) return true
-    return `${item.id} ${item.name} ${item.notes || ''}`.toLowerCase().includes(q)
-  })
+  const filteredItems = items
+    .filter((item) => {
+      const q = search.trim().toLowerCase()
+      if (!q) return true
+      return `${item.id} ${item.name} ${item.notes || ''}`.toLowerCase().includes(q)
+    })
+    .sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true, sensitivity: 'base' }))
 
   return (
     <div className="section-stack">
