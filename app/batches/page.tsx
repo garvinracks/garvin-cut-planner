@@ -1336,6 +1336,23 @@ export default function BatchesPage() {
       return Array.from(workItems.values()).some((w) => !!w.part[partKey as keyof Part])
     })
 
+    // ── SA completion map (for collapse/sort in progress table) ─────────────────
+    const completedSaIds = new Set<string>()
+    for (const [saId, { subAssembly, items }] of subAssemblyGroups.entries()) {
+      const partsDone = items.every(({ part }) =>
+        activeStages.every(({ stageKey, partKey }) => {
+          if (stageKey === 'weld') return true
+          return !part[partKey as keyof Part] || completions.has(`${part.id}:${stageKey}`)
+        })
+      )
+      const weldDone = !subAssembly.requires_weld || completions.has(`${saId}:weld`)
+      if (partsDone && weldDone) completedSaIds.add(saId)
+    }
+    // Incomplete SAs first, complete ones sorted to the bottom
+    const sortedSaEntries = Array.from(subAssemblyGroups.entries()).sort(
+      ([aId], [bId]) => (completedSaIds.has(aId) ? 1 : 0) - (completedSaIds.has(bId) ? 1 : 0)
+    )
+
     // ── Cut List data ────────────────────────────────────────────────────────────
     const { tubeGroups, sheetGroups } = buildCutList(workItems, completions, subAssemblyGroups)
 
@@ -2065,35 +2082,13 @@ export default function BatchesPage() {
                       </thead>
                       <tbody>
                         {/* ── Sub-assembly groups ── */}
-                        {(() => {
-                          // Helper: is every op in this SA group done?
-                          function isSaComplete(saId: string, subAssembly: SubAssembly, items: Array<{ part: Part; totalQty: number }>) {
-                            const partsDone = items.every(({ part }) =>
-                              activeStages.every(({ stageKey, partKey }) => {
-                                if (stageKey === 'weld') return true // weld tracked at SA level
-                                return !part[partKey as keyof Part] || completions.has(`${part.id}:${stageKey}`)
-                              })
-                            )
-                            const weldDone = !subAssembly.requires_weld || completions.has(`${saId}:weld`)
-                            return partsDone && weldDone
-                          }
-
-                          // Sort: incomplete SAs first, complete ones at the bottom
-                          const sortedEntries = Array.from(subAssemblyGroups.entries()).sort(([aId, { subAssembly: aSa, items: aItems }], [bId, { subAssembly: bSa, items: bItems }]) => {
-                            const aC = isSaComplete(aId, aSa, aItems)
-                            const bC = isSaComplete(bId, bSa, bItems)
-                            if (aC === bC) return 0
-                            return aC ? 1 : -1
-                          })
-
-                          return sortedEntries.map(([saId, { subAssembly, items }]) => {
-                            const isComplete = isSaComplete(saId, subAssembly, items)
+                        {sortedSaEntries.map(([saId, { subAssembly, items }]) => {
+                            const isComplete = completedSaIds.has(saId)
                             const isExpanded = !isComplete || expandedCompleteSaIds.has(saId)
-
                             return (
                           <Fragment key={saId}>
-                            {/* SA header row — sticky below the column header */}
-                            <tr style={{ position: 'sticky', top: 52, zIndex: 10 }}>
+                            {/* SA header row — only sticky when incomplete (complete ones sort to bottom) */}
+                            <tr style={isComplete ? {} : { position: 'sticky', top: 52, zIndex: 10 }}>
                               <td colSpan={2 + activeStages.length} style={{ padding: '7px 12px', background: isComplete ? 'rgba(34,197,94,0.08)' : 'var(--panel-2)', borderTop: `2px solid ${isComplete ? 'rgba(34,197,94,0.4)' : '#a78bfa'}`, borderBottom: '1px solid var(--border)' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                                   {subAssembly.image_file ? (
@@ -2213,8 +2208,7 @@ export default function BatchesPage() {
                             })()}
                           </Fragment>
                             )
-                          })
-                        })()}
+                          })}
 
                         {/* ── Direct parts ── */}
                         {directItems.length > 0 && (
