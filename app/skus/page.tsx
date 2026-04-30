@@ -55,6 +55,7 @@ type Part = {
   requires_sheet_bend: boolean
   requires_tube_bend: boolean
   requires_saw: boolean
+  requires_notch: boolean
   requires_drill: boolean
   requires_weld: boolean
 }
@@ -398,7 +399,7 @@ export default function SkusPage() {
   async function loadParts() {
     const { data, error } = await supabase
       .from('parts')
-      .select('id, part_number, description, part_type, material, thickness, tube_od, tube_wall, tube_shape, cut_length, dxf_file, notes, weight_lbs, requires_laser, requires_sheet_bend, requires_tube_bend, requires_saw, requires_drill, requires_weld')
+      .select('id, part_number, description, part_type, material, thickness, tube_od, tube_wall, tube_shape, cut_length, dxf_file, notes, weight_lbs, requires_laser, requires_sheet_bend, requires_tube_bend, requires_saw, requires_notch, requires_drill, requires_weld')
       .order('part_number', { ascending: true })
 
     if (!error) {
