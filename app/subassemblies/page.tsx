@@ -50,6 +50,7 @@ export default function SubassembliesPage() {
 
   const [items, setItems] = useState<SubAssembly[]>([])
   const [parts, setParts] = useState<Part[]>([])
+  const [materials, setMaterials] = useState<{ material_type: string; material: string | null; tube_od: string | null; tube_wall: string | null; tube_shape: string | null }[]>([])
   const [selectedSubassemblyId, setSelectedSubassemblyId] = useState('')
   const [selectedSubassemblyParts, setSelectedSubassemblyParts] = useState<SubAssemblyPartRow[]>([])
 
@@ -160,10 +161,17 @@ export default function SubassembliesPage() {
     setSelectedSubassemblyParts(rows)
   }
 
+  async function loadMaterials() {
+    const { data } = await supabase
+      .from('materials')
+      .select('material_type, material, tube_od, tube_wall, tube_shape')
+    if (data) setMaterials(data)
+  }
+
   async function initialLoad() {
     setLoading(true)
     setMessage('')
-    await Promise.all([loadSubassemblies(), loadParts(), checkBucket()])
+    await Promise.all([loadSubassemblies(), loadParts(), loadMaterials(), checkBucket()])
     setLoading(false)
   }
 
@@ -978,6 +986,7 @@ WITH CHECK (bucket_id = 'subassembly-images');`}
       {partPickerOpen && (
         <PartPickerModal
           parts={parts}
+          materials={materials}
           onClose={() => setPartPickerOpen(false)}
           onSelect={(part) => {
             setPartIdToAdd(part.id)

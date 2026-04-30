@@ -3045,6 +3045,7 @@ export default function SkusPage() {
       {partPickerOpenFor !== null && (
         <PartPickerModal
           parts={parts}
+          materials={materials}
           onClose={() => setPartPickerOpenFor(null)}
           onSelect={(part) => {
             if (partPickerOpenFor === 'sku') {

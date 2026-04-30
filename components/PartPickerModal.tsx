@@ -17,8 +17,22 @@ export type PickablePart = {
   cut_length: number | null
 }
 
+/** Minimal material record needed for tube-shape resolution */
+export type PickableMaterial = {
+  material_type: string
+  material: string | null
+  tube_od: string | null
+  tube_wall: string | null
+  tube_shape: string | null
+}
+
 type Props = {
   parts: PickablePart[]
+  /**
+   * Optional — when provided the modal resolves each tube part's shape via
+   * its matched material instead of relying on the (possibly stale) DB field.
+   */
+  materials?: PickableMaterial[]
   /** Called when a single card is clicked (no Ctrl). Modal closes automatically. */
   onSelect: (part: PickablePart) => void
   /**
@@ -31,7 +45,7 @@ type Props = {
 
 const PREVIEW_HEIGHT = 120 // px — fixed preview area height
 
-export default function PartPickerModal({ parts, onSelect, onSelectMultiple, onClose }: Props) {
+export default function PartPickerModal({ parts, materials, onSelect, onSelectMultiple, onClose }: Props) {
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState<'all' | 'sheet' | 'tube'>('all')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -234,6 +248,7 @@ export default function PartPickerModal({ parts, onSelect, onSelectMultiple, onC
               <PartCard
                 key={part.id}
                 part={part}
+                materials={materials}
                 isSelected={selectedIds.has(part.id)}
                 onCardClick={handleCardClick}
                 previewHeight={PREVIEW_HEIGHT}
@@ -250,20 +265,41 @@ export default function PartPickerModal({ parts, onSelect, onSelectMultiple, onC
 
 function PartCard({
   part,
+  materials,
   isSelected,
   onCardClick,
   previewHeight,
 }: {
   part: PickablePart
+  materials?: PickableMaterial[]
   isSelected: boolean
   onCardClick: (p: PickablePart, e: React.MouseEvent) => void
   previewHeight: number
 }) {
   const isSheet = part.part_type === 'sheet'
-  const isFlatBar = part.tube_shape === 'flat_bar'
-  const isSquare = !isFlatBar && (part.tube_shape === 'square'
-    || /x|×/i.test(part.tube_od ?? '')
-    || (part.material ?? '').toLowerCase().startsWith('square'))
+
+  // Resolve tube shape: check matched material first (authoritative),
+  // then fall back to stored field and string heuristics.
+  const resolvedTubeShape = (() => {
+    if (part.tube_shape === 'flat_bar') return 'flat_bar'
+    if (materials && part.part_type === 'tube') {
+      const mat = materials.find((m) =>
+        m.material_type === 'tube' &&
+        m.material === part.material &&
+        m.tube_od === part.tube_od &&
+        m.tube_wall === part.tube_wall
+      )
+      if (mat?.tube_shape === 'flat_bar') return 'flat_bar'
+      if (mat?.tube_shape === 'square')   return 'square'
+      if (mat?.tube_shape === 'round')    return 'round'
+    }
+    if (part.tube_shape === 'square') return 'square'
+    if (/x|×/i.test(part.tube_od ?? '') || (part.material ?? '').toLowerCase().startsWith('square')) return 'square'
+    return 'round'
+  })()
+
+  const isFlatBar = resolvedTubeShape === 'flat_bar'
+  const isSquare  = resolvedTubeShape === 'square'
 
   const typeColor = isSheet
     ? { bg: 'rgba(100,160,220,0.15)', text: '#7ab4e8', border: 'rgba(100,160,220,0.25)' }
