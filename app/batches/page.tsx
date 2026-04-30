@@ -7,7 +7,7 @@
  * ALTER TABLE build_batches ADD COLUMN IF NOT EXISTS stage_notch boolean NOT NULL DEFAULT false;
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createBrowserClient } from '@/lib/supabase'
 import { Helper } from 'dxf'
@@ -1306,10 +1306,14 @@ export default function BatchesPage() {
     // tracked at the SA level only (via the SA Weld checkbox).
     const saPartIds = new Set(Array.from(subAssemblyGroups.values()).flatMap(({ items }) => items.map(({ part }) => part.id)))
     const allWorkOps: Array<{ id: string; stageKey: string }> = []
+    // Deduplicate by id:stageKey — the same part can appear in multiple SAs in workItems
+    const seenOps = new Set<string>()
     for (const { part } of workItems.values()) {
       for (const stage of STAGES) {
         if (stage.stageKey === 'weld' && saPartIds.has(part.id)) continue
-        if (part[stage.partKey as keyof Part]) allWorkOps.push({ id: part.id, stageKey: stage.stageKey })
+        if (!part[stage.partKey as keyof Part]) continue
+        const opKey = `${part.id}:${stage.stageKey}`
+        if (!seenOps.has(opKey)) { seenOps.add(opKey); allWorkOps.push({ id: part.id, stageKey: stage.stageKey }) }
       }
     }
     // Add sub-assembly weld ops
@@ -2087,9 +2091,9 @@ export default function BatchesPage() {
                             const isExpanded = !isComplete || expandedCompleteSaIds.has(saId)
 
                             return (
-                          <>
+                          <Fragment key={saId}>
                             {/* SA header row — sticky below the column header */}
-                            <tr key={`sa-hdr-${saId}`} style={{ position: 'sticky', top: 52, zIndex: 10 }}>
+                            <tr style={{ position: 'sticky', top: 52, zIndex: 10 }}>
                               <td colSpan={2 + activeStages.length} style={{ padding: '7px 12px', background: isComplete ? 'rgba(34,197,94,0.08)' : 'var(--panel-2)', borderTop: `2px solid ${isComplete ? 'rgba(34,197,94,0.4)' : '#a78bfa'}`, borderBottom: '1px solid var(--border)' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                                   {subAssembly.image_file ? (
@@ -2207,7 +2211,7 @@ export default function BatchesPage() {
                                 )
                               })
                             })()}
-                          </>
+                          </Fragment>
                             )
                           })
                         })()}
