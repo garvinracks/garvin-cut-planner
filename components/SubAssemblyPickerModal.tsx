@@ -15,23 +15,33 @@ export type PickableSA = {
 
 type Props = {
   subassemblies: PickableSA[]
+  /** Called on plain click (single select) — modal closes automatically. */
   onSelect: (sa: PickableSA) => void
+  /**
+   * Optional — enables Ctrl+click multi-select. When provided an "Add X Selected"
+   * button appears and calls this with all selected SAs when clicked.
+   */
+  onSelectMultiple?: (sas: PickableSA[]) => void
   onClose: () => void
 }
 
-export default function SubAssemblyPickerModal({ subassemblies, onSelect, onClose }: Props) {
-  const [search, setSearch] = useState('')
-  const searchRef = useRef<HTMLInputElement>(null)
-  const supabase = useMemo(() => createBrowserClient(), [])
+export default function SubAssemblyPickerModal({ subassemblies, onSelect, onSelectMultiple, onClose }: Props) {
+  const [search, setSearch]         = useState('')
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const searchRef                   = useRef<HTMLInputElement>(null)
+  const supabase                    = useMemo(() => createBrowserClient(), [])
 
   useEffect(() => {
     searchRef.current?.focus()
     function handleKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') {
+        if (selectedIds.size > 0) { setSelectedIds(new Set()); return }
+        onClose()
+      }
     }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
-  }, [onClose])
+  }, [onClose, selectedIds])
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -40,6 +50,39 @@ export default function SubAssemblyPickerModal({ subassemblies, onSelect, onClos
       [sa.id, sa.name, sa.notes ?? ''].join(' ').toLowerCase().includes(q)
     )
   }, [subassemblies, search])
+
+  function handleCardClick(sa: PickableSA, e: React.MouseEvent) {
+    if ((e.ctrlKey || e.metaKey) && onSelectMultiple) {
+      // Ctrl/Cmd+click → toggle in multi-select
+      setSelectedIds((prev) => {
+        const next = new Set(prev)
+        if (next.has(sa.id)) next.delete(sa.id)
+        else next.add(sa.id)
+        return next
+      })
+    } else if (selectedIds.size > 0 && onSelectMultiple) {
+      // Already in multi-select mode — regular click also toggles
+      setSelectedIds((prev) => {
+        const next = new Set(prev)
+        if (next.has(sa.id)) next.delete(sa.id)
+        else next.add(sa.id)
+        return next
+      })
+    } else {
+      // Plain click → single select + close
+      onSelect(sa)
+      onClose()
+    }
+  }
+
+  function handleAddSelected() {
+    if (!onSelectMultiple || selectedIds.size === 0) return
+    const picked = subassemblies.filter((sa) => selectedIds.has(sa.id))
+    onSelectMultiple(picked)
+    onClose()
+  }
+
+  const selectedCount = selectedIds.size
 
   return (
     <div
@@ -82,6 +125,19 @@ export default function SubAssemblyPickerModal({ subassemblies, onSelect, onClos
               style={{ paddingLeft: 34, fontSize: '0.92rem' }}
             />
           </div>
+
+          {/* Add Selected button — shown when multi-select is active */}
+          {onSelectMultiple && selectedCount > 0 && (
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ padding: '6px 14px', fontSize: '0.82rem', whiteSpace: 'nowrap' }}
+              onClick={handleAddSelected}
+            >
+              ✓ Add {selectedCount} Selected
+            </button>
+          )}
+
           <button type="button" className="btn btn-secondary" style={{ padding: '6px 10px', lineHeight: 1 }} onClick={onClose}>✕</button>
         </div>
 
@@ -89,7 +145,11 @@ export default function SubAssemblyPickerModal({ subassemblies, onSelect, onClos
         <div style={{ padding: '7px 16px', fontSize: '0.76rem', color: 'var(--muted)', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
           {filtered.length} sub-assembl{filtered.length !== 1 ? 'ies' : 'y'}
           {search ? ` matching "${search}"` : ''}
-          {' — click to add'}
+          {onSelectMultiple
+            ? selectedCount > 0
+              ? ` — ${selectedCount} selected — click to toggle, Ctrl+click to multi-select`
+              : ' — click to add · Ctrl+click to multi-select'
+            : ' — click to add'}
         </div>
 
         {/* ── Card grid ── */}
@@ -107,6 +167,7 @@ export default function SubAssemblyPickerModal({ subassemblies, onSelect, onClos
             <div className="empty" style={{ gridColumn: '1 / -1', padding: '40px 0' }}>No sub-assemblies found.</div>
           ) : (
             filtered.map((sa) => {
+              const isSelected = selectedIds.has(sa.id)
               const imgUrl = sa.image_file
                 ? supabase.storage.from(SA_IMAGE_BUCKET).getPublicUrl(sa.image_file).data.publicUrl
                 : null
@@ -115,10 +176,10 @@ export default function SubAssemblyPickerModal({ subassemblies, onSelect, onClos
                 <button
                   key={sa.id}
                   type="button"
-                  onClick={() => { onSelect(sa); onClose() }}
+                  onClick={(e) => handleCardClick(sa, e)}
                   style={{
-                    background: 'var(--panel-2)',
-                    border: '1px solid var(--border)',
+                    background: isSelected ? 'var(--accent-soft)' : 'var(--panel-2)',
+                    border: `2px solid ${isSelected ? 'var(--accent)' : 'var(--border)'}`,
                     borderRadius: 8,
                     padding: 0,
                     cursor: 'pointer',
@@ -128,27 +189,43 @@ export default function SubAssemblyPickerModal({ subassemblies, onSelect, onClos
                     transition: 'border-color 0.13s, background 0.13s',
                     width: '100%',
                     overflow: 'visible',
+                    position: 'relative',
                   }}
                   onMouseEnter={(e) => {
-                    e.currentTarget.style.borderColor = 'var(--accent)'
-                    e.currentTarget.style.background = 'var(--accent-soft)'
+                    if (!isSelected) {
+                      e.currentTarget.style.borderColor = 'var(--accent)'
+                      e.currentTarget.style.background = 'var(--accent-soft)'
+                    }
                   }}
                   onMouseLeave={(e) => {
-                    e.currentTarget.style.borderColor = 'var(--border)'
-                    e.currentTarget.style.background = 'var(--panel-2)'
+                    if (!isSelected) {
+                      e.currentTarget.style.borderColor = 'var(--border)'
+                      e.currentTarget.style.background = 'var(--panel-2)'
+                    }
                   }}
                 >
+                  {/* Checkmark badge when selected */}
+                  {isSelected && (
+                    <div style={{
+                      position: 'absolute', top: 6, right: 6, zIndex: 2,
+                      width: 22, height: 22, borderRadius: '50%',
+                      background: 'var(--accent)', color: '#fff',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: '0.75rem', fontWeight: 700, boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+                    }}>✓</div>
+                  )}
+
                   {/* Image / placeholder */}
                   {imgUrl ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
                       src={imgUrl}
                       alt={sa.name}
-                      style={{ width: '100%', height: 130, objectFit: 'cover', display: 'block', borderRadius: '8px 8px 0 0', flexShrink: 0 }}
+                      style={{ width: '100%', height: 130, objectFit: 'cover', display: 'block', borderRadius: '6px 6px 0 0', flexShrink: 0 }}
                       onError={(e) => { e.currentTarget.style.display = 'none' }}
                     />
                   ) : (
-                    <div style={{ width: '100%', height: 130, flexShrink: 0, background: 'var(--panel)', borderRadius: '8px 8px 0 0', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <div style={{ width: '100%', height: 130, flexShrink: 0, background: 'var(--panel)', borderRadius: '6px 6px 0 0', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                       <span style={{ fontSize: '2rem', opacity: 0.4 }}>🔧</span>
                     </div>
                   )}

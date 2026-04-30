@@ -3002,6 +3002,19 @@ export default function SkusPage() {
             setSubassemblyIdToAdd(sa.id)
             setSaPickerOpen(false)
           }}
+          onSelectMultiple={async (sas) => {
+            if (!selectedSkuId || sas.length === 0) return
+            setSaPickerOpen(false)
+            setAddingRelation(true)
+            setRelationMessage('')
+            for (const sa of sas) {
+              await upsertSkuSubassembly(selectedSkuId, sa.id, 1)
+              await loadSubassemblyParts(sa.id)
+            }
+            await loadSelectedSkuRelations(selectedSkuId)
+            setRelationMessage(`${sas.length} sub-assembl${sas.length !== 1 ? 'ies' : 'y'} added.`)
+            setAddingRelation(false)
+          }}
         />
       )}
     </>
