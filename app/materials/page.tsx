@@ -106,6 +106,11 @@ function buildMaterialName(form: typeof emptyForm) {
   if (form.material_type === 'sheet') {
     return [form.sheet_thickness.trim(), mat].filter(Boolean).join(' ')
   }
+  if (form.tube_shape === 'flat_bar') {
+    const width = form.tube_dimension.trim()
+    const thk = form.wall_thickness.trim()
+    return ['Flat Bar', width && thk ? `${width} × ${thk}` : width || thk, mat].filter(Boolean).join(' ')
+  }
   const shape = form.tube_shape === 'square' ? 'Square' : 'Round'
   const dim = form.tube_dimension.trim()
   const wall = form.wall_thickness.trim()
@@ -367,7 +372,7 @@ export default function MaterialsPage() {
   function startEdit(row: MaterialRow) {
     const isTube = row.material_type === 'tube'
     // Prefer the stored tube_shape column; fall back to deriving from tube_od for old rows
-    const tubeShape = row.tube_shape ?? (row.tube_od?.toLowerCase().includes('x') ? 'square' : 'round')
+    const tubeShape = row.tube_shape ?? (/x|×/i.test(row.tube_od ?? '') ? 'square' : 'round')
     setEditingId(row.id)
     setForm({
       material_type: row.material_type,
@@ -945,10 +950,11 @@ export default function MaterialsPage() {
 
                   {form.material_type === 'tube' && (
                     <div>
-                      <label className="label">Tube Shape</label>
+                      <label className="label">Profile</label>
                       <select className="select" value={form.tube_shape} onChange={(e) => updateField('tube_shape', e.target.value)}>
-                        <option value="round">Round</option>
-                        <option value="square">Square</option>
+                        <option value="round">Round Tube</option>
+                        <option value="square">Square Tube</option>
+                        <option value="flat_bar">Flat Bar</option>
                       </select>
                     </div>
                   )}
@@ -963,10 +969,21 @@ export default function MaterialsPage() {
                       <label className="label">Thickness</label>
                       <input className="field" value={form.sheet_thickness} onChange={(e) => updateField('sheet_thickness', e.target.value)} placeholder="3/16" />
                     </div>
+                  ) : form.tube_shape === 'flat_bar' ? (
+                    <>
+                      <div>
+                        <label className="label">Width</label>
+                        <input className="field" value={form.tube_dimension} onChange={(e) => updateField('tube_dimension', e.target.value)} placeholder="2" />
+                      </div>
+                      <div>
+                        <label className="label">Thickness</label>
+                        <input className="field" value={form.wall_thickness} onChange={(e) => updateField('wall_thickness', e.target.value)} placeholder=".25" />
+                      </div>
+                    </>
                   ) : (
                     <>
                       <div>
-                        <label className="label">Dimension</label>
+                        <label className="label">Dimension (OD)</label>
                         <input className="field" value={form.tube_dimension} onChange={(e) => updateField('tube_dimension', e.target.value)} placeholder={form.tube_shape === 'square' ? '2 x 2' : '1.75'} />
                       </div>
                       <div>
@@ -982,7 +999,7 @@ export default function MaterialsPage() {
                   </div>
 
                   <div>
-                    <label className="label">Unit Weight (lbs) — one {form.material_type === 'tube' ? 'bar' : 'sheet'}</label>
+                    <label className="label">Unit Weight (lbs) — one {form.material_type === 'sheet' ? 'sheet' : form.tube_shape === 'flat_bar' ? 'bar' : 'stick'}</label>
                     <input className="field" type="number" step="0.01" min="0" value={form.unit_weight_lbs} onChange={(e) => updateField('unit_weight_lbs', e.target.value)} placeholder="130" />
                   </div>
 

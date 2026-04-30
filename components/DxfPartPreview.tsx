@@ -76,7 +76,7 @@ export type DxfPartPreviewProps = {
   /** For tube cards: shown in the fallback display */
   tubeOd?: string | null
   tubeWall?: string | null
-  tubeShape?: 'round' | 'square'
+  tubeShape?: 'round' | 'square' | 'flat_bar'
   cutLength?: number | null
 }
 
@@ -166,8 +166,9 @@ export default function DxfPartPreview({
 
   // ── Tube fallback: rich info card ────────────────────────────
   if (isTube && tubeFallback) {
-    // Detect square from either prop or tube_od containing 'x' (e.g. "1x1", "1.5x1.5")
-    const isSquare = tubeShape === 'square' || (tubeOd ?? '').toLowerCase().includes('x')
+    const isFlatBar = tubeShape === 'flat_bar'
+    // Detect square from prop or tube_od containing 'x'/'×' (e.g. "1x1", "1.25 × .120")
+    const isSquare = !isFlatBar && (tubeShape === 'square' || /x|×/i.test(tubeOd ?? ''))
     const isFillOrLarge = size === 'fill' || size === 'large'
     const svgSize = isFillOrLarge ? 52 : size === 'small' ? 40 : 28
 
@@ -196,7 +197,10 @@ export default function DxfPartPreview({
           viewBox="0 0 52 52"
           style={{ flexShrink: 0 }}
         >
-          {isSquare ? (
+          {isFlatBar ? (
+            /* Solid filled rectangle — wide and thin */
+            <rect x={cx - outerR} y={cy - outerR * 0.38} width={outerR * 2} height={outerR * 0.76} rx={2} fill="rgba(148,163,184,0.25)" stroke="#94a3b8" strokeWidth={2} />
+          ) : isSquare ? (
             <>
               {/* Outer square */}
               <rect x={cx - outerR} y={cy - outerR} width={outerR * 2} height={outerR * 2} rx={2} fill="rgba(148,163,184,0.12)" stroke="#94a3b8" strokeWidth={2} />

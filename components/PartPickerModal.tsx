@@ -260,9 +260,10 @@ function PartCard({
   previewHeight: number
 }) {
   const isSheet = part.part_type === 'sheet'
-  const isSquare = part.tube_shape === 'square'
-    || (part.tube_od ?? '').toLowerCase().includes('x')
-    || (part.material ?? '').toLowerCase().startsWith('square')
+  const isFlatBar = part.tube_shape === 'flat_bar'
+  const isSquare = !isFlatBar && (part.tube_shape === 'square'
+    || /x|×/i.test(part.tube_od ?? '')
+    || (part.material ?? '').toLowerCase().startsWith('square'))
 
   const typeColor = isSheet
     ? { bg: 'rgba(100,160,220,0.15)', text: '#7ab4e8', border: 'rgba(100,160,220,0.25)' }
@@ -345,7 +346,7 @@ function PartCard({
           tubeFallback={true}
           tubeOd={part.tube_od}
           tubeWall={part.tube_wall}
-          tubeShape={isSquare ? 'square' : 'round'}
+          tubeShape={isFlatBar ? 'flat_bar' : isSquare ? 'square' : 'round'}
           cutLength={part.cut_length}
         />
       </div>

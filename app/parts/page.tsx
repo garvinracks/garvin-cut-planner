@@ -483,7 +483,7 @@ export default function PartsPage() {
         tube_od: form.part_type === 'tube' ? selectedMaterial.tube_od || null : null,
         tube_wall: form.part_type === 'tube' ? selectedMaterial.tube_wall || null : null,
         tube_shape: form.part_type === 'tube'
-          ? (selectedMaterial.tube_shape ?? (selectedMaterial.tube_od?.toLowerCase().includes('x') ? 'square' : 'round'))
+          ? (selectedMaterial.tube_shape ?? (/x|×/i.test(selectedMaterial.tube_od ?? '') ? 'square' : 'round'))
           : 'round',
         cut_length:
           form.part_type === 'tube' && form.cut_length.trim() !== ''
@@ -1105,9 +1105,9 @@ export default function PartsPage() {
                   }}>
                     {group.map((part) => {
                       const isActive  = editingId === part.id
-                      const isSquare  = part.tube_shape === 'square'
-                        || (part.tube_od ?? '').toLowerCase().includes('x')
-                        || (part.material ?? '').toLowerCase().startsWith('square')
+                      const tubeShapeVal = part.tube_shape === 'flat_bar' ? 'flat_bar'
+                        : (part.tube_shape === 'square' || /x|×/i.test(part.tube_od ?? '') || (part.material ?? '').toLowerCase().startsWith('square')) ? 'square' : 'round'
+                      const isSquare  = tubeShapeVal === 'square'
                       const dims      = ptype === 'sheet'
                         ? [part.thickness, part.material].filter(Boolean).join(' · ')
                         : [part.tube_od, part.tube_wall, part.material].filter(Boolean).join(' · ')
@@ -1144,7 +1144,7 @@ export default function PartsPage() {
                               tubeFallback={true}
                               tubeOd={part.tube_od}
                               tubeWall={part.tube_wall}
-                              tubeShape={isSquare ? 'square' : 'round'}
+                              tubeShape={tubeShapeVal as 'round' | 'square' | 'flat_bar'}
                               cutLength={part.cut_length}
                             />
                           </div>
