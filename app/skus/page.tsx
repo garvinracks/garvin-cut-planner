@@ -67,6 +67,7 @@ type MaterialRow = {
   thickness: string | null
   tube_od: string | null
   tube_wall: string | null
+  tube_shape: string | null
   unit_weight_lbs: number | null
   stock_length_in: number | null
   scrap_rate: number | null
@@ -405,7 +406,7 @@ export default function SkusPage() {
   async function loadMaterials() {
     const { data, error } = await supabase
       .from('materials')
-      .select('id, name, material_type, material, thickness, tube_od, tube_wall, unit_weight_lbs, stock_length_in, scrap_rate, qty_on_hand')
+      .select('id, name, material_type, material, thickness, tube_od, tube_wall, tube_shape, unit_weight_lbs, stock_length_in, scrap_rate, qty_on_hand')
       .order('name', { ascending: true })
 
     if (!error) {
@@ -1534,6 +1535,32 @@ export default function SkusPage() {
     )
   }
 
+  /**
+   * Returns the correct tube shape for a part, using the matched material's tube_shape
+   * as the authoritative source.  Falls back to the stored part tube_shape field and
+   * then to heuristics so old data still renders correctly.
+   */
+  function resolvePartTubeShape(
+    partId: string,
+    storedShape: string | null,
+    tubeOd: string | null,
+    material: string | null,
+  ): 'round' | 'square' | 'flat_bar' {
+    if (storedShape === 'flat_bar') return 'flat_bar'
+    // Look up the matched material for this part — its tube_shape is authoritative
+    const part = parts.find((p) => p.id === partId)
+    if (part) {
+      const mat = findMaterialForPart(part)
+      if (mat?.tube_shape === 'flat_bar') return 'flat_bar'
+      if (mat?.tube_shape === 'square')   return 'square'
+      if (mat?.tube_shape === 'round')    return 'round'
+    }
+    // Fallback: stored shape or heuristics on OD string / material name
+    if (storedShape === 'square') return 'square'
+    if (/x|×/i.test(tubeOd ?? '') || (material ?? '').toLowerCase().startsWith('square')) return 'square'
+    return 'round'
+  }
+
   /** For tube parts, compute weight from cut_length + material when weight_lbs is null. */
   function getPartWeight(partId: string, storedWeight: number | null, cutLength: number | null): number | null {
     if (storedWeight != null) return storedWeight
@@ -2182,7 +2209,7 @@ export default function SkusPage() {
                                                     tubeOd={subRow.tube_od ?? undefined}
                                                     tubeWall={subRow.tube_wall ?? undefined}
                                                     cutLength={subRow.cut_length ?? undefined}
-                                                    tubeShape={subRow.tube_shape === 'flat_bar' ? 'flat_bar' : subRow.tube_shape === 'square' || /x|×/i.test(subRow.tube_od ?? '') || (subRow.material ?? '').toLowerCase().startsWith('square') ? 'square' : 'round'}
+                                                    tubeShape={resolvePartTubeShape(subRow.part_id, subRow.tube_shape, subRow.tube_od, subRow.material)}
                                                   />
                                                 </td>
                                                 <td style={{ fontWeight: 700, fontFamily: 'monospace', fontSize: '0.83rem' }}>
@@ -2344,7 +2371,7 @@ export default function SkusPage() {
                                       tubeOd={row.tube_od ?? undefined}
                                       tubeWall={row.tube_wall ?? undefined}
                                       cutLength={row.cut_length ?? undefined}
-                                      tubeShape={row.tube_shape === 'flat_bar' ? 'flat_bar' : row.tube_shape === 'square' || /x|×/i.test(row.tube_od ?? '') || (row.material ?? '').toLowerCase().startsWith('square') ? 'square' : 'round'}
+                                      tubeShape={resolvePartTubeShape(row.part_id, row.tube_shape, row.tube_od, row.material)}
                                     />
                                   </td>
                                   <td style={{ fontWeight: 700, fontFamily: 'monospace', fontSize: '0.83rem' }}>
@@ -2431,7 +2458,7 @@ export default function SkusPage() {
                                       tubeOd={row.tube_od ?? undefined}
                                       tubeWall={row.tube_wall ?? undefined}
                                       cutLength={row.cut_length ?? undefined}
-                                      tubeShape={row.tube_shape === 'flat_bar' ? 'flat_bar' : row.tube_shape === 'square' || /x|×/i.test(row.tube_od ?? '') || (row.material ?? '').toLowerCase().startsWith('square') ? 'square' : 'round'}
+                                      tubeShape={resolvePartTubeShape(row.part_id, row.tube_shape, row.tube_od, row.material)}
                                     />
                                   </td>
                                   <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>{row.part_number}</td>

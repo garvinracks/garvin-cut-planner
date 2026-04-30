@@ -82,6 +82,7 @@ type MaterialRecord = {
   material_type: string
   tube_od: string | null
   tube_wall: string | null
+  tube_shape: string | null
   thickness: string | null
   unit_weight_lbs: number | null
   stock_length_in: number | null
@@ -212,7 +213,7 @@ export default function BatchesPage() {
       supabase.from('sku_sub_assemblies').select('sku_id, sub_assembly_id, qty'),
       supabase.from('sub_assembly_parts').select('sub_assembly_id, part_id, qty'),
       supabase.from('sub_assemblies').select('id, name, requires_weld, image_file'),
-      supabase.from('materials').select('id, name, material, material_type, tube_od, tube_wall, thickness, unit_weight_lbs, stock_length_in, scrap_rate, qty_on_hand'),
+      supabase.from('materials').select('id, name, material, material_type, tube_od, tube_wall, tube_shape, thickness, unit_weight_lbs, stock_length_in, scrap_rate, qty_on_hand'),
       supabase.from('material_price_logs').select('material_id, price').order('date_purchased', { ascending: false }),
     ])
     const loadedBatches = (batchData ?? []) as BuildBatch[]
@@ -339,6 +340,26 @@ export default function BatchesPage() {
   }, [activeBatch?.id])
 
   // ── Part helpers ──────────────────────────────────────────────────────────────
+
+  /** Resolves the true tube shape by checking the matched material first so that
+   *  existing parts with a stale tube_shape in the DB still render correctly. */
+  function resolvePartTubeShape(part: Part): 'round' | 'square' | 'flat_bar' {
+    if (part.tube_shape === 'flat_bar') return 'flat_bar'
+    // Find the matching material and trust its tube_shape
+    const mat = materials.find((m) =>
+      m.material_type === 'tube' &&
+      m.material === part.material &&
+      m.tube_od === part.tube_od &&
+      m.tube_wall === part.tube_wall
+    )
+    if (mat?.tube_shape === 'flat_bar') return 'flat_bar'
+    if (mat?.tube_shape === 'square')   return 'square'
+    if (mat?.tube_shape === 'round')    return 'round'
+    // Fallback: stored field then heuristics
+    if (part.tube_shape === 'square') return 'square'
+    if (/x|×/i.test(part.tube_od ?? '') || (part.material ?? '').toLowerCase().startsWith('square')) return 'square'
+    return 'round'
+  }
 
   function getSkuPartEntries(skuId: string): Array<{ partId: string; qty: number; subAssemblyId: string | null }> {
     const result: Array<{ partId: string; qty: number; subAssemblyId: string | null }> = []
@@ -1269,7 +1290,7 @@ export default function BatchesPage() {
                         <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
                           <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small"
                             isTube={part.part_type === 'tube'} tubeFallback={true}
-                            tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={part.tube_shape === 'flat_bar' ? 'flat_bar' : (part.tube_shape === 'square' || /x|×/i.test(part.tube_od ?? '') || (part.material ?? '').toLowerCase().startsWith('square')) ? 'square' : 'round'} />
+                            tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={resolvePartTubeShape(part)} />
                           <div style={{ fontSize: '0.7rem', fontFamily: 'monospace', fontWeight: 700, color: '#555', marginTop: 4 }}>{part.part_number}</div>
                         </td>
                         <td style={{ textAlign: 'center', fontWeight: 700, verticalAlign: 'middle' }}>{totalQty}</td>
@@ -2188,7 +2209,7 @@ export default function BatchesPage() {
                                     <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
                                       <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small"
                                         isTube={part.part_type === 'tube'} tubeFallback={true}
-                                        tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={part.tube_shape === 'flat_bar' ? 'flat_bar' : (part.tube_shape === 'square' || /x|×/i.test(part.tube_od ?? '') || (part.material ?? '').toLowerCase().startsWith('square')) ? 'square' : 'round'} />
+                                        tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={resolvePartTubeShape(part)} />
                                       <div style={{ fontSize: '0.68rem', fontFamily: 'monospace', fontWeight: 700, color: 'var(--muted)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{part.part_number}</div>
                                       {part.description && <div style={{ fontSize: '0.62rem', color: 'var(--muted)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>{part.description}</div>}
                                     </td>
@@ -2264,7 +2285,7 @@ export default function BatchesPage() {
                                   <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
                                     <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small"
                                       isTube={part.part_type === 'tube'} tubeFallback={true}
-                                      tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={part.tube_shape === 'flat_bar' ? 'flat_bar' : (part.tube_shape === 'square' || /x|×/i.test(part.tube_od ?? '') || (part.material ?? '').toLowerCase().startsWith('square')) ? 'square' : 'round'} />
+                                      tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={resolvePartTubeShape(part)} />
                                     <div style={{ fontSize: '0.68rem', fontFamily: 'monospace', fontWeight: 700, color: 'var(--muted)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{part.part_number}</div>
                                     {part.description && <div style={{ fontSize: '0.62rem', color: 'var(--muted)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>{part.description}</div>}
                                   </td>
