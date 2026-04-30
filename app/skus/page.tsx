@@ -25,7 +25,10 @@ type SKU = {
   packaging_cost: number | null
   labor_cost_per_unit: number | null
   setup_complete: boolean
+  instructions_pdf: string | null
 }
+
+const SKU_PDF_BUCKET = 'sku-instructions'
 
 const SUB_IMAGE_BUCKET = 'subassembly-images'
 
@@ -314,6 +317,8 @@ export default function SkusPage() {
   const [message, setMessage] = useState('')
   const [search, setSearch] = useState('')
   const [duplicateBusyId, setDuplicateBusyId] = useState('')
+  const [pdfViewerOpen, setPdfViewerOpen]     = useState(false)
+  const [pdfUploading, setPdfUploading]       = useState(false)
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set())
   const [addingRelation, setAddingRelation] = useState(false)
   const [relationMessage, setRelationMessage] = useState('')
@@ -1479,6 +1484,46 @@ export default function SkusPage() {
     setSkus((prev) => prev.map((s) => s.id === sku.id ? { ...s, setup_complete: next } : s))
   }
 
+  // ── PDF instructions ──────────────────────────────────────────────────────────
+
+  async function uploadSkuPdf(sku: SKU, file: File) {
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      setMessage('Only PDF files are allowed.')
+      return
+    }
+    setPdfUploading(true)
+    const fileName = `${sku.id}.pdf`
+    const { error: uploadErr } = await supabase.storage
+      .from(SKU_PDF_BUCKET)
+      .upload(fileName, file, { upsert: true, contentType: 'application/pdf' })
+    if (uploadErr) {
+      setMessage(`PDF upload failed: ${uploadErr.message}`)
+      setPdfUploading(false)
+      return
+    }
+    const { error: dbErr } = await supabase
+      .from('skus')
+      .update({ instructions_pdf: fileName })
+      .eq('id', sku.id)
+    if (dbErr) {
+      setMessage(`Could not save PDF reference: ${dbErr.message}`)
+    } else {
+      setSkus((prev) => prev.map((s) => s.id === sku.id ? { ...s, instructions_pdf: fileName } : s))
+    }
+    setPdfUploading(false)
+  }
+
+  async function removeSkuPdf(sku: SKU) {
+    if (!sku.instructions_pdf) return
+    await supabase.storage.from(SKU_PDF_BUCKET).remove([sku.instructions_pdf])
+    await supabase.from('skus').update({ instructions_pdf: null }).eq('id', sku.id)
+    setSkus((prev) => prev.map((s) => s.id === sku.id ? { ...s, instructions_pdf: null } : s))
+  }
+
+  function getSkuPdfUrl(fileName: string) {
+    return supabase.storage.from(SKU_PDF_BUCKET).getPublicUrl(fileName).data.publicUrl
+  }
+
   // ── Computed values ───────────────────────────────────────────────────────────
 
   const filteredSkus = skus.filter((sku) => {
@@ -1917,6 +1962,34 @@ export default function SkusPage() {
                         >
                           {duplicateBusyId === selectedSku.id ? 'Duplicating...' : 'Duplicate'}
                         </button>
+                        {/* PDF instructions */}
+                        {selectedSku.instructions_pdf ? (
+                          <>
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              style={{ fontSize: '0.82rem' }}
+                              onClick={() => setPdfViewerOpen(true)}
+                            >
+                              📄 View Instructions
+                            </button>
+                            <label
+                              style={{ fontSize: '0.82rem', padding: '5px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--panel-2)', color: 'var(--text-2)', cursor: 'pointer', fontWeight: 500 }}
+                              title="Replace PDF"
+                            >
+                              ↑ Replace
+                              <input type="file" accept=".pdf" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadSkuPdf(selectedSku, f); e.target.value = '' }} />
+                            </label>
+                          </>
+                        ) : (
+                          <label
+                            style={{ fontSize: '0.82rem', padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(99,102,241,0.4)', background: 'rgba(99,102,241,0.08)', color: '#818cf8', cursor: pdfUploading ? 'wait' : 'pointer', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 5, opacity: pdfUploading ? 0.6 : 1 }}
+                          >
+                            {pdfUploading ? '⏳ Uploading…' : '📎 Add Instructions PDF'}
+                            <input type="file" accept=".pdf" style={{ display: 'none' }} disabled={pdfUploading} onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadSkuPdf(selectedSku, f); e.target.value = '' }} />
+                          </label>
+                        )}
+
                         {/* Setup-complete toggle */}
                         <button
                           type="button"
@@ -3146,6 +3219,66 @@ export default function SkusPage() {
             setAddingRelation(false)
           }}
         />
+      )}
+
+      {/* ── PDF Instructions Viewer ──────────────────────────────────────────────── */}
+      {pdfViewerOpen && selectedSku?.instructions_pdf && (
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.78)', zIndex: 1100, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-start', paddingTop: 40 }}
+          onClick={(e) => { if (e.target === e.currentTarget) setPdfViewerOpen(false) }}
+        >
+          <div style={{ width: '90%', maxWidth: 900, height: 'calc(100vh - 120px)', background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 10, display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 24px 64px rgba(0,0,0,0.65)' }}>
+            {/* Header */}
+            <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+              <span style={{ fontWeight: 700, fontSize: '0.95rem', flex: 1 }}>📄 {selectedSku.id} — Instructions</span>
+              <a
+                href={getSkuPdfUrl(selectedSku.instructions_pdf)}
+                target="_blank"
+                rel="noreferrer"
+                className="btn btn-secondary"
+                style={{ fontSize: '0.82rem', padding: '5px 12px' }}
+              >
+                ↗ Open in Tab
+              </a>
+              <button
+                type="button"
+                className="btn btn-primary"
+                style={{ fontSize: '0.82rem', padding: '5px 12px' }}
+                onClick={() => {
+                  const iframe = document.getElementById('sku-pdf-iframe') as HTMLIFrameElement | null
+                  if (iframe?.contentWindow) {
+                    iframe.contentWindow.print()
+                  } else {
+                    window.open(getSkuPdfUrl(selectedSku.instructions_pdf!), '_blank')
+                  }
+                }}
+              >
+                🖨 Print
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ fontSize: '0.82rem', padding: '5px 10px' }}
+                onClick={() => {
+                  if (window.confirm('Remove the instructions PDF for this SKU?')) {
+                    void removeSkuPdf(selectedSku)
+                    setPdfViewerOpen(false)
+                  }
+                }}
+              >
+                🗑 Remove
+              </button>
+              <button type="button" className="btn btn-secondary" style={{ padding: '5px 10px', lineHeight: 1 }} onClick={() => setPdfViewerOpen(false)}>✕</button>
+            </div>
+            {/* PDF embed */}
+            <iframe
+              id="sku-pdf-iframe"
+              src={getSkuPdfUrl(selectedSku.instructions_pdf)}
+              style={{ flex: 1, border: 'none', width: '100%' }}
+              title={`${selectedSku.id} Instructions`}
+            />
+          </div>
+        </div>
       )}
     </>
   )
