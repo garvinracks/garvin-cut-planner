@@ -935,6 +935,24 @@ WITH CHECK (bucket_id = 'subassembly-images');`}
                           {selectedSubassemblyParts.map((row) => {
                             const fullPart = parts.find((part) => part.id === row.part_id)
 
+                            // Resolve tube shape via matched material (authoritative) then fallbacks
+                            const resolvedTubeShape = (() => {
+                              if (!fullPart || fullPart.part_type !== 'tube') return 'round' as const
+                              if (fullPart.tube_shape === 'flat_bar') return 'flat_bar' as const
+                              const mat = materials.find((m) =>
+                                m.material_type === 'tube' &&
+                                m.material === fullPart.material &&
+                                m.tube_od === fullPart.tube_od &&
+                                m.tube_wall === fullPart.tube_wall
+                              )
+                              if (mat?.tube_shape === 'flat_bar') return 'flat_bar' as const
+                              if (mat?.tube_shape === 'square')   return 'square' as const
+                              if (mat?.tube_shape === 'round')    return 'round' as const
+                              if (fullPart.tube_shape === 'square') return 'square' as const
+                              if (/x|×/i.test(fullPart.tube_od ?? '') || (fullPart.material ?? '').toLowerCase().startsWith('square')) return 'square' as const
+                              return 'round' as const
+                            })()
+
                             return (
                               <tr key={row.id}>
                                 <td>
@@ -947,7 +965,7 @@ WITH CHECK (bucket_id = 'subassembly-images');`}
                                     tubeOd={fullPart?.tube_od ?? undefined}
                                     tubeWall={fullPart?.tube_wall ?? undefined}
                                     cutLength={fullPart?.cut_length ?? undefined}
-                                    tubeShape="round"
+                                    tubeShape={resolvedTubeShape}
                                   />
                                 </td>
                                 <td>{row.part_number}</td>
