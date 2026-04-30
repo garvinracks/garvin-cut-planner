@@ -171,8 +171,9 @@ export default function BatchesPage() {
   const [createNotes, setCreateNotes] = useState('')
   const [createRows, setCreateRows]   = useState([{ skuId: '', qty: '1', skuLookup: '' }])
   const [createDropdown, setCreateDropdown] = useState<number | null>(null)
-  const [skuPickerOpen, setSkuPickerOpen]   = useState(false)
-  const [orderCounts, setOrderCounts]       = useState<Record<string, number>>({})
+  const [skuPickerOpen, setSkuPickerOpen]         = useState(false)
+  const [draftSkuPickerOpen, setDraftSkuPickerOpen] = useState(false)
+  const [orderCounts, setOrderCounts]             = useState<Record<string, number>>({})
 
   const [saving, setSaving]           = useState(false)
   const [sendingToPowder, setSendingToPowder] = useState(false)
@@ -634,6 +635,21 @@ export default function BatchesPage() {
     setActiveBatch(fresh as BuildBatch)
     setDraftLineEdits({})
     setSaving(false)
+  }
+
+  async function addSkusToDraft(batch: BuildBatch, picked: PickableSKU[]) {
+    const newLines: BuildBatchLine[] = []
+    for (const sku of picked) {
+      const { data, error } = await supabase
+        .from('build_batch_lines')
+        .insert({ batch_id: batch.id, sku_id: sku.id, qty: 1 })
+        .select('*')
+        .single()
+      if (!error && data) newLines.push(data as BuildBatchLine)
+    }
+    if (newLines.length > 0) {
+      setLines((prev) => [...prev, ...newLines])
+    }
   }
 
   async function updateStatus(batch: BuildBatch, status: BatchStatus) {
@@ -1486,11 +1502,18 @@ export default function BatchesPage() {
             <div className="card-header">
               <h2 className="card-title">Review &amp; Confirm Quantities</h2>
               <div className="card-subtitle">Edit quantities if needed, then click "Confirm Batch" to mark as Planned and start building.</div>
+              <button
+                className="btn btn-secondary"
+                style={{ marginLeft: 'auto', fontSize: '0.82rem' }}
+                onClick={() => setDraftSkuPickerOpen(true)}
+              >
+                + Add SKU
+              </button>
             </div>
             <div className="card-body" style={{ padding: 0 }}>
               <div className="table-wrap">
                 <table className="table">
-                  <thead><tr><th>SKU</th><th>Description</th><th style={{ textAlign: 'center', width: 100 }}>Qty</th></tr></thead>
+                  <thead><tr><th>SKU</th><th>Description</th><th style={{ textAlign: 'center', width: 100 }}>Qty</th><th style={{ width: 40 }} /></tr></thead>
                   <tbody>
                     {batchLines.map((line) => {
                       const sku = skus.find((s) => s.id === line.sku_id)
@@ -1507,6 +1530,19 @@ export default function BatchesPage() {
                               value={qtyVal}
                               onChange={(e) => setDraftLineEdits((prev) => ({ ...prev, [line.id]: e.target.value }))}
                             />
+                          </td>
+                          <td style={{ textAlign: 'center' }}>
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              style={{ padding: '3px 8px', fontSize: '0.75rem', color: 'var(--danger)' }}
+                              title="Remove this SKU"
+                              onClick={async () => {
+                                await supabase.from('build_batch_lines').delete().eq('id', line.id)
+                                setLines((prev) => prev.filter((l) => l.id !== line.id))
+                                setDraftLineEdits((prev) => { const next = { ...prev }; delete next[line.id]; return next })
+                              }}
+                            >✕</button>
                           </td>
                         </tr>
                       )
@@ -2323,6 +2359,18 @@ export default function BatchesPage() {
             </div>
           </div>
         </section>
+
+        {/* ── Draft: Add SKU picker ─────────────────────────────────────────── */}
+        {draftSkuPickerOpen && activeBatch.status === 'draft' && (
+          <SkuPickerModal
+            skus={skus}
+            orderCounts={orderCounts}
+            onClose={() => setDraftSkuPickerOpen(false)}
+            onSelect={(picked) => {
+              void addSkusToDraft(activeBatch, picked)
+            }}
+          />
+        )}
       </div>
     )
   }
