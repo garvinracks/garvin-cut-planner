@@ -204,6 +204,7 @@ const STAGE_FIELDS = [
   { key: 'requires_sheet_bend', label: 'Sheet Bend' },
   { key: 'requires_tube_bend',  label: 'Tube Bend' },
   { key: 'requires_saw',        label: 'Saw' },
+  { key: 'requires_notch',      label: 'Notch' },
   { key: 'requires_drill',      label: 'Drill' },
 ] as const
 
@@ -231,6 +232,7 @@ const emptyPartForm = {
   requires_sheet_bend: false,
   requires_tube_bend: false,
   requires_saw: false,
+  requires_notch: false,
   requires_drill: false,
   requires_weld: false,
 }
@@ -345,6 +347,7 @@ export default function SkusPage() {
   const [partModalIsEdit, setPartModalIsEdit] = useState(false)
   const [partModalEditId, setPartModalEditId] = useState<string | null>(null)
   const [partForm, setPartForm] = useState(emptyPartForm)
+  const [partModalDxfFile, setPartModalDxfFile] = useState<File | null>(null)
   // For create mode: attach target
   const [partAttachMode, setPartAttachMode] = useState<'sku' | 'subassembly'>('sku')
   const [partAttachSubassemblyId, setPartAttachSubassemblyId] = useState('')
@@ -1004,6 +1007,7 @@ export default function SkusPage() {
     setPartModalIsEdit(false)
     setPartModalEditId(null)
     setPartForm(emptyPartForm)
+    setPartModalDxfFile(null)
     setPartAttachMode(defaultAttachMode)
     setPartAttachSubassemblyId(defaultSubId)
     setPartAttachQty('1')
@@ -1014,6 +1018,7 @@ export default function SkusPage() {
   function openPartModalEdit(part: Part) {
     setPartModalIsEdit(true)
     setPartModalEditId(part.id)
+    setPartModalDxfFile(null)
     setPartForm({
       id: part.id,
       part_number: part.part_number,
@@ -1028,11 +1033,24 @@ export default function SkusPage() {
       requires_sheet_bend: part.requires_sheet_bend,
       requires_tube_bend: part.requires_tube_bend,
       requires_saw: part.requires_saw,
+      requires_notch: part.requires_notch ?? false,
       requires_drill: part.requires_drill,
       requires_weld: part.requires_weld,
     })
     setBuilderMessage('')
     setPartModalOpen(true)
+  }
+
+  async function uploadPartModalDxf(): Promise<string | null> {
+    if (!partModalDxfFile) return partForm.dxf_file.trim() || null
+    if (!partModalDxfFile.name.toLowerCase().endsWith('.dxf')) {
+      throw new Error('Only .dxf files are allowed.')
+    }
+    const { error } = await supabase.storage
+      .from('dxf-files')
+      .upload(partModalDxfFile.name, partModalDxfFile, { upsert: true })
+    if (error) throw new Error(error.message)
+    return partModalDxfFile.name
   }
 
   async function savePartModal() {
@@ -1066,18 +1084,28 @@ export default function SkusPage() {
           ? Number(partForm.weight_lbs)
           : null
 
+      let editDxfFile: string | null = null
+      try {
+        editDxfFile = partForm.part_type === 'sheet' ? await uploadPartModalDxf() : null
+      } catch (err) {
+        setBuilderMessage(`DXF upload failed: ${(err as Error).message}`)
+        setBuilderSaving(false)
+        return
+      }
+
       const updatePayload: Record<string, unknown> = {
         part_number: partForm.part_number.trim(),
         description: partForm.description.trim(),
         part_type: partForm.part_type,
         cut_length: editCutLength,
-        dxf_file: partForm.part_type === 'sheet' ? partForm.dxf_file.trim() || null : null,
+        dxf_file: editDxfFile,
         weight_lbs: editWeight,
         notes: partForm.notes.trim() || null,
         requires_laser: partForm.requires_laser,
         requires_sheet_bend: partForm.requires_sheet_bend,
         requires_tube_bend: partForm.requires_tube_bend,
         requires_saw: partForm.requires_saw,
+        requires_notch: partForm.requires_notch,
         requires_drill: partForm.requires_drill,
         requires_weld: partForm.requires_weld,
       }
@@ -1135,6 +1163,15 @@ export default function SkusPage() {
         ? Number(partForm.weight_lbs)
         : null
 
+    let createDxfFile: string | null = null
+    try {
+      createDxfFile = partForm.part_type === 'sheet' ? await uploadPartModalDxf() : null
+    } catch (err) {
+      setBuilderMessage(`DXF upload failed: ${(err as Error).message}`)
+      setBuilderSaving(false)
+      return
+    }
+
     const payload = {
       id: partForm.id.trim(),
       part_number: partForm.part_number.trim(),
@@ -1145,13 +1182,14 @@ export default function SkusPage() {
       tube_od: partForm.part_type === 'tube' ? selectedMaterial.tube_od || null : null,
       tube_wall: partForm.part_type === 'tube' ? selectedMaterial.tube_wall || null : null,
       cut_length: createCutLength,
-      dxf_file: partForm.part_type === 'sheet' ? partForm.dxf_file.trim() || null : null,
+      dxf_file: createDxfFile,
       weight_lbs: createWeight,
       notes: partForm.notes.trim() || null,
       requires_laser: partForm.requires_laser,
       requires_sheet_bend: partForm.requires_sheet_bend,
       requires_tube_bend: partForm.requires_tube_bend,
       requires_saw: partForm.requires_saw,
+      requires_notch: partForm.requires_notch,
       requires_drill: partForm.requires_drill,
       requires_weld: partForm.requires_weld,
     }
@@ -2766,10 +2804,25 @@ export default function SkusPage() {
                 <label className="label">DXF File</label>
                 <input
                   className="field"
-                  value={partForm.dxf_file}
-                  onChange={(e) => setPartForm((prev) => ({ ...prev, dxf_file: e.target.value }))}
-                  placeholder="part.dxf"
+                  type="file"
+                  accept=".dxf"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0] ?? null
+                    setPartModalDxfFile(file)
+                    if (file) setPartForm((prev) => ({ ...prev, dxf_file: file.name }))
+                  }}
+                  style={{ padding: '5px 10px' }}
                 />
+                {partForm.dxf_file && !partModalDxfFile && (
+                  <div style={{ fontSize: '0.74rem', color: 'var(--muted)', marginTop: 4 }}>
+                    Current: {partForm.dxf_file}
+                  </div>
+                )}
+                {partModalDxfFile && (
+                  <div style={{ fontSize: '0.74rem', color: 'var(--accent)', marginTop: 4 }}>
+                    Will upload: {partModalDxfFile.name}
+                  </div>
+                )}
               </div>
             )}
 
