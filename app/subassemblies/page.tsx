@@ -984,6 +984,22 @@ WITH CHECK (bucket_id = 'subassembly-images');`}
             setPartLabelToAdd(`${part.part_number} — ${part.description}`)
             setPartPickerOpen(false)
           }}
+          onSelectMultiple={async (selectedParts) => {
+            if (!selectedSubassemblyId || selectedParts.length === 0) return
+            setPartPickerOpen(false)
+            setAddingPart(true)
+            setPartMessage('')
+            for (const part of selectedParts) {
+              await supabase.from('sub_assembly_parts').insert({
+                sub_assembly_id: selectedSubassemblyId,
+                part_id: part.id,
+                qty: 1,
+              })
+            }
+            await loadSelectedSubassemblyParts(selectedSubassemblyId)
+            setPartMessage(`${selectedParts.length} part${selectedParts.length !== 1 ? 's' : ''} added.`)
+            setAddingPart(false)
+          }}
         />
       )}
     </div>
