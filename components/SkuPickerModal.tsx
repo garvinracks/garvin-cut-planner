@@ -12,6 +12,8 @@ export type PickableSKU = {
 type Props = {
   skus: PickableSKU[]
   orderCounts?: Record<string, number>
+  /** SKU IDs already present in the active batch — shown with a grey "In Batch" badge */
+  inBatchIds?: Set<string>
   onSelect: (skus: PickableSKU[]) => void
   onClose: () => void
 }
@@ -35,7 +37,7 @@ function catLabel(cat: string | null) {
   return cat ?? 'Uncategorized'
 }
 
-export default function SkuPickerModal({ skus, orderCounts = {}, onSelect, onClose }: Props) {
+export default function SkuPickerModal({ skus, orderCounts = {}, inBatchIds, onSelect, onClose }: Props) {
   const [search, setSearch]               = useState('')
   const [catFilter, setCatFilter]         = useState<string>('all')
   const [sort, setSort]                   = useState<'category' | 'orders'>('category')
@@ -120,9 +122,10 @@ export default function SkuPickerModal({ skus, orderCounts = {}, onSelect, onClo
 
   const renderCards = (list: PickableSKU[], showCategory = false) =>
     list.map((sku) => {
-      const isSelected = selected.has(sku.id)
-      const cc = catColor(sku.category)
-      const orderQty = orderCounts[sku.id] ?? 0
+      const isSelected  = selected.has(sku.id)
+      const inBatch     = inBatchIds?.has(sku.id) ?? false
+      const cc          = catColor(sku.category)
+      const orderQty    = orderCounts[sku.id] ?? 0
       return (
         <button
           key={sku.id}
@@ -130,7 +133,7 @@ export default function SkuPickerModal({ skus, orderCounts = {}, onSelect, onClo
           onClick={(e) => handleCardClick(e, sku)}
           style={{
             background: isSelected ? 'var(--accent-soft)' : 'var(--panel-2)',
-            border: `1px solid ${isSelected ? 'var(--accent)' : 'var(--border)'}`,
+            border: `1px solid ${isSelected ? 'var(--accent)' : inBatch ? 'rgba(100,116,139,0.6)' : 'var(--border)'}`,
             borderRadius: 8,
             padding: '12px 13px',
             cursor: 'pointer',
@@ -140,17 +143,20 @@ export default function SkuPickerModal({ skus, orderCounts = {}, onSelect, onClo
             textAlign: 'left',
             position: 'relative',
             transition: 'border-color 0.13s, background 0.13s',
+            opacity: inBatch && !isSelected ? 0.7 : 1,
           }}
           onMouseEnter={(e) => {
             if (!isSelected) {
               e.currentTarget.style.borderColor = 'var(--accent)'
               e.currentTarget.style.background   = 'var(--accent-soft)'
+              e.currentTarget.style.opacity = '1'
             }
           }}
           onMouseLeave={(e) => {
             if (!isSelected) {
-              e.currentTarget.style.borderColor = 'var(--border)'
+              e.currentTarget.style.borderColor = inBatch ? 'rgba(100,116,139,0.6)' : 'var(--border)'
               e.currentTarget.style.background   = 'var(--panel-2)'
+              e.currentTarget.style.opacity = inBatch ? '0.7' : '1'
             }
           }}
         >
@@ -164,8 +170,19 @@ export default function SkuPickerModal({ skus, orderCounts = {}, onSelect, onClo
             }}>✓</span>
           )}
 
-          {/* Order count badge top-left (only when > 0) */}
-          {orderQty > 0 && !isSelected && (
+          {/* "In Batch" badge — shown when SKU is already in the draft */}
+          {inBatch && !isSelected && (
+            <span style={{
+              position: 'absolute', top: 8, right: 9,
+              fontSize: '0.6rem', fontWeight: 700,
+              background: 'rgba(100,116,139,0.2)', color: '#94a3b8',
+              border: '1px solid rgba(100,116,139,0.4)',
+              borderRadius: 4, padding: '1px 5px', lineHeight: 1.5,
+            }}>In Batch</span>
+          )}
+
+          {/* Order count badge (only when > 0 and no other badge showing) */}
+          {orderQty > 0 && !isSelected && !inBatch && (
             <span style={{
               position: 'absolute', top: 8, right: 9,
               fontSize: '0.6rem', fontWeight: 700,

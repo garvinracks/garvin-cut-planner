@@ -1518,6 +1518,16 @@ export default function SkusPage() {
     )
   }
 
+  /** For tube parts, compute weight from cut_length + material when weight_lbs is null. */
+  function getPartWeight(partId: string, storedWeight: number | null, cutLength: number | null): number | null {
+    if (storedWeight != null) return storedWeight
+    const part = parts.find((p) => p.id === partId)
+    if (!part || part.part_type !== 'tube' || !cutLength) return null
+    const mat = findMaterialForPart(part)
+    if (!mat || !mat.unit_weight_lbs || !mat.stock_length_in) return null
+    return (cutLength / mat.stock_length_in) * mat.unit_weight_lbs
+  }
+
   function calcPartLineCost(partId: string, qty: number): number | null {
     const part = parts.find((p) => p.id === partId)
     if (!part) return null
@@ -1561,9 +1571,11 @@ export default function SkusPage() {
   })()
 
   // Powder coat cost estimate: SKU total weight × latest cost/lb from powder runs
-  const skuTotalWeight = fullExplosion.reduce(
-    (sum, r) => r.weight_lbs != null ? sum + r.weight_lbs * r.qty : sum, 0
-  )
+  // Use getPartWeight so tube parts with no stored weight_lbs are still counted.
+  const skuTotalWeight = fullExplosion.reduce((sum, r) => {
+    const w = getPartWeight(r.part_id, r.weight_lbs, r.cut_length)
+    return w != null ? sum + w * r.qty : sum
+  }, 0)
   const powderEstCost = latestPowderCostPerLb != null && skuTotalWeight > 0
     ? skuTotalWeight * latestPowderCostPerLb
     : null
@@ -2357,7 +2369,8 @@ export default function SkusPage() {
                           <tbody>
                             {fullExplosion.map((row) => {
                               const lineCost = calcPartLineCost(row.part_id, row.qty)
-                              const totalWeight = row.weight_lbs != null ? row.weight_lbs * row.qty : null
+                              const effWeight = getPartWeight(row.part_id, row.weight_lbs, row.cut_length)
+                              const totalWeight = effWeight != null ? effWeight * row.qty : null
                               return (
                                 <tr key={row.part_id}>
                                   <td style={{ width: 36, padding: '4px 6px' }}>
@@ -2398,8 +2411,10 @@ export default function SkusPage() {
                               <td />
                               <td style={{ textAlign: 'right', fontWeight: 700, fontSize: '0.83rem', paddingTop: 8 }}>
                                 {(() => {
-                                  const totalW = fullExplosion.reduce((sum, r) =>
-                                    r.weight_lbs != null ? sum + r.weight_lbs * r.qty : sum, 0)
+                                  const totalW = fullExplosion.reduce((sum, r) => {
+                                    const w = getPartWeight(r.part_id, r.weight_lbs, r.cut_length)
+                                    return w != null ? sum + w * r.qty : sum
+                                  }, 0)
                                   return totalW > 0 ? totalW.toFixed(3) : '—'
                                 })()}
                               </td>

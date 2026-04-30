@@ -151,7 +151,6 @@ export default function BatchesPage() {
   const [message, setMessage]         = useState('')
   const [activeBatch, setActiveBatch] = useState<BuildBatch | null>(null)
   const [batchCompletionCounts, setBatchCompletionCounts] = useState<Record<string, number>>({})
-  const [batchTotalOps, setBatchTotalOps] = useState<Record<string, number>>({})
   const [batchViewTab, setBatchViewTab] = useState<'progress' | 'cutlist'>('progress')
 
   // Per-part/sub-assembly completions for the active batch: Set<"id:stageKey">
@@ -235,42 +234,7 @@ export default function BatchesPage() {
     }
     setBatchCompletionCounts(counts)
 
-    // Compute total expected operations per batch for the progress bar
-    const totalOps: Record<string, number> = {}
-    for (const batch of loadedBatches) {
-      const bLines = (lineData ?? []) as Array<{batch_id: string; sku_id: string; qty: number; id: string}>
-      const batchBLines = bLines.filter((l: any) => l.batch_id === batch.id)
-      const uniqueOps = new Set<string>()
-      for (const line of batchBLines) {
-        // Direct parts
-        const directParts = (spData ?? []) as Array<{sku_id: string; part_id: string; qty: number}>
-        for (const sp of directParts.filter((s: any) => s.sku_id === line.sku_id)) {
-          const part = (partData ?? []).find((p: any) => p.id === sp.part_id)
-          if (!part) continue
-          for (const stage of STAGES) {
-            if ((part as any)[stage.partKey]) uniqueOps.add(`${sp.part_id}:${stage.stageKey}`)
-          }
-        }
-        // SA parts
-        const skuSubsList = (ssData ?? []) as Array<{sku_id: string; sub_assembly_id: string; qty: number}>
-        const subPartsList = (sapData ?? []) as Array<{sub_assembly_id: string; part_id: string; qty: number}>
-        const subAssembliesList = (saData ?? []) as Array<{id: string; name: string; requires_weld: boolean}>
-        for (const ss of skuSubsList.filter((s: any) => s.sku_id === line.sku_id)) {
-          for (const sap of subPartsList.filter((s: any) => s.sub_assembly_id === ss.sub_assembly_id)) {
-            const part = (partData ?? []).find((p: any) => p.id === sap.part_id)
-            if (!part) continue
-            for (const stage of STAGES) {
-              if (stage.stageKey === 'weld') continue  // SA weld tracked at SA level
-              if ((part as any)[stage.partKey]) uniqueOps.add(`${sap.part_id}:${stage.stageKey}`)
-            }
-          }
-          const sa = subAssembliesList.find((s: any) => s.id === ss.sub_assembly_id)
-          if (sa?.requires_weld) uniqueOps.add(`${ss.sub_assembly_id}:weld`)
-        }
-      }
-      totalOps[batch.id] = uniqueOps.size
-    }
-    setBatchTotalOps(totalOps)
+    // batchTotalOps is now a useMemo — no longer computed here
 
     // Load open order counts per SKU for the picker modal
     const { data: olData } = await supabase
@@ -401,6 +365,39 @@ export default function BatchesPage() {
     }
     return map
   }
+
+  // Computed using the same logic as the detail-view allWorkOps — ensures list %
+  // and detail % always agree.
+  const batchTotalOps = useMemo<Record<string, number>>(() => {
+    const result: Record<string, number> = {}
+    for (const batch of batches) {
+      const batchLines = lines.filter((l) => l.batch_id === batch.id)
+      const workItems  = buildWorkItems(batchLines)
+      const saPartIds  = new Set<string>()
+      const saMap      = new Map<string, SubAssembly>()
+      for (const { part, subAssemblyId } of workItems.values()) {
+        if (subAssemblyId) {
+          saPartIds.add(part.id)
+          const sa = subAssemblies.find((s) => s.id === subAssemblyId)
+          if (sa && !saMap.has(subAssemblyId)) saMap.set(subAssemblyId, sa)
+        }
+      }
+      const seenOps = new Set<string>()
+      for (const { part } of workItems.values()) {
+        for (const stage of STAGES) {
+          if (stage.stageKey === 'weld' && saPartIds.has(part.id)) continue
+          if (!part[stage.partKey as keyof Part]) continue
+          seenOps.add(`${part.id}:${stage.stageKey}`)
+        }
+      }
+      for (const [saId, sa] of saMap.entries()) {
+        if (sa.requires_weld) seenOps.add(`${saId}:weld`)
+      }
+      result[batch.id] = seenOps.size
+    }
+    return result
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [batches, lines, parts, skuParts, skuSubs, subParts, subAssemblies])
 
   function calcMatCost(skuId: string, batchQty: number): number {
     const entries = getSkuPartEntries(skuId)
@@ -1266,7 +1263,7 @@ export default function BatchesPage() {
                         <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
                           <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small"
                             isTube={part.part_type === 'tube'} tubeFallback={true}
-                            tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={part.tube_shape === 'square' || part.tube_shape === 'flat_bar' ? 'flat_bar' : /x|×/i.test(part.tube_od ?? '') || (part.material ?? '').toLowerCase().startsWith('square') ? 'square' : 'round'} />
+                            tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={part.tube_shape === 'flat_bar' ? 'flat_bar' : (part.tube_shape === 'square' || /x|×/i.test(part.tube_od ?? '') || (part.material ?? '').toLowerCase().startsWith('square')) ? 'square' : 'round'} />
                           <div style={{ fontSize: '0.7rem', fontFamily: 'monospace', fontWeight: 700, color: '#555', marginTop: 4 }}>{part.part_number}</div>
                         </td>
                         <td style={{ textAlign: 'center', fontWeight: 700, verticalAlign: 'middle' }}>{totalQty}</td>
@@ -2185,7 +2182,7 @@ export default function BatchesPage() {
                                     <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
                                       <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small"
                                         isTube={part.part_type === 'tube'} tubeFallback={true}
-                                        tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={part.tube_shape === 'square' || part.tube_shape === 'flat_bar' ? 'flat_bar' : /x|×/i.test(part.tube_od ?? '') || (part.material ?? '').toLowerCase().startsWith('square') ? 'square' : 'round'} />
+                                        tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={part.tube_shape === 'flat_bar' ? 'flat_bar' : (part.tube_shape === 'square' || /x|×/i.test(part.tube_od ?? '') || (part.material ?? '').toLowerCase().startsWith('square')) ? 'square' : 'round'} />
                                       <div style={{ fontSize: '0.68rem', fontFamily: 'monospace', fontWeight: 700, color: 'var(--muted)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{part.part_number}</div>
                                       {part.description && <div style={{ fontSize: '0.62rem', color: 'var(--muted)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>{part.description}</div>}
                                     </td>
@@ -2261,7 +2258,7 @@ export default function BatchesPage() {
                                   <td style={{ padding: '8px 10px', verticalAlign: 'top' }}>
                                     <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="small"
                                       isTube={part.part_type === 'tube'} tubeFallback={true}
-                                      tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={part.tube_shape === 'square' || part.tube_shape === 'flat_bar' ? 'flat_bar' : /x|×/i.test(part.tube_od ?? '') || (part.material ?? '').toLowerCase().startsWith('square') ? 'square' : 'round'} />
+                                      tubeOd={part.tube_od} tubeWall={part.tube_wall} cutLength={part.cut_length} tubeShape={part.tube_shape === 'flat_bar' ? 'flat_bar' : (part.tube_shape === 'square' || /x|×/i.test(part.tube_od ?? '') || (part.material ?? '').toLowerCase().startsWith('square')) ? 'square' : 'round'} />
                                     <div style={{ fontSize: '0.68rem', fontFamily: 'monospace', fontWeight: 700, color: 'var(--muted)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{part.part_number}</div>
                                     {part.description && <div style={{ fontSize: '0.62rem', color: 'var(--muted)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>{part.description}</div>}
                                   </td>
@@ -2365,6 +2362,7 @@ export default function BatchesPage() {
           <SkuPickerModal
             skus={skus}
             orderCounts={orderCounts}
+            inBatchIds={new Set(batchLines.map((l) => l.sku_id))}
             onClose={() => setDraftSkuPickerOpen(false)}
             onSelect={(picked) => {
               void addSkusToDraft(activeBatch, picked)
