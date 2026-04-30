@@ -61,6 +61,8 @@ type MaterialRow = {
   tube_od: string | null
   tube_wall: string | null
   tube_shape: string | null
+  unit_weight_lbs: number | null
+  stock_length_in: number | null
 }
 
 const DXF_BUCKET = 'dxf-files'
@@ -233,7 +235,7 @@ export default function PartsPage() {
   async function loadMaterials() {
     const { data, error } = await supabase
       .from('materials')
-      .select('id, name, material_type, material, thickness, tube_od, tube_wall')
+      .select('id, name, material_type, material, thickness, tube_od, tube_wall, tube_shape, unit_weight_lbs, stock_length_in')
       .order('name', { ascending: true })
 
     if (error) {
@@ -833,60 +835,80 @@ export default function PartsPage() {
                 </div>
               )}
 
-              <div>
-                <label className="label">Part Weight</label>
-                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                  <input
-                    className="field"
-                    type="number"
-                    step={weightUnit === 'oz' ? '0.1' : '0.001'}
-                    min="0"
-                    value={
-                      // display in oz when oz mode: stored lbs × 16
-                      weightUnit === 'oz' && form.weight_lbs !== ''
-                        ? String(Math.round(parseFloat(form.weight_lbs) * 16 * 100) / 100)
-                        : form.weight_lbs
-                    }
-                    onChange={(e) => {
-                      const raw = e.target.value
-                      if (raw === '') { updateField('weight_lbs', ''); return }
-                      const num = parseFloat(raw)
-                      if (isNaN(num)) return
-                      // always store as lbs
-                      const lbs = weightUnit === 'oz' ? num / 16 : num
-                      updateField('weight_lbs', String(Math.round(lbs * 100000) / 100000))
-                    }}
-                    placeholder={weightUnit === 'oz' ? '37.6' : '2.35'}
-                    style={{ flex: 1 }}
-                  />
-                  {/* lbs / oz toggle */}
-                  <div style={{ display: 'flex', border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', flexShrink: 0 }}>
-                    {(['lbs', 'oz'] as const).map((unit) => (
-                      <button
-                        key={unit}
-                        type="button"
-                        onClick={() => setWeightUnit(unit)}
-                        style={{
-                          padding: '0 10px', height: 34, fontSize: '0.78rem', fontWeight: 600,
-                          background: weightUnit === unit ? 'var(--accent)' : 'var(--panel-2)',
-                          color:      weightUnit === unit ? '#fff' : 'var(--text-2)',
-                          border: 'none', cursor: 'pointer',
-                        }}
-                      >
-                        {unit}
-                      </button>
-                    ))}
+              {/* Weight — auto-calculated for tube/flat_bar; manual input for sheet */}
+              {(form.part_type === 'tube' || form.part_type === 'flat_bar') ? (() => {
+                const cutIn  = Number(form.cut_length) || 0
+                const stockIn = selectedMaterial?.stock_length_in ?? 0
+                const unitLbs = selectedMaterial?.unit_weight_lbs ?? 0
+                const autoLbs = cutIn > 0 && stockIn > 0 && unitLbs > 0
+                  ? (cutIn / stockIn) * unitLbs
+                  : null
+                return (
+                  <div>
+                    <label className="label">Part Weight <span style={{ fontWeight: 400, color: 'var(--muted)', textTransform: 'none', letterSpacing: 0 }}>(auto-calculated)</span></label>
+                    <div
+                      className="field"
+                      style={{ background: 'var(--panel)', color: autoLbs != null ? 'var(--text)' : 'var(--muted)', cursor: 'default', userSelect: 'none' }}
+                    >
+                      {autoLbs != null
+                        ? `${Math.round(autoLbs * 10000) / 10000} lbs (${Math.round(autoLbs * 16 * 10) / 10} oz)`
+                        : 'Enter cut length & select material to calculate'}
+                    </div>
                   </div>
-                </div>
-                {form.weight_lbs !== '' && (
-                  <div style={{ fontSize: '0.74rem', color: 'var(--muted)', marginTop: 4 }}>
-                    = {weightUnit === 'oz'
-                        ? `${form.weight_lbs} lbs`
-                        : `${Math.round(parseFloat(form.weight_lbs) * 16 * 10) / 10} oz`
+                )
+              })() : (
+                <div>
+                  <label className="label">Part Weight</label>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <input
+                      className="field"
+                      type="number"
+                      step={weightUnit === 'oz' ? '0.1' : '0.001'}
+                      min="0"
+                      value={
+                        weightUnit === 'oz' && form.weight_lbs !== ''
+                          ? String(Math.round(parseFloat(form.weight_lbs) * 16 * 100) / 100)
+                          : form.weight_lbs
                       }
+                      onChange={(e) => {
+                        const raw = e.target.value
+                        if (raw === '') { updateField('weight_lbs', ''); return }
+                        const num = parseFloat(raw)
+                        if (isNaN(num)) return
+                        const lbs = weightUnit === 'oz' ? num / 16 : num
+                        updateField('weight_lbs', String(Math.round(lbs * 100000) / 100000))
+                      }}
+                      placeholder={weightUnit === 'oz' ? '37.6' : '2.35'}
+                      style={{ flex: 1 }}
+                    />
+                    <div style={{ display: 'flex', border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', flexShrink: 0 }}>
+                      {(['lbs', 'oz'] as const).map((unit) => (
+                        <button
+                          key={unit}
+                          type="button"
+                          onClick={() => setWeightUnit(unit)}
+                          style={{
+                            padding: '0 10px', height: 34, fontSize: '0.78rem', fontWeight: 600,
+                            background: weightUnit === unit ? 'var(--accent)' : 'var(--panel-2)',
+                            color:      weightUnit === unit ? '#fff' : 'var(--text-2)',
+                            border: 'none', cursor: 'pointer',
+                          }}
+                        >
+                          {unit}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                )}
-              </div>
+                  {form.weight_lbs !== '' && (
+                    <div style={{ fontSize: '0.74rem', color: 'var(--muted)', marginTop: 4 }}>
+                      = {weightUnit === 'oz'
+                          ? `${form.weight_lbs} lbs`
+                          : `${Math.round(parseFloat(form.weight_lbs) * 16 * 10) / 10} oz`
+                        }
+                    </div>
+                  )}
+                </div>
+              )}
 
               {selectedMaterial && (
                 <div style={{ gridColumn: '1 / -1' }} className="warning-box">
