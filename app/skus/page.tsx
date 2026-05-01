@@ -228,6 +228,10 @@ const emptyPartForm = {
   description: '',
   part_type: 'sheet' as 'tube' | 'sheet',
   material_id: '',
+  // stored on part — shown as hint when no material match found in edit mode
+  stored_tube_od: '' as string | null,
+  stored_tube_wall: '' as string | null,
+  stored_thickness: '' as string | null,
   cut_length: '',
   dxf_file: '',
   weight_lbs: '',
@@ -1025,12 +1029,21 @@ export default function SkusPage() {
     setPartModalIsEdit(true)
     setPartModalEditId(part.id)
     setPartModalDxfFile(null)
+    // Try to pre-select the matching material (may fail if material dimensions changed)
+    const matchedMaterial = materials.find((m) => {
+      if (m.material_type !== part.part_type) return false
+      if (part.part_type === 'sheet') return m.material === part.material && m.thickness === part.thickness
+      return m.material === part.material && m.tube_od === part.tube_od && m.tube_wall === part.tube_wall
+    })
     setPartForm({
       id: part.id,
       part_number: part.part_number,
       description: part.description,
       part_type: part.part_type,
-      material_id: '',
+      material_id: matchedMaterial?.id || '',
+      stored_tube_od: part.tube_od,
+      stored_tube_wall: part.tube_wall,
+      stored_thickness: part.thickness,
       cut_length: part.cut_length != null ? String(part.cut_length) : '',
       dxf_file: part.dxf_file || '',
       weight_lbs: part.weight_lbs != null ? String(part.weight_lbs) : '',
@@ -2850,6 +2863,16 @@ export default function SkusPage() {
                   <option key={m.id} value={m.id}>{m.name}</option>
                 ))}
               </select>
+              {/* Show stored dimensions when editing — helps when material was updated */}
+              {partModalIsEdit && partForm.material_id === '' && (partForm.stored_tube_od || partForm.stored_thickness) && (
+                <div style={{ marginTop: 5, padding: '5px 9px', background: 'rgba(251,146,60,0.1)', border: '1px solid rgba(251,146,60,0.35)', borderRadius: 5, fontSize: '0.74rem', color: '#fb923c' }}>
+                  ⚠ No matching material found. Stored dimensions:{' '}
+                  {partForm.part_type === 'sheet'
+                    ? `${partForm.stored_thickness ?? '—'} thick`
+                    : `${partForm.stored_tube_od ?? '—'} × ${partForm.stored_tube_wall ?? '—'}`
+                  } — pick a new material above to update.
+                </div>
+              )}
             </div>
 
             {partForm.part_type === 'tube' ? (
