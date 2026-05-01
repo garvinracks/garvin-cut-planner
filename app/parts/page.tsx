@@ -851,7 +851,7 @@ export default function PartsPage() {
                       style={{ background: 'var(--panel)', color: autoLbs != null ? 'var(--text)' : 'var(--muted)', cursor: 'default', userSelect: 'none' }}
                     >
                       {autoLbs != null
-                        ? `${Math.round(autoLbs * 10000) / 10000} lbs (${Math.round(autoLbs * 16 * 10) / 10} oz)`
+                        ? `${Math.round(autoLbs * 1000) / 1000} lbs (${Math.round(autoLbs * 16 * 10) / 10} oz)`
                         : 'Enter cut length & select material to calculate'}
                     </div>
                   </div>
@@ -1223,7 +1223,7 @@ export default function PartsPage() {
                             )}
                             {part.weight_lbs != null && (
                               <div style={{ fontSize: '0.68rem', color: 'var(--muted)', marginTop: 1 }}>
-                                {part.weight_lbs} lbs ({Math.round(part.weight_lbs * 16 * 10) / 10} oz)
+                                {Math.round(part.weight_lbs * 1000) / 1000} lbs ({Math.round(part.weight_lbs * 16 * 10) / 10} oz)
                               </div>
                             )}
                             {/* Stage badges */}
