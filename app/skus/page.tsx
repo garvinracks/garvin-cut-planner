@@ -1964,23 +1964,14 @@ export default function SkusPage() {
                         </button>
                         {/* PDF instructions */}
                         {selectedSku.instructions_pdf ? (
-                          <>
-                            <button
-                              type="button"
-                              className="btn btn-secondary"
-                              style={{ fontSize: '0.82rem' }}
-                              onClick={() => setPdfViewerOpen(true)}
-                            >
-                              📄 View Instructions
-                            </button>
-                            <label
-                              style={{ fontSize: '0.82rem', padding: '5px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--panel-2)', color: 'var(--text-2)', cursor: 'pointer', fontWeight: 500 }}
-                              title="Replace PDF"
-                            >
-                              ↑ Replace
-                              <input type="file" accept=".pdf" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadSkuPdf(selectedSku, f); e.target.value = '' }} />
-                            </label>
-                          </>
+                          <button
+                            type="button"
+                            className="btn btn-secondary"
+                            style={{ fontSize: '0.82rem' }}
+                            onClick={() => setPdfViewerOpen(true)}
+                          >
+                            📄 View Instructions
+                          </button>
                         ) : (
                           <label
                             style={{ fontSize: '0.82rem', padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(99,102,241,0.4)', background: 'rgba(99,102,241,0.08)', color: '#818cf8', cursor: pdfUploading ? 'wait' : 'pointer', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 5, opacity: pdfUploading ? 0.6 : 1 }}
@@ -3224,10 +3215,10 @@ export default function SkusPage() {
       {/* ── PDF Instructions Viewer ──────────────────────────────────────────────── */}
       {pdfViewerOpen && selectedSku?.instructions_pdf && (
         <div
-          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.78)', zIndex: 1100, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-start', paddingTop: 40 }}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.78)', zIndex: 1100, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-start', paddingTop: 24 }}
           onClick={(e) => { if (e.target === e.currentTarget) setPdfViewerOpen(false) }}
         >
-          <div style={{ width: '90%', maxWidth: 900, height: 'calc(100vh - 120px)', background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 10, display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 24px 64px rgba(0,0,0,0.65)' }}>
+          <div style={{ width: '96%', maxWidth: 1100, height: 'calc(100vh - 56px)', background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 10, display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 24px 64px rgba(0,0,0,0.65)' }}>
             {/* Header */}
             <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
               <span style={{ fontWeight: 700, fontSize: '0.95rem', flex: 1 }}>📄 {selectedSku.id} — Instructions</span>
@@ -3255,6 +3246,13 @@ export default function SkusPage() {
               >
                 🖨 Print
               </button>
+              {/* Replace PDF — lives inside the viewer */}
+              <label
+                style={{ fontSize: '0.82rem', padding: '5px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--panel-2)', color: 'var(--text-2)', cursor: pdfUploading ? 'wait' : 'pointer', fontWeight: 500, opacity: pdfUploading ? 0.6 : 1 }}
+              >
+                {pdfUploading ? '⏳ Uploading…' : '↑ Replace PDF'}
+                <input type="file" accept=".pdf" style={{ display: 'none' }} disabled={pdfUploading} onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadSkuPdf(selectedSku, f); e.target.value = '' }} />
+              </label>
               <button
                 type="button"
                 className="btn btn-secondary"
