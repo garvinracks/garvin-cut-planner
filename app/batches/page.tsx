@@ -1689,32 +1689,39 @@ export default function BatchesPage() {
             </div>
             {showBatchOrders && (
               <div style={{ padding: '8px 16px 12px' }}>
-                {batchOrders.map((order) => (
-                  <div key={order.id} style={{ padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
-                    <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: order.lines?.length ? 6 : 0 }}>
-                      <span style={{ fontWeight: 700, fontFamily: 'monospace' }}>#{order.order_number}</span>
-                      <span style={{ color: 'var(--text-2)', fontSize: '0.85rem' }}>{order.customer_name ?? '—'}</span>
-                      {order.notes && (
-                        <span style={{ background: 'rgba(234,179,8,0.15)', color: 'var(--warning)', borderRadius: 6, padding: '1px 8px', fontSize: '0.78rem' }}>
-                          📝 {order.notes}
-                        </span>
+                {batchOrders.map((order) => {
+                  const multiSku = (order.lines?.length ?? 0) > 1
+                  const skuChips = order.lines?.length > 0 && order.lines.map((l: any) => {
+                    const sku = skus.find((s) => s.id === l.sku_id)
+                    return (
+                      <span key={l.sku_id} style={{ background: 'var(--panel-2)', border: '1px solid var(--border)', borderRadius: 6, padding: '2px 9px', fontSize: '0.78rem', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                        {l.ss_sku} <span style={{ color: 'var(--muted)' }}>×{l.qty}</span>
+                        {sku && <span style={{ color: 'var(--text-2)', fontFamily: 'sans-serif', marginLeft: 5, fontSize: '0.72rem' }}>{sku.description}</span>}
+                      </span>
+                    )
+                  })
+                  return (
+                    <div key={order.id} style={{ padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
+                      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <span style={{ fontWeight: 700, fontFamily: 'monospace' }}>#{order.order_number}</span>
+                        <span style={{ color: 'var(--text-2)', fontSize: '0.85rem' }}>{order.customer_name ?? '—'}</span>
+                        {order.notes && (
+                          <span style={{ background: 'rgba(234,179,8,0.15)', color: 'var(--warning)', borderRadius: 6, padding: '1px 8px', fontSize: '0.78rem' }}>
+                            📝 {order.notes}
+                          </span>
+                        )}
+                        {/* Single SKU: inline on same row */}
+                        {!multiSku && skuChips}
+                      </div>
+                      {/* Multiple SKUs: second row */}
+                      {multiSku && (
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 5, paddingLeft: 2 }}>
+                          {skuChips}
+                        </div>
                       )}
                     </div>
-                    {order.lines?.length > 0 && (
-                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', paddingLeft: 4 }}>
-                        {order.lines.map((l: any) => {
-                          const sku = skus.find((s) => s.id === l.sku_id)
-                          return (
-                            <span key={l.sku_id} style={{ background: 'var(--panel-2)', border: '1px solid var(--border)', borderRadius: 6, padding: '2px 9px', fontSize: '0.78rem', fontFamily: 'monospace' }}>
-                              {l.ss_sku} <span style={{ color: 'var(--muted)' }}>×{l.qty}</span>
-                              {sku && <span style={{ color: 'var(--text-2)', fontFamily: 'sans-serif', marginLeft: 5, fontSize: '0.72rem' }}>{sku.description}</span>}
-                            </span>
-                          )
-                        })}
-                      </div>
-                    )}
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             )}
           </div>
