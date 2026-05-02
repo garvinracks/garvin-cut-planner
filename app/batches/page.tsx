@@ -46,7 +46,7 @@ type BuildBatchLine = {
   mat_cost_snapshot: number | null
 }
 
-type SKU = { id: string; description: string; category: string | null; active: boolean }
+type SKU = { id: string; description: string; category: string | null; active: boolean; setup_complete: boolean }
 
 type Part = {
   id: string
@@ -207,7 +207,7 @@ export default function BatchesPage() {
     ] = await Promise.all([
       supabase.from('build_batches').select('*').order('created_at', { ascending: false }),
       supabase.from('build_batch_lines').select('*'),
-      supabase.from('skus').select('id, description, category, active').order('id'),
+      supabase.from('skus').select('id, description, category, active, setup_complete').order('id'),
       supabase.from('parts').select('id, part_number, description, part_type, material, thickness, tube_od, tube_wall, tube_shape, cut_length, weight_lbs, dxf_file, requires_laser, requires_sheet_bend, requires_saw, requires_notch, requires_tube_bend, requires_drill, requires_weld'),
       supabase.from('sku_parts').select('sku_id, part_id, qty'),
       supabase.from('sku_sub_assemblies').select('sku_id, sub_assembly_id, qty'),
@@ -808,12 +808,14 @@ export default function BatchesPage() {
     materialId: string
     materialName: string
     thickness: string | null
+    unitWeightLbs: number | null   // ← add this
     parts: Array<{
       partId: string
       partNumber: string
       description: string | null
       dxfFile: string | null
       qty: number
+      weightLbs: number | null    // ← add this
       done: boolean
       requiresLaser: boolean
     }>
@@ -867,9 +869,13 @@ export default function BatchesPage() {
         (m) => m.material_type === 'tube' && m.tube_od === part.tube_od && m.tube_wall === part.tube_wall
       )
       const matId = mat?.id ?? `__no_mat__${part.tube_od ?? '?'}x${part.tube_wall ?? '?'}`
+      const shapeLabel = mat?.tube_shape === 'flat_bar' ? 'Flat Bar'
+        : mat?.tube_shape === 'square' ? 'Square Tube'
+        : 'Round Tube'
+      const grade = mat?.material ?? null
       const matName = mat
-        ? `${part.tube_od ?? '?'} × ${part.tube_wall ?? '?'} wall`
-        : `${part.tube_od ?? 'Unknown'} × ${part.tube_wall ?? '?'} (no material record)`
+        ? `${shapeLabel}${grade ? ` · ${grade}` : ''} — ${part.tube_od ?? '?'} OD × ${part.tube_wall ?? '?'} wall`
+        : `${part.tube_od ?? 'Unknown'} × ${part.tube_wall ?? '?'} wall (no material record)`
 
       if (!tubeGroupMap.has(matId)) {
         tubeGroupMap.set(matId, {
@@ -878,7 +884,7 @@ export default function BatchesPage() {
           stockLengthIn: mat?.stock_length_in ?? null,
           tubeOd: part.tube_od ?? null,
           tubeWall: part.tube_wall ?? null,
-          tubeShape: null,
+          tubeShape: mat?.tube_shape ?? null,
           cuts: [],
         })
       }
@@ -956,7 +962,7 @@ export default function BatchesPage() {
       const thickness = mat?.thickness ?? null
 
       if (!sheetGroupMap.has(groupKey)) {
-        sheetGroupMap.set(groupKey, { materialId: groupKey, materialName: matName, thickness, parts: [] })
+        sheetGroupMap.set(groupKey, { materialId: groupKey, materialName: matName, thickness, unitWeightLbs: mat?.unit_weight_lbs ?? null, parts: [] })
       }
       sheetGroupMap.get(groupKey)!.parts.push({
         partId: part.id,
@@ -964,6 +970,7 @@ export default function BatchesPage() {
         description: part.description,
         dxfFile: part.dxf_file,
         qty: totalQty,
+        weightLbs: part.weight_lbs ?? null,
         done: comps.has(`${part.id}:laser`) || comps.has(`${part.id}:sheet_bend`),
         requiresLaser: part.requires_laser,
       })
@@ -1091,7 +1098,7 @@ export default function BatchesPage() {
 
       html += `<div class="material-group">
 <div class="material-header tube-header">
-  <div class="material-name">${grp.tubeOd ?? '?'} Tube &times; ${grp.tubeWall ?? '?'} wall</div>
+  <div class="material-name">${grp.materialName}</div>
   <div class="material-stats">Stock: ${grp.stockLengthIn ? grp.stockLengthIn + '"' : 'unknown'} &nbsp;&bull;&nbsp; ${totalPcs} pieces &nbsp;&bull;&nbsp; ${totalIn.toFixed(1)}" total${stockNeeded != null ? ` &nbsp;&bull;&nbsp; <strong>${stockNeeded} bar${stockNeeded !== 1 ? 's' : ''} needed</strong>` : ''}</div>
 </div>
 <div class="section-label">Cuts</div>
@@ -1519,6 +1526,22 @@ export default function BatchesPage() {
 
         {message && <div className="message">{message}</div>}
 
+        {(() => {
+          const incompleteSkus = batchLines
+            .map((l) => skus.find((s) => s.id === l.sku_id))
+            .filter((s): s is SKU => !!s && !s.setup_complete)
+          if (incompleteSkus.length === 0) return null
+          return (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 16px', background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.35)', borderRadius: 8, color: 'var(--danger)', fontSize: '0.85rem', flexWrap: 'wrap' }}>
+              <span style={{ fontWeight: 700 }}>⚠ Setup Incomplete:</span>
+              {incompleteSkus.map((s) => (
+                <span key={s.id} style={{ background: 'rgba(239,68,68,0.12)', borderRadius: 4, padding: '1px 7px', fontFamily: 'monospace', fontWeight: 600, fontSize: '0.8rem' }}>{s.id}</span>
+              ))}
+              <span style={{ color: 'var(--danger)', opacity: 0.8 }}>— complete SKU setup before starting this batch</span>
+            </div>
+          )
+        })()}
+
         {/* Status card */}
         <section className="card">
           <div className="card-body">
@@ -1780,6 +1803,46 @@ export default function BatchesPage() {
                         <div className="empty">No parts with material info found in this batch.</div>
                       )}
 
+                      {/* Tube Stock Summary */}
+                      {tubeGroups.length > 0 && (
+                        <div style={{ marginBottom: 20, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+                          <div style={{ background: 'var(--panel-2)', borderBottom: '1px solid var(--border)', padding: '8px 16px', borderLeft: '4px solid var(--accent)' }}>
+                            <span style={{ fontWeight: 700, fontSize: '0.85rem' }}>Tube Stock Summary</span>
+                          </div>
+                          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                            <thead>
+                              <tr style={{ background: 'var(--panel-2)' }}>
+                                <th style={{ textAlign: 'left', padding: '5px 16px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Material</th>
+                                <th style={{ textAlign: 'center', padding: '5px 8px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', width: 80 }}>Pieces</th>
+                                <th style={{ textAlign: 'center', padding: '5px 8px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', width: 100 }}>Total Length</th>
+                                <th style={{ textAlign: 'center', padding: '5px 16px 5px 8px', fontSize: '0.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', width: 120 }}>Stock Lengths</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {tubeGroups.map((grp) => {
+                                const totalIn = grp.cuts.reduce((s, c) => s + (c.cutLengthIn ?? 0) * c.qty, 0)
+                                const totalPcs = grp.cuts.reduce((s, c) => s + c.qty, 0)
+                                const stockNeeded = grp.stockLengthIn && grp.stockLengthIn > 0
+                                  ? Math.ceil(totalIn / grp.stockLengthIn)
+                                  : null
+                                return (
+                                  <tr key={grp.materialId} style={{ borderTop: '1px solid var(--border)' }}>
+                                    <td style={{ padding: '7px 16px', fontWeight: 600, fontSize: '0.85rem' }}>{grp.materialName}</td>
+                                    <td style={{ padding: '7px 8px', textAlign: 'center', fontSize: '0.85rem' }}>{totalPcs}</td>
+                                    <td style={{ padding: '7px 8px', textAlign: 'center', fontSize: '0.85rem' }}>{totalIn.toFixed(1)}"</td>
+                                    <td style={{ padding: '7px 16px 7px 8px', textAlign: 'center' }}>
+                                      {stockNeeded != null
+                                        ? <span style={{ fontWeight: 700, color: 'var(--accent)' }}>{stockNeeded} × {grp.stockLengthIn}"</span>
+                                        : <span style={{ color: 'var(--muted)', fontSize: '0.8rem' }}>unknown</span>}
+                                    </td>
+                                  </tr>
+                                )
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+
                       {/* Tube material groups */}
                       {tubeGroups.map((grp) => {
                         const totalIn = grp.cuts.reduce((s, c) => s + (c.cutLengthIn ?? 0) * c.qty, 0)
@@ -1796,7 +1859,7 @@ export default function BatchesPage() {
                             {/* Material header */}
                             <div style={{ background: 'var(--panel-2)', borderBottom: '1px solid var(--border)', padding: '10px 16px', borderLeft: '4px solid var(--accent)' }}>
                               <div style={{ fontWeight: 800, fontSize: '1rem' }}>
-                                {grp.tubeOd ?? '?'} Tube &times; {grp.tubeWall ?? '?'} wall
+                                {grp.materialName}
                               </div>
                               <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 2, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
                                 <span>Stock: {grp.stockLengthIn ? grp.stockLengthIn + '"' : 'unknown'}</span>
@@ -2045,6 +2108,13 @@ export default function BatchesPage() {
                               <div style={{ fontWeight: 800, fontSize: '1rem' }}>{sg.materialName}</div>
                               <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 2 }}>
                                 {sg.parts.reduce((s, p) => s + p.qty, 0)} pieces needed · {sg.parts.length} part{sg.parts.length !== 1 ? 's' : ''}
+                                {(() => {
+                                  const totalWeightLbs = sg.parts.reduce((s, p) => s + (p.weightLbs ?? 0) * p.qty, 0)
+                                  const sheetsDecimal = sg.unitWeightLbs && sg.unitWeightLbs > 0 ? totalWeightLbs / sg.unitWeightLbs : null
+                                  return sheetsDecimal != null ? (
+                                    <span style={{ marginLeft: 8 }}>· <strong style={{ color: 'var(--accent)' }}>{sheetsDecimal.toFixed(2)}</strong> sheets by weight</span>
+                                  ) : null
+                                })()}
                               </div>
                             </div>
                             {laserParts.length > 0 && (
