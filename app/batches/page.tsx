@@ -1580,11 +1580,12 @@ export default function BatchesPage() {
             <div className="card-body" style={{ padding: 0 }}>
               <div className="table-wrap">
                 <table className="table">
-                  <thead><tr><th>SKU</th><th>Description</th><th style={{ textAlign: 'center', width: 100 }}>Qty</th><th style={{ width: 40 }} /></tr></thead>
+                  <thead><tr><th>SKU</th><th>Description</th><th style={{ textAlign: 'center', width: 140 }}>Build Qty</th><th style={{ textAlign: 'center', width: 100 }}>On Order</th><th style={{ width: 40 }} /></tr></thead>
                   <tbody>
                     {batchLines.map((line) => {
                       const sku = skus.find((s) => s.id === line.sku_id)
                       const qtyVal = draftLineEdits[line.id] ?? String(line.qty)
+                      const needed = orderCounts[line.sku_id] ?? 0
                       return (
                         <tr key={line.id}>
                           <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>{line.sku_id}</td>
@@ -1597,6 +1598,13 @@ export default function BatchesPage() {
                               value={qtyVal}
                               onChange={(e) => setDraftLineEdits((prev) => ({ ...prev, [line.id]: e.target.value }))}
                             />
+                          </td>
+                          <td style={{ textAlign: 'center' }}>
+                            {needed > 0 ? (
+                              <span style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--warning)' }}>{needed}</span>
+                            ) : (
+                              <span style={{ fontSize: '0.8rem', color: 'var(--success)' }}>✓ Filled</span>
+                            )}
                           </td>
                           <td style={{ textAlign: 'center' }}>
                             <button
