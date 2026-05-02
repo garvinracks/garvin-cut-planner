@@ -190,7 +190,7 @@ export default function SkuPickerModal({ skus, orderCounts = {}, inBatchIds, onS
               border: '1px solid rgba(234,179,8,0.35)',
               borderRadius: 4, padding: '1px 5px', lineHeight: 1.5,
             }}>
-              {orderQty} order{orderQty !== 1 ? 's' : ''}
+              {orderQty} needed
             </span>
           )}
 

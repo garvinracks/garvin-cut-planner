@@ -242,15 +242,27 @@ export default function BatchesPage() {
 
     // batchTotalOps is now a useMemo — no longer computed here
 
-    // Load open order counts per SKU for the picker modal
+    // Load open order qty per SKU for the picker modal
     const { data: olData } = await supabase
       .from('order_lines')
-      .select('sku_id, order:order_id(status)')
+      .select('sku_id, qty, order:order_id(status)')
       .not('sku_id', 'is', null)
     const skuOrderCounts: Record<string, number> = {}
     for (const row of (olData ?? []) as any[]) {
       if (row.order?.status !== 'open') continue
-      skuOrderCounts[row.sku_id] = (skuOrderCounts[row.sku_id] ?? 0) + 1
+      skuOrderCounts[row.sku_id] = (skuOrderCounts[row.sku_id] ?? 0) + (row.qty ?? 1)
+    }
+    // Subtract qty already covered by confirmed/active batches (exclude drafts)
+    const activeBatchIds = new Set(
+      loadedBatches
+        .filter((b) => ['planned', 'in_progress', 'at_powder'].includes(b.status))
+        .map((b) => b.id)
+    )
+    for (const line of (lineData ?? []) as BuildBatchLine[]) {
+      if (!activeBatchIds.has(line.batch_id)) continue
+      if (skuOrderCounts[line.sku_id] != null) {
+        skuOrderCounts[line.sku_id] = Math.max(0, skuOrderCounts[line.sku_id] - line.qty)
+      }
     }
     setOrderCounts(skuOrderCounts)
 
@@ -642,6 +654,21 @@ export default function BatchesPage() {
     setActiveBatch(fresh as BuildBatch)
     setDraftLineEdits({})
     setView('detail')
+    setSaving(false)
+  }
+
+  async function saveDraftEdits(batch: BuildBatch, editedLines: Record<string, string>) {
+    if (!Object.keys(editedLines).length) { setMessage('No unsaved changes.'); return }
+    setSaving(true); setMessage('')
+    for (const [lineId, qtyStr] of Object.entries(editedLines)) {
+      const qty = parseInt(qtyStr) || 1
+      await supabase.from('build_batch_lines').update({ qty }).eq('id', lineId)
+    }
+    await loadAll()
+    const fresh = (await supabase.from('build_batches').select('*').eq('id', batch.id).single()).data
+    setActiveBatch(fresh as BuildBatch)
+    setDraftLineEdits({})
+    setMessage('Draft saved.')
     setSaving(false)
   }
 
@@ -1490,9 +1517,14 @@ export default function BatchesPage() {
               {activeBatch.completed_at && <span style={{ color: 'var(--success)', fontSize: '0.82rem' }}>Completed {fmtDate(activeBatch.completed_at)}</span>}
               <div className="batch-action-bar" style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {activeBatch.status === 'draft' && (
-                  <button className="btn btn-primary" disabled={saving} onClick={() => confirmDraft(activeBatch, draftLineEdits)}>
-                    {saving ? 'Saving…' : '✓ Confirm Batch'}
-                  </button>
+                  <>
+                    <button className="btn btn-secondary" disabled={saving} onClick={() => saveDraftEdits(activeBatch, draftLineEdits)}>
+                      {saving ? 'Saving…' : '💾 Save Draft'}
+                    </button>
+                    <button className="btn btn-primary" disabled={saving} onClick={() => confirmDraft(activeBatch, draftLineEdits)}>
+                      {saving ? 'Saving…' : '✓ Confirm Batch'}
+                    </button>
+                  </>
                 )}
                 {activeBatch.status === 'planned' && (
                   <button className="btn btn-primary" onClick={() => updateStatus(activeBatch, 'in_progress')}>▶ Start Build</button>
