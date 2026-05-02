@@ -365,7 +365,7 @@ export default function PlannerPage() {
     setRows((prev) => [...prev, { skuId: '', qty: '', skuLookup: '' }])
   }
 
-  function handleSkuPickerSelect(picked: PickableSKU[]) {
+  function handleSkuPickerSelect(picked: PickableSKU[], qtys: Record<string, number> = {}) {
     setRows((prev) => {
       let result = [...prev]
       for (const sku of picked) {
