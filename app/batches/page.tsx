@@ -161,6 +161,8 @@ export default function BatchesPage() {
   const [savingKeys, setSavingKeys] = useState<Set<string>>(new Set())
   // SA IDs that are complete but manually expanded by the user
   const [expandedCompleteSaIds, setExpandedCompleteSaIds] = useState<Set<string>>(new Set())
+  // Tube group IDs (materialId) that are complete but manually expanded by the user
+  const [expandedCompleteTubeIds, setExpandedCompleteTubeIds] = useState<Set<string>>(new Set())
 
   // Fulfills These Orders
   const [batchOrders, setBatchOrders] = useState<Array<{id:string; order_number:string; customer_name:string|null; notes:string|null; order_date:string|null}>>([])
@@ -1648,8 +1650,13 @@ export default function BatchesPage() {
                         <div className="empty">No parts with material info found in this batch.</div>
                       )}
 
-                      {/* Tube material groups */}
-                      {tubeGroups.map((grp) => {
+                      {/* Tube material groups — sort: incomplete first, complete at bottom */}
+                      {[...tubeGroups].sort((a, b) => {
+                        const aDone = a.cuts.length > 0 && a.cuts.every((c) => c.done)
+                        const bDone = b.cuts.length > 0 && b.cuts.every((c) => c.done)
+                        if (aDone === bDone) return 0
+                        return aDone ? 1 : -1
+                      }).map((grp) => {
                         const totalIn = grp.cuts.reduce((s, c) => s + (c.cutLengthIn ?? 0) * c.qty, 0)
                         const totalPcs = grp.cuts.reduce((s, c) => s + c.qty, 0)
                         const stockNeeded = grp.stockLengthIn && grp.stockLengthIn > 0
@@ -1659,25 +1666,47 @@ export default function BatchesPage() {
                           ? stockNeeded * grp.stockLengthIn - totalIn
                           : null
                         const bendParts = grp.cuts.filter((c) => c.requiresBend)
+                        const allCutsDone = grp.cuts.length > 0 && grp.cuts.every((c) => c.done)
+                        const isExpanded = !allCutsDone || expandedCompleteTubeIds.has(grp.materialId)
                         return (
-                          <div key={grp.materialId} style={{ marginBottom: 28, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+                          <div key={grp.materialId} style={{ marginBottom: 28, border: `1px solid ${allCutsDone ? 'rgba(34,197,94,0.4)' : 'var(--border)'}`, borderRadius: 8, overflow: 'hidden' }}>
                             {/* Material header */}
-                            <div style={{ background: 'var(--panel-2)', borderBottom: '1px solid var(--border)', padding: '10px 16px', borderLeft: '4px solid var(--accent)' }}>
-                              <div style={{ fontWeight: 800, fontSize: '1rem' }}>
-                                {grp.tubeOd ?? '?'} Tube &times; {grp.tubeWall ?? '?'} wall
+                            <div
+                              onClick={() => {
+                                if (!allCutsDone) return
+                                setExpandedCompleteTubeIds((prev) => {
+                                  const next = new Set(prev)
+                                  if (next.has(grp.materialId)) next.delete(grp.materialId); else next.add(grp.materialId)
+                                  return next
+                                })
+                              }}
+                              style={{ background: allCutsDone ? 'rgba(34,197,94,0.12)' : 'var(--panel-2)', borderBottom: isExpanded ? '1px solid var(--border)' : 'none', padding: '10px 16px', borderLeft: `4px solid ${allCutsDone ? 'rgba(34,197,94,0.6)' : 'var(--accent)'}`, cursor: allCutsDone ? 'pointer' : 'default', display: 'flex', alignItems: 'center', gap: 10 }}>
+                              <div style={{ flex: 1 }}>
+                                <div style={{ fontWeight: 800, fontSize: '1rem', color: allCutsDone ? 'var(--success)' : undefined }}>
+                                  {grp.materialName}
+                                </div>
+                                <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 2, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                                  <span>Stock: {grp.stockLengthIn ? grp.stockLengthIn + '"' : 'unknown'}</span>
+                                  <span>{totalPcs} pieces</span>
+                                  <span>{totalIn.toFixed(1)}" total</span>
+                                  {stockNeeded != null && (
+                                    <span style={{ color: allCutsDone ? 'var(--success)' : 'var(--accent)', fontWeight: 700 }}>
+                                      {stockNeeded} stock length{stockNeeded !== 1 ? 's' : ''} needed
+                                    </span>
+                                  )}
+                                </div>
                               </div>
-                              <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 2, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-                                <span>Stock: {grp.stockLengthIn ? grp.stockLengthIn + '"' : 'unknown'}</span>
-                                <span>{totalPcs} pieces</span>
-                                <span>{totalIn.toFixed(1)}" total</span>
-                                {stockNeeded != null && (
-                                  <span style={{ color: 'var(--accent)', fontWeight: 700 }}>
-                                    {stockNeeded} stock length{stockNeeded !== 1 ? 's' : ''} needed
-                                  </span>
-                                )}
-                              </div>
+                              {allCutsDone && (
+                                <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--success)', background: 'rgba(34,197,94,0.12)', border: '1px solid rgba(34,197,94,0.3)', borderRadius: 20, padding: '2px 9px', whiteSpace: 'nowrap' }}>
+                                  ✓ All Sawn
+                                </span>
+                              )}
+                              {allCutsDone && (
+                                <span style={{ color: 'var(--muted)', fontSize: '0.8rem' }}>{isExpanded ? '▲' : '▼'}</span>
+                              )}
                             </div>
 
+                            {isExpanded && (<>
                             {/* Cuts sub-section */}
                             <div style={{ padding: '0 0 4px' }}>
                               <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--muted)', padding: '8px 16px 4px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -1897,6 +1926,7 @@ export default function BatchesPage() {
                                 </table>
                               </div>
                             )}
+                            </>)}
                           </div>
                         )
                       })}
