@@ -44,7 +44,7 @@ type Order = {
   order_lines: OrderLine[]
 }
 
-type SKU = { id: string; description: string; setup_complete: boolean }
+type SKU = { id: string; description: string; setup_complete: boolean; category: string | null }
 type InventoryRow = { sku_id: string; qty_on_hand: number }
 type BatchLine = { batch_id: string; sku_id: string }
 type ActiveBatch = { id: string; name: string; status: string }
@@ -150,10 +150,15 @@ function getCategory(description: string): Category {
   return 'Uncategorized'
 }
 
+function lineCategory(line: OrderLine, skus: SKU[]): Category {
+  const sku = skus.find((s) => s.id === line.sku_id)
+  if (sku?.category && (CATEGORY_ORDER as readonly string[]).includes(sku.category)) return sku.category as Category
+  return getCategory(sku?.description ?? line.description ?? '')
+}
+
 function orderCategory(order: Order, skus: SKU[]): Category {
   for (const line of order.order_lines) {
-    const sku = skus.find((s) => s.id === line.sku_id)
-    const cat = getCategory(sku?.description ?? line.description ?? '')
+    const cat = lineCategory(line, skus)
     if (cat !== 'Uncategorized') return cat
   }
   return 'Uncategorized'
@@ -429,7 +434,7 @@ export default function OrdersPage() {
   }
 
   async function loadSkus() {
-    const { data } = await supabase.from('skus').select('id, description, setup_complete').order('id')
+    const { data } = await supabase.from('skus').select('id, description, setup_complete, category').order('id')
     setSkus((data ?? []) as SKU[])
   }
 
@@ -1290,18 +1295,25 @@ export default function OrdersPage() {
                   <tbody>
                     {(() => {
                       // Build rows list, optionally with category group headers
-                      const rows: Array<{ type: 'group'; label: string } | { type: 'order'; order: Order }> = []
+                      const rows: Array<
+                        | { type: 'group'; label: string }
+                        | { type: 'order'; order: Order }
+                        | { type: 'line'; order: Order; line: OrderLine }
+                      > = []
                       if (groupByCategory) {
-                        const byCategory: Record<string, Order[]> = {}
+                        // Explode all order lines into per-SKU rows, grouped by SKU category
+                        const byCategory: Record<string, Array<{ order: Order; line: OrderLine }>> = {}
                         for (const cat of CATEGORY_ORDER) byCategory[cat] = []
                         for (const order of filtered) {
-                          const cat = orderCategory(order, skus)
-                          byCategory[cat].push(order)
+                          for (const line of order.order_lines) {
+                            const cat = lineCategory(line, skus)
+                            byCategory[cat].push({ order, line })
+                          }
                         }
                         for (const cat of CATEGORY_ORDER) {
                           if (byCategory[cat].length === 0) continue
                           rows.push({ type: 'group', label: cat })
-                          for (const order of byCategory[cat]) rows.push({ type: 'order', order })
+                          for (const item of byCategory[cat]) rows.push({ type: 'line', order: item.order, line: item.line })
                         }
                       } else {
                         for (const order of filtered) rows.push({ type: 'order', order })
@@ -1321,6 +1333,57 @@ export default function OrdersPage() {
                               }}>
                                 {row.label}
                               </td>
+                            </tr>
+                          )
+                        }
+
+                        // ── Per-SKU line row (group-by-category exploded view) ──
+                        if (row.type === 'line') {
+                          const { order, line } = row
+                          const chStyle     = CH_STYLE[order.channel] ?? CH_STYLE.shopify
+                          const days        = daysSince(order.order_date)
+                          const lineBatch   = line.sku_id ? skuBatchStatus[line.sku_id] : null
+                          const lineOnHand  = line.sku_id ? (inventory.find((i) => i.sku_id === line.sku_id)?.qty_on_hand ?? 0) : 0
+                          const notSetup    = line.sku_id ? !skus.find((s) => s.id === line.sku_id)?.setup_complete : false
+                          return (
+                            <tr key={`${order.id}-${line.id}`}>
+                              <td />
+                              <td>
+                                <span style={{ fontWeight: 700, marginRight: 6 }}>{order.order_number}</span>
+                                <span style={{ background: chStyle.bg, color: chStyle.text, borderRadius: 12, padding: '1px 7px', fontSize: '0.7rem', fontWeight: 700 }}>
+                                  {order.channel === 'shopify' ? 'Shopify' : 'Turn5'}
+                                </span>
+                              </td>
+                              <td style={{ whiteSpace: 'nowrap', fontSize: '0.83rem' }}>
+                                {formatDate(order.order_date)}
+                                {days !== null && (
+                                  <span style={{ marginLeft: 6, fontSize: '0.72rem', color: days > 14 ? 'var(--danger)' : days > 7 ? 'var(--warning)' : 'var(--muted)', fontWeight: days > 7 ? 700 : 400 }}>
+                                    {days}d
+                                  </span>
+                                )}
+                              </td>
+                              <td style={{ fontFamily: 'monospace', fontSize: '0.83rem', fontWeight: 600 }}>{line.ss_sku}</td>
+                              <td style={{ textAlign: 'center', fontWeight: 700 }}>{line.qty}</td>
+                              <td style={{ color: 'var(--text-2)' }}>{order.customer_name ?? '—'}</td>
+                              <td>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
+                                  {lineBatch ? (
+                                    <span style={{ background: BATCH_STATUS_STYLE[lineBatch.status]?.bg, color: BATCH_STATUS_STYLE[lineBatch.status]?.color, borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700 }}>
+                                      {BATCH_STATUS_STYLE[lineBatch.status]?.label}
+                                    </span>
+                                  ) : lineOnHand >= line.qty ? (
+                                    <span style={{ background: 'rgba(34,197,94,0.15)', color: 'var(--success)', borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700 }}>✓ In Stock</span>
+                                  ) : !line.sku_id ? (
+                                    <span style={{ color: 'var(--muted)', fontSize: '0.72rem', fontStyle: 'italic' }}>No SKU Match</span>
+                                  ) : (
+                                    <span style={{ background: 'rgba(239,68,68,0.12)', color: 'var(--danger)', borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700 }}>🔴 Build Needed</span>
+                                  )}
+                                  {notSetup && (
+                                    <span style={{ background: 'rgba(239,68,68,0.12)', color: 'var(--danger)', borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700 }}>⚠ Setup Incomplete</span>
+                                  )}
+                                </div>
+                              </td>
+                              <td />
                             </tr>
                           )
                         }
@@ -1727,6 +1790,11 @@ export default function OrdersPage() {
                                   {allocated && alloc && !lineSkuBatch && (
                                     <span style={{ fontSize: '0.78rem', color: alloc.color, fontWeight: 600 }}>
                                       {alloc.icon} {alloc.label}
+                                    </span>
+                                  )}
+                                  {group.sku_id && !skus.find((s) => s.id === group.sku_id)?.setup_complete && (
+                                    <span style={{ background: 'rgba(239,68,68,0.12)', color: 'var(--danger)', borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700 }}>
+                                      ⚠ Setup Incomplete
                                     </span>
                                   )}
                                 </div>
