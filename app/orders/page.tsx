@@ -1724,7 +1724,7 @@ export default function OrdersPage() {
                                       {BATCH_STATUS_STYLE[lineSkuBatch.status]?.label}
                                     </span>
                                   )}
-                                  {allocated && alloc && (
+                                  {allocated && alloc && !lineSkuBatch && (
                                     <span style={{ fontSize: '0.78rem', color: alloc.color, fontWeight: 600 }}>
                                       {alloc.icon} {alloc.label}
                                     </span>
