@@ -243,10 +243,10 @@ export default function BatchesPage() {
     // batchTotalOps is now a useMemo — no longer computed here
 
     // Load open order qty per SKU for the picker modal
-    const { data: olData } = await supabase
-      .from('order_lines')
-      .select('sku_id, qty, order:order_id(status)')
-      .not('sku_id', 'is', null)
+    const [{ data: olData }, { data: invData }] = await Promise.all([
+      supabase.from('order_lines').select('sku_id, qty, order:order_id(status)').not('sku_id', 'is', null),
+      supabase.from('inventory').select('sku_id, qty_on_hand'),
+    ])
     const skuOrderCounts: Record<string, number> = {}
     for (const row of (olData ?? []) as any[]) {
       if (row.order?.status !== 'open') continue
@@ -263,6 +263,16 @@ export default function BatchesPage() {
       if (skuOrderCounts[line.sku_id] != null) {
         skuOrderCounts[line.sku_id] = Math.max(0, skuOrderCounts[line.sku_id] - line.qty)
       }
+    }
+    // Subtract inventory on hand
+    for (const row of (invData ?? []) as Array<{ sku_id: string; qty_on_hand: number }>) {
+      if (skuOrderCounts[row.sku_id] != null) {
+        skuOrderCounts[row.sku_id] = Math.max(0, skuOrderCounts[row.sku_id] - (row.qty_on_hand ?? 0))
+      }
+    }
+    // Remove entries that are fully covered (net 0)
+    for (const key of Object.keys(skuOrderCounts)) {
+      if (skuOrderCounts[key] <= 0) delete skuOrderCounts[key]
     }
     setOrderCounts(skuOrderCounts)
 
@@ -688,12 +698,13 @@ export default function BatchesPage() {
     setSaving(false)
   }
 
-  async function addSkusToDraft(batch: BuildBatch, picked: PickableSKU[]) {
+  async function addSkusToDraft(batch: BuildBatch, picked: PickableSKU[], qtys: Record<string, number> = {}) {
     const newLines: BuildBatchLine[] = []
     for (const sku of picked) {
+      const qty = qtys[sku.id] ?? 1
       const { data, error } = await supabase
         .from('build_batch_lines')
-        .insert({ batch_id: batch.id, sku_id: sku.id, qty: 1 })
+        .insert({ batch_id: batch.id, sku_id: sku.id, qty })
         .select('*')
         .single()
       if (!error && data) newLines.push(data as BuildBatchLine)
@@ -2422,9 +2433,10 @@ export default function BatchesPage() {
             skus={skus}
             orderCounts={orderCounts}
             inBatchIds={new Set(batchLines.map((l) => l.sku_id))}
+            batchIsDraft={true}
             onClose={() => setDraftSkuPickerOpen(false)}
-            onSelect={(picked) => {
-              void addSkusToDraft(activeBatch, picked)
+            onSelect={(picked, qtys) => {
+              void addSkusToDraft(activeBatch, picked, qtys)
             }}
           />
         )}
@@ -2502,15 +2514,16 @@ export default function BatchesPage() {
             skus={skus}
             orderCounts={orderCounts}
             onClose={() => setSkuPickerOpen(false)}
-            onSelect={(picked) => {
+            onSelect={(picked, qtys) => {
               setCreateRows((prev) => {
                 let result = [...prev]
                 for (const sku of picked) {
+                  const qty = String(qtys[sku.id] ?? 1)
                   const emptyIdx = result.findIndex((r) => !r.skuId.trim())
                   if (emptyIdx !== -1) {
-                    result[emptyIdx] = { skuId: sku.id, qty: '1', skuLookup: sku.id }
+                    result[emptyIdx] = { skuId: sku.id, qty, skuLookup: sku.id }
                   } else {
-                    result = [...result, { skuId: sku.id, qty: '1', skuLookup: sku.id }]
+                    result = [...result, { skuId: sku.id, qty, skuLookup: sku.id }]
                   }
                 }
                 return result

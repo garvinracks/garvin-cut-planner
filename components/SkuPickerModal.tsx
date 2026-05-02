@@ -12,9 +12,12 @@ export type PickableSKU = {
 type Props = {
   skus: PickableSKU[]
   orderCounts?: Record<string, number>
-  /** SKU IDs already present in the active batch — shown with a grey "In Batch" badge */
+  /** SKU IDs already present in the active batch */
   inBatchIds?: Set<string>
-  onSelect: (skus: PickableSKU[]) => void
+  /** When true, "In Batch" badge shows as "In Draft" */
+  batchIsDraft?: boolean
+  /** Called with selected SKUs + their build qtys */
+  onSelect: (skus: PickableSKU[], qtys: Record<string, number>) => void
   onClose: () => void
 }
 
@@ -37,11 +40,12 @@ function catLabel(cat: string | null) {
   return cat ?? 'Uncategorized'
 }
 
-export default function SkuPickerModal({ skus, orderCounts = {}, inBatchIds, onSelect, onClose }: Props) {
+export default function SkuPickerModal({ skus, orderCounts = {}, inBatchIds, batchIsDraft, onSelect, onClose }: Props) {
   const [search, setSearch]               = useState('')
   const [catFilter, setCatFilter]         = useState<string>('all')
-  const [sort, setSort]                   = useState<'category' | 'orders'>('category')
+  const [sort, setSort]                   = useState<'category' | 'orders'>('orders')
   const [selected, setSelected]           = useState<Set<string>>(new Set())
+  const [selectedQtys, setSelectedQtys]   = useState<Record<string, string>>({})
   const searchRef                         = useRef<HTMLInputElement>(null)
 
   // Unique categories from data
@@ -60,7 +64,7 @@ export default function SkuPickerModal({ skus, orderCounts = {}, inBatchIds, onS
     searchRef.current?.focus()
     function handleKey(e: KeyboardEvent) {
       if (e.key === 'Escape') {
-        if (selected.size > 0) { setSelected(new Set()); return }
+        if (selected.size > 0) { setSelected(new Set()); setSelectedQtys({}); return }
         onClose()
       }
     }
@@ -90,42 +94,46 @@ export default function SkuPickerModal({ skus, orderCounts = {}, inBatchIds, onS
     return map
   }, [filtered])
 
+  function toggleSku(sku: PickableSKU) {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(sku.id)) {
+        next.delete(sku.id)
+        setSelectedQtys((q) => { const r = { ...q }; delete r[sku.id]; return r })
+      } else {
+        next.add(sku.id)
+        const needed = orderCounts[sku.id] ?? 0
+        setSelectedQtys((q) => ({ ...q, [sku.id]: String(Math.max(1, needed)) }))
+      }
+      return next
+    })
+  }
+
   function handleCardClick(e: React.MouseEvent, sku: PickableSKU) {
-    if (e.ctrlKey || e.metaKey) {
-      // Ctrl+click → toggle in multi-select
-      setSelected((prev) => {
-        const next = new Set(prev)
-        if (next.has(sku.id)) next.delete(sku.id)
-        else next.add(sku.id)
-        return next
-      })
-    } else if (selected.size > 0) {
-      // If already in multi-select mode, regular click also toggles
-      setSelected((prev) => {
-        const next = new Set(prev)
-        if (next.has(sku.id)) next.delete(sku.id)
-        else next.add(sku.id)
-        return next
-      })
-    } else {
-      // Plain click with no selection → immediate add + close
-      onSelect([sku])
-      onClose()
-    }
+    toggleSku(sku)
   }
 
   function handleAddSelected() {
     const picked = skus.filter((s) => selected.has(s.id))
-    onSelect(picked)
+    const qtys: Record<string, number> = {}
+    for (const sku of picked) {
+      qtys[sku.id] = Math.max(1, parseInt(selectedQtys[sku.id] ?? '1') || 1)
+    }
+    onSelect(picked, qtys)
     onClose()
   }
 
-  const renderCards = (list: PickableSKU[], showCategory = false) =>
+  const totalBuildQty = Array.from(selected).reduce((sum, id) => {
+    return sum + Math.max(1, parseInt(selectedQtys[id] ?? '1') || 1)
+  }, 0)
+
+  const renderCards = (list: PickableSKU[]) =>
     list.map((sku) => {
       const isSelected  = selected.has(sku.id)
       const inBatch     = inBatchIds?.has(sku.id) ?? false
       const cc          = catColor(sku.category)
-      const orderQty    = orderCounts[sku.id] ?? 0
+      const needed      = orderCounts[sku.id] ?? 0
+      const buildQtyStr = selectedQtys[sku.id] ?? String(Math.max(1, needed))
       return (
         <button
           key={sku.id}
@@ -170,7 +178,7 @@ export default function SkuPickerModal({ skus, orderCounts = {}, inBatchIds, onS
             }}>✓</span>
           )}
 
-          {/* "In Batch" badge — shown when SKU is already in the draft */}
+          {/* "In Draft" / "In Batch" badge */}
           {inBatch && !isSelected && (
             <span style={{
               position: 'absolute', top: 8, right: 9,
@@ -178,11 +186,11 @@ export default function SkuPickerModal({ skus, orderCounts = {}, inBatchIds, onS
               background: 'rgba(100,116,139,0.2)', color: '#94a3b8',
               border: '1px solid rgba(100,116,139,0.4)',
               borderRadius: 4, padding: '1px 5px', lineHeight: 1.5,
-            }}>In Batch</span>
+            }}>{batchIsDraft ? 'In Draft' : 'In Batch'}</span>
           )}
 
-          {/* Order count badge (only when > 0 and no other badge showing) */}
-          {orderQty > 0 && !isSelected && !inBatch && (
+          {/* "X needed" badge (only when > 0 and not selected and not in batch) */}
+          {needed > 0 && !isSelected && !inBatch && (
             <span style={{
               position: 'absolute', top: 8, right: 9,
               fontSize: '0.6rem', fontWeight: 700,
@@ -190,14 +198,14 @@ export default function SkuPickerModal({ skus, orderCounts = {}, inBatchIds, onS
               border: '1px solid rgba(234,179,8,0.35)',
               borderRadius: 4, padding: '1px 5px', lineHeight: 1.5,
             }}>
-              {orderQty} needed
+              {needed} needed
             </span>
           )}
 
           {/* SKU ID */}
           <div style={{
             fontWeight: 700, fontSize: '0.88rem', color: 'var(--text)',
-            letterSpacing: '0.01em', paddingRight: (isSelected || orderQty > 0) ? 56 : 0,
+            letterSpacing: '0.01em', paddingRight: (isSelected || needed > 0 || inBatch) ? 30 : 0,
           }}>
             {sku.id}
           </div>
@@ -213,7 +221,7 @@ export default function SkuPickerModal({ skus, orderCounts = {}, inBatchIds, onS
             </div>
           )}
 
-          {/* Category badge — shown when in flat/sorted view */}
+          {/* Category badge */}
           <div style={{ marginTop: 2 }}>
             <span style={{
               fontSize: '0.6rem', fontWeight: 700, textTransform: 'uppercase',
@@ -224,6 +232,31 @@ export default function SkuPickerModal({ skus, orderCounts = {}, inBatchIds, onS
               {catLabel(sku.category)}
             </span>
           </div>
+
+          {/* Qty input + needed info — only when selected */}
+          {isSelected && (
+            <div
+              style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2, flexWrap: 'wrap' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <span style={{ fontSize: '0.7rem', color: 'var(--muted)', flexShrink: 0 }}>Build:</span>
+              <input
+                type="number"
+                min="1"
+                step="1"
+                value={buildQtyStr}
+                onChange={(e) => setSelectedQtys((prev) => ({ ...prev, [sku.id]: e.target.value }))}
+                className="field"
+                style={{ width: 58, height: 26, fontSize: '0.8rem', padding: '0 6px', textAlign: 'center' }}
+                autoFocus={false}
+              />
+              {needed > 0 && (
+                <span style={{ fontSize: '0.68rem', color: '#facc15', fontWeight: 600, flexShrink: 0 }}>
+                  {needed} needed
+                </span>
+              )}
+            </div>
+          )}
         </button>
       )
     })
@@ -367,10 +400,9 @@ export default function SkuPickerModal({ skus, orderCounts = {}, inBatchIds, onS
           <span>
             {filtered.length} SKU{filtered.length !== 1 ? 's' : ''}
             {search ? ` matching "${search}"` : ''}
-            {' — '}
             {selected.size === 0
-              ? 'click to add • Ctrl+click to multi-select'
-              : `${selected.size} selected`}
+              ? ' — click to select · set qty · add to build'
+              : ` — ${selected.size} selected · ${totalBuildQty} total to build`}
           </span>
           {selected.size > 0 && (
             <button
@@ -379,7 +411,7 @@ export default function SkuPickerModal({ skus, orderCounts = {}, inBatchIds, onS
               style={{ padding: '5px 16px', fontSize: '0.8rem' }}
               onClick={handleAddSelected}
             >
-              Add {selected.size} to Build
+              Add {totalBuildQty} to Build
             </button>
           )}
         </div>
@@ -408,7 +440,7 @@ export default function SkuPickerModal({ skus, orderCounts = {}, inBatchIds, onS
                         <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
                       </div>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 10, alignContent: 'start', alignItems: 'start' }}>
-                        {renderCards(withOrders, true)}
+                        {renderCards(withOrders)}
                       </div>
                     </div>
                   )}
@@ -424,7 +456,7 @@ export default function SkuPickerModal({ skus, orderCounts = {}, inBatchIds, onS
                         <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
                       </div>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 10, alignContent: 'start', alignItems: 'start' }}>
-                        {renderCards(withoutOrders, true)}
+                        {renderCards(withoutOrders)}
                       </div>
                     </div>
                   )}
