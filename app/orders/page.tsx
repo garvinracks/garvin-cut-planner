@@ -44,7 +44,7 @@ type Order = {
   order_lines: OrderLine[]
 }
 
-type SKU = { id: string; description: string }
+type SKU = { id: string; description: string; setup_complete: boolean }
 type InventoryRow = { sku_id: string; qty_on_hand: number }
 type BatchLine = { batch_id: string; sku_id: string }
 type ActiveBatch = { id: string; name: string; status: string }
@@ -60,6 +60,7 @@ type HistorySKU = {
   bolt_kit_cost: number | null
   packaging_cost: number | null
   labor_cost_per_unit: number | null
+  setup_complete: boolean
 }
 
 type HistoryBatchLine = {
@@ -428,7 +429,7 @@ export default function OrdersPage() {
   }
 
   async function loadSkus() {
-    const { data } = await supabase.from('skus').select('id, description').order('id')
+    const { data } = await supabase.from('skus').select('id, description, setup_complete').order('id')
     setSkus((data ?? []) as SKU[])
   }
 
@@ -727,7 +728,7 @@ export default function OrdersPage() {
           .select('id, order_number, channel, customer_name, order_date, shipped_at, shipping_cost, status, notes, order_lines(id, sku_id, ss_sku, description, qty, unit_price)')
           .eq('status', 'shipped')
           .order('shipped_at', { ascending: false }),
-        supabase.from('skus').select('id, description, bolt_kit_cost, packaging_cost, labor_cost_per_unit'),
+        supabase.from('skus').select('id, description, bolt_kit_cost, packaging_cost, labor_cost_per_unit, setup_complete'),
         supabase.from('build_batch_lines').select('batch_id, sku_id, qty, mat_cost_snapshot'),
         supabase.from('build_batches').select('id, name, status, completed_at, powder_batch_id'),
         supabase.from('powder_batches').select('id, batch_name, total_cost, status'),
@@ -1334,6 +1335,7 @@ export default function OrdersPage() {
                         const chStyle      = CH_STYLE[order.channel] ?? CH_STYLE.shopify
                         const totalQty     = order.order_lines.reduce((s, l) => s + l.qty, 0)
                         const linesWithSku    = order.order_lines.filter((l) => l.sku_id)
+                        const linesNotSetup   = linesWithSku.filter((l) => !skus.find((s) => s.id === l.sku_id)?.setup_complete)
                         const linesInBatch    = linesWithSku.filter((l) => l.sku_id && skuBatchStatus[l.sku_id])
                         // A line is "covered" if it's in a batch OR has enough stock on hand
                         const linesCovered    = linesWithSku.filter((l) => {
@@ -1512,6 +1514,16 @@ export default function OrdersPage() {
                                       {alloc.icon} {alloc.label}
                                     </span>
                                   )}
+                                  {linesNotSetup.length > 0 && (
+                                    <span style={{
+                                      background: 'rgba(239,68,68,0.12)', color: 'var(--danger)',
+                                      borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700,
+                                    }}
+                                      title={linesNotSetup.map((l) => l.ss_sku).join(', ') + ' — setup incomplete'}
+                                    >
+                                      ⚠ Setup Incomplete
+                                    </span>
+                                  )}
                                 </div>
                               </td>
 
@@ -1584,6 +1596,11 @@ export default function OrdersPage() {
                                                 ) : (
                                                   <span style={{ background: 'rgba(239,68,68,0.12)', color: 'var(--danger)', borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700 }}>
                                                     🔴 Build Needed
+                                                  </span>
+                                                )}
+                                                {line.sku_id && !skus.find((s) => s.id === line.sku_id)?.setup_complete && (
+                                                  <span style={{ background: 'rgba(239,68,68,0.12)', color: 'var(--danger)', borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700, marginLeft: 4 }}>
+                                                    ⚠ Setup Incomplete
                                                   </span>
                                                 )}
                                               </td>
