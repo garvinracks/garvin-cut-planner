@@ -245,7 +245,7 @@ export default function BatchesPage() {
     // Load open order qty per SKU for the picker modal
     const [{ data: olData }, { data: invData }] = await Promise.all([
       supabase.from('order_lines').select('sku_id, qty, order:order_id(status)').not('sku_id', 'is', null),
-      supabase.from('inventory').select('sku_id, qty_on_hand'),
+      supabase.from('sku_inventory').select('sku_id, qty_on_hand'),
     ])
     const skuOrderCounts: Record<string, number> = {}
     for (const row of (olData ?? []) as any[]) {
