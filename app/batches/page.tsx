@@ -1829,10 +1829,13 @@ export default function BatchesPage() {
                                 const colorMap: Record<string, string> = {}
                                 partIds.forEach((id, i) => { colorMap[id] = NEST_COLORS[i % NEST_COLORS.length] })
                                 return (
-                                  <div style={{ borderTop: '1px solid var(--border)', padding: '12px 16px 14px' }}>
-                                    <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--muted)', marginBottom: 10 }}>
+                                  <details style={{ borderTop: '1px solid var(--border)' }}>
+                                    <summary style={{ padding: '8px 16px', fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--muted)', cursor: 'pointer', userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: 6 }}>
+                                      <span style={{ fontSize: '0.6rem' }}>▶</span>
                                       Stock Layout &mdash; {bars.length} bar{bars.length !== 1 ? 's' : ''}
-                                    </div>
+                                    </summary>
+                                  <div style={{ padding: '4px 16px 14px' }}>
+                                    <div />
 
                                     {bars.map((bar, barIdx) => {
                                       const scrapLen = Math.max(0, grp.stockLengthIn! - (bar.used - 0.125))
@@ -1896,6 +1899,7 @@ export default function BatchesPage() {
                                       ))}
                                     </div>
                                   </div>
+                                  </details>
                                 )
                               })()}
                             </div>
