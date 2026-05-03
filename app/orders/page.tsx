@@ -1508,33 +1508,39 @@ export default function OrdersPage() {
                               <td>
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
                                   {/* Production status */}
-                                  {isMultiSku && allBatched && topBatch && (
-                                    /* All SKUs covered — show real status label */
-                                    <span
-                                      title={`All ${linesWithSku.length} SKUs are in a batch`}
-                                      style={{
-                                        background: BATCH_STATUS_STYLE[topBatch.status]?.bg,
-                                        color: BATCH_STATUS_STYLE[topBatch.status]?.color,
-                                        borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700, cursor: 'default',
-                                      }}
-                                    >
-                                      ✓ All {BATCH_STATUS_STYLE[topBatch.status]?.label ?? 'In Build'}
-                                    </span>
-                                  )}
-                                  {isMultiSku && someBatched && (
-                                    /* Partial — warning badge + list only truly-unbuildable SKUs */
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                                      <span style={{ background: 'rgba(234,179,8,0.15)', color: '#facc15', borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700 }}>
-                                        ⚠ {linesCovered.length}/{linesWithSku.length} covered
-                                      </span>
-                                      {unbatchedLines.length > 0 && (
-                                        <span style={{ fontSize: '0.68rem', color: 'var(--danger)', fontFamily: 'monospace', lineHeight: 1.4 }}>
-                                          {unbatchedLines.map((l) => l.ss_sku).join(', ')} needs build
+                                  {isMultiSku && linesWithSku.length > 0 && (() => {
+                                    /* Multi-SKU: show a pill per distinct status */
+                                    const groups: Record<string, number> = {}
+                                    for (const line of linesWithSku) {
+                                      const bs = skuBatchStatus[line.sku_id!]
+                                      let key: string
+                                      if (bs) { key = bs.status }
+                                      else {
+                                        const oh = inventory.find((i) => i.sku_id === line.sku_id)?.qty_on_hand ?? 0
+                                        key = oh >= line.qty ? 'in_stock' : 'needs_build'
+                                      }
+                                      groups[key] = (groups[key] ?? 0) + 1
+                                    }
+                                    const ORDER = ['at_powder', 'in_progress', 'planned', 'draft', 'in_stock', 'needs_build']
+                                    const total = linesWithSku.length
+                                    return ORDER.filter((s) => groups[s]).map((s) => {
+                                      const cnt = groups[s]
+                                      const sty = s === 'in_stock'
+                                        ? { bg: 'rgba(34,197,94,0.15)', color: 'var(--success)' }
+                                        : s === 'needs_build'
+                                        ? { bg: 'rgba(239,68,68,0.12)', color: 'var(--danger)' }
+                                        : BATCH_STATUS_STYLE[s] ?? { bg: 'rgba(100,116,139,0.2)', color: '#94a3b8' }
+                                      const lbl = s === 'in_stock' ? 'In Stock'
+                                        : s === 'needs_build' ? 'Needs Build'
+                                        : BATCH_STATUS_STYLE[s]?.label ?? s
+                                      return (
+                                        <span key={s} style={{ background: sty.bg, color: sty.color, borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                                          {cnt}/{total} {lbl}
                                         </span>
-                                      )}
-                                    </div>
-                                  )}
-                                  {(!isMultiSku || (!allBatched && !someBatched)) && topBatch && (
+                                      )
+                                    })
+                                  })()}
+                                  {!isMultiSku && topBatch && (
                                     /* Single-SKU order — top batch badge, clickable */
                                     <span
                                       title={topBatch.batchName}
