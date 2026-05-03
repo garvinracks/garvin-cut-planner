@@ -136,7 +136,7 @@ type MonthTrend = {
 
 // ── Category inference ────────────────────────────────────────────────────────
 
-const CATEGORY_ORDER = ['Racks', 'Ladders', 'Deflectors', 'Accessories', 'Uncategorized'] as const
+const CATEGORY_ORDER = ['Racks', 'Ladders', 'Deflectors', 'Accessories', 'Parts', 'Uncategorized'] as const
 type Category = typeof CATEGORY_ORDER[number]
 
 function getCategory(description: string): Category {
@@ -1427,7 +1427,7 @@ export default function OrdersPage() {
                               style={{
                                 background: isSelected
                                   ? 'var(--accent-soft)'
-                                  : alloc?.bg ?? 'transparent',
+                                  : status === 'ready' ? (alloc?.bg ?? 'transparent') : 'transparent',
                               }}
                             >
                               {/* Checkbox */}
@@ -1509,7 +1509,7 @@ export default function OrdersPage() {
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
                                   {/* Production status */}
                                   {isMultiSku && allBatched && topBatch && (
-                                    /* All SKUs covered — same colour as single-SKU batch badge */
+                                    /* All SKUs covered — show real status label */
                                     <span
                                       title={`All ${linesWithSku.length} SKUs are in a batch`}
                                       style={{
@@ -1518,7 +1518,7 @@ export default function OrdersPage() {
                                         borderRadius: 20, padding: '1px 8px', fontSize: '0.72rem', fontWeight: 700, cursor: 'default',
                                       }}
                                     >
-                                      ✓ All In Build
+                                      ✓ All {BATCH_STATUS_STYLE[topBatch.status]?.label ?? 'In Build'}
                                     </span>
                                   )}
                                   {isMultiSku && someBatched && (

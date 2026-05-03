@@ -2330,6 +2330,10 @@ export default function BatchesPage() {
                         {sortedSaEntries.map(([saId, { subAssembly, items }]) => {
                             const isComplete = completedSaIds.has(saId)
                             const isExpanded = !isComplete || expandedCompleteSaIds.has(saId)
+                            const saTotalQty = batchLines.reduce((sum, line) => {
+                              const entry = skuSubs.find((s) => s.sku_id === line.sku_id && s.sub_assembly_id === saId)
+                              return sum + (entry ? entry.qty * line.qty : 0)
+                            }, 0)
                             return (
                           <Fragment key={saId}>
                             {/* SA header row — only sticky when incomplete (complete ones sort to bottom) */}
@@ -2352,6 +2356,11 @@ export default function BatchesPage() {
                                     <div style={{ fontSize: '0.65rem', color: isComplete ? 'var(--success)' : '#a78bfa', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Sub-Assembly</div>
                                     <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>{subAssembly.name}</div>
                                   </div>
+                                  {saTotalQty > 0 && (
+                                    <span style={{ fontWeight: 800, fontSize: '1rem', color: isComplete ? 'var(--success)' : 'var(--text-1)', marginRight: 4 }}>
+                                      ×{saTotalQty}
+                                    </span>
+                                  )}
                                   {isComplete && (
                                     <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--success)', background: 'rgba(34,197,94,0.12)', border: '1px solid rgba(34,197,94,0.3)', borderRadius: 20, padding: '2px 9px', whiteSpace: 'nowrap' }}>
                                       ✓ Complete

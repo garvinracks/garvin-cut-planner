@@ -27,6 +27,7 @@ const CATEGORY_COLORS: Record<string, { bg: string; text: string; border: string
   Ladders:      { bg: 'rgba(34,197,94,0.12)',   text: '#4ade80', border: 'rgba(34,197,94,0.25)'   },
   Accessories:  { bg: 'rgba(168,85,247,0.12)',  text: '#c084fc', border: 'rgba(168,85,247,0.25)'  },
   Deflectors:   { bg: 'rgba(249,115,22,0.12)',  text: '#fb923c', border: 'rgba(249,115,22,0.25)'  },
+  Parts:        { bg: 'rgba(20,184,166,0.12)',  text: '#2dd4bf', border: 'rgba(20,184,166,0.25)'  },
 }
 
 function catColor(cat: string | null) {

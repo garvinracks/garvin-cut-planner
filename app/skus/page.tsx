@@ -165,7 +165,7 @@ type SourceRelationRow = {
   qty: number | string
 }
 
-const CATEGORY_OPTIONS = ['Racks', 'Ladders', 'Accessories', 'Deflectors'] as const
+const CATEGORY_OPTIONS = ['Racks', 'Ladders', 'Accessories', 'Deflectors', 'Parts'] as const
 type SkuCategory = (typeof CATEGORY_OPTIONS)[number]
 
 const CATEGORY_STYLES: Record<string, { bg: string; border: string; text: string; pill: string }> = {
@@ -192,6 +192,12 @@ const CATEGORY_STYLES: Record<string, { bg: string; border: string; text: string
     border: 'rgba(245, 158, 11, 0.35)',
     text: '#fde68a',
     pill: 'rgba(245, 158, 11, 0.22)',
+  },
+  Parts: {
+    bg: 'rgba(20, 184, 166, 0.12)',
+    border: 'rgba(20, 184, 166, 0.35)',
+    text: '#99f6e4',
+    pill: 'rgba(20, 184, 166, 0.22)',
   },
   Uncategorized: {
     bg: 'rgba(148, 163, 184, 0.12)',
