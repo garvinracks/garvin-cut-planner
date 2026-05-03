@@ -1557,6 +1557,7 @@ export default function SkusPage() {
       Ladders: [],
       Accessories: [],
       Deflectors: [],
+      Parts: [],
       Uncategorized: [],
     }
     for (const sku of filteredSkus) {
