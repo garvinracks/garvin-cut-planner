@@ -24,16 +24,15 @@ export interface ParsedPO {
   }>
 }
 
-function parseT5PO(text: string): ParsedPO {
-  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean)
+function parseT5PO(raw: string): ParsedPO {
+  // Normalise — collapse multiple spaces but keep a single space between tokens
+  const text = raw.replace(/\r\n/g, ' ').replace(/\r/g, ' ').replace(/\n/g, ' ').replace(/\s{2,}/g, ' ')
 
   // ── PO Number ──────────────────────────────────────────────────────────────
-  const poMatch = text.match(/PO #(\d+)/)
-  const poNumber = poMatch?.[1] ?? ''
+  const poNumber = text.match(/PO #(\d+)/)?.[1] ?? ''
 
   // ── Date ───────────────────────────────────────────────────────────────────
-  const dateMatch = text.match(/Date:\s*(\d+\/\d+\/\d+)/)
-  const poDate = dateMatch?.[1] ?? ''
+  const poDate = text.match(/Date:\s*(\d+\/\d+\/\d+)/)?.[1] ?? ''
 
   // ── Ship To block (between "Ship To:" and "PO NUMBER") ────────────────────
   const shipToStart = text.indexOf('Ship To:')
@@ -42,35 +41,43 @@ function parseT5PO(text: string): ParsedPO {
     ? text.slice(shipToStart + 8, shipToEnd).trim()
     : ''
 
-  const stLines = shipToBlock.split('\n').map((l) => l.trim()).filter(Boolean)
-
   let name = '', street1 = '', street2 = '', city = '', state = '', zip = '', phone = ''
 
-  if (stLines.length >= 1) name = stLines[0]
+  // Phone (label is always present)
+  phone = shipToBlock.match(/Phone:\s*(\d+)/i)?.[1] ?? ''
 
-  // City/state/zip line: "City, ST XXXXX"
-  const cszIdx = stLines.findIndex((l) => /^.+,\s+[A-Z]{2}\s+\d{5}/.test(l))
-  if (cszIdx >= 0) {
-    const m = stLines[cszIdx].match(/^(.+),\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)/)
-    if (m) { city = m[1].trim(); state = m[2]; zip = m[3] }
-    const streets = stLines.slice(1, cszIdx)
-    street1 = streets[0] ?? ''
-    street2 = streets[1] ?? ''
+  // Remove phone segment for cleaner parsing
+  const addrBlock = shipToBlock.replace(/Phone:\s*\d+/i, '').trim()
+
+  // City, State ZIP  — anchor on this to split name+street from city
+  const cszMatch = addrBlock.match(/([A-Za-z][A-Za-z\s]+),\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)/)
+  if (cszMatch) {
+    city  = cszMatch[1].trim()
+    state = cszMatch[2]
+    zip   = cszMatch[3]
+    const beforeCsz = addrBlock.slice(0, addrBlock.indexOf(cszMatch[0])).trim()
+
+    // Name = leading words before first digit (street number)
+    const nameStreetMatch = beforeCsz.match(/^([A-Za-z][A-Za-z\s]+?)\s+(\d+.*)$/)
+    if (nameStreetMatch) {
+      name = nameStreetMatch[1].trim()
+      const streetPart = nameStreetMatch[2].trim()
+      // Apt/unit: short standalone token at the end — e.g. "A209", "#3", "Apt 2B"
+      const aptMatch = streetPart.match(/^(.+?)\s+((?:[A-Z]\d+|\d+[A-Z]?|(?:Apt|Suite|Ste|Unit|#)\s*\w+))\s*$/i)
+      if (aptMatch) { street1 = aptMatch[1].trim(); street2 = aptMatch[2].trim() }
+      else           { street1 = streetPart }
+    } else {
+      name = beforeCsz
+    }
   }
 
-  // Phone
-  const phoneLine = stLines.find((l) => /^Phone:/i.test(l))
-  if (phoneLine) phone = phoneLine.replace(/^Phone:\s*/i, '').trim()
-
   // ── Line items ─────────────────────────────────────────────────────────────
-  // Format: QTY  SKU  LOCAL_SKU  DESCRIPTION  $PRICE  $EXTENDED
+  // Pattern (in flattened text): QTY(1-2d) T5-SKU(4-6d) LOCAL-SKU(alphanum) description $price $extended
   const items: ParsedPO['items'] = []
-  const itemRe = /^(\d+)\s+(\d+)\s+(\S+)\s+(.+?)\s+\$([\d,]+\.\d{2})\s+\$([\d,]+\.\d{2})/
+  const itemRe = /\b(\d{1,2})\s+(\d{4,6})\s+([A-Z][A-Z0-9]+)\s+([A-Za-z].*?)\s+\$([\d,]+\.\d{2})\s+\$([\d,]+\.\d{2})/g
 
-  for (const line of lines) {
-    if (/^QTY\b/i.test(line)) continue
-    const m = line.match(itemRe)
-    if (!m) continue
+  let m: RegExpExecArray | null
+  while ((m = itemRe.exec(text)) !== null) {
     items.push({
       qty:         parseInt(m[1]),
       sku:         m[2],
