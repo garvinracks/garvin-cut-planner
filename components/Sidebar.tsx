@@ -141,6 +141,7 @@ function IconPowder() {
 const LINKS = [
   { href: '/',              label: 'Dashboard',      Icon: IconDashboard,  group: 'Operations' },
   { href: '/orders',        label: 'Orders',         Icon: IconOrders,     group: 'Operations' },
+  { href: '/invoices',      label: 'T5 Invoices',    Icon: IconOrders,     group: 'Operations' },
   { href: '/inventory',     label: 'Inventory',      Icon: IconInventory,  group: 'Operations' },
   { href: '/batches',       label: 'Build Batches',  Icon: IconBatches,    group: 'Operations' },
   { href: '/powder',        label: 'Powder Coat',    Icon: IconPowder,     group: 'Operations' },
