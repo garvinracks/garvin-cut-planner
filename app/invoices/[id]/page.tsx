@@ -10,7 +10,7 @@ type OrderLine = {
   description: string | null
   qty: number
   unit_price: number | null
-  skus: { description: string } | null
+  skus: { description: string }[] | null
 }
 
 type Order = {
@@ -321,7 +321,7 @@ export default function InvoicePrintPage() {
               const rate   = line.unit_price ?? 0
               const amount = rate * line.qty
               // Prefer Garvin SKU description; fall back to ShipStation description
-              const desc = line.skus?.description ?? line.description ?? '—'
+              const desc = line.skus?.[0]?.description ?? line.description ?? '—'
               return (
                 <tr key={line.id}>
                   <td>{order.order_number}</td>

@@ -13,7 +13,7 @@ type OrderLine = {
   description: string | null
   qty: number
   unit_price: number | null
-  skus: { description: string } | null
+  skus: { description: string }[] | null
 }
 
 type Order = {
@@ -290,8 +290,8 @@ export default function InvoicesPage() {
                               <div key={l.id} style={{ fontSize: '0.8rem' }}>
                                 <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{l.ss_sku ?? '—'}</span>
                                 <span style={{ color: 'var(--muted)', marginLeft: 4 }}>× {l.qty}</span>
-                                {(l.skus?.description ?? l.description) && (
-                                  <div style={{ color: 'var(--text-2)', fontSize: '0.75rem', marginTop: 1 }}>{l.skus?.description ?? l.description}</div>
+                                {(l.skus?.[0]?.description ?? l.description) && (
+                                  <div style={{ color: 'var(--text-2)', fontSize: '0.75rem', marginTop: 1 }}>{l.skus?.[0]?.description ?? l.description}</div>
                                 )}
                               </div>
                             ))}
@@ -498,8 +498,8 @@ export default function InvoicesPage() {
                   <span>
                     <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{l.ss_sku ?? '—'}</span>
                     <span style={{ color: 'var(--muted)', marginLeft: 8 }}>× {l.qty}</span>
-                    {(l.skus?.description ?? l.description) && (
-                      <div style={{ color: 'var(--text-2)', fontSize: '0.78rem', marginTop: 2 }}>{l.skus?.description ?? l.description}</div>
+                    {(l.skus?.[0]?.description ?? l.description) && (
+                      <div style={{ color: 'var(--text-2)', fontSize: '0.78rem', marginTop: 2 }}>{l.skus?.[0]?.description ?? l.description}</div>
                     )}
                   </span>
                   <span style={{ fontWeight: 600, whiteSpace: 'nowrap', marginLeft: 12 }}>{fmt((l.unit_price ?? 0) * l.qty)}</span>
