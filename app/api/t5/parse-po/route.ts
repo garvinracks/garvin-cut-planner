@@ -1,11 +1,7 @@
 export const runtime = 'nodejs'
 
 import { NextRequest, NextResponse } from 'next/server'
-import { createRequire } from 'module'
-
-const require = createRequire(import.meta.url)
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const pdfParse = require('pdf-parse') as (buf: Buffer) => Promise<{ text: string }>
+import { extractText } from 'unpdf'
 
 export interface ParsedPO {
   poNumber: string
@@ -93,8 +89,9 @@ export async function POST(req: NextRequest) {
     const file = form.get('pdf') as File | null
     if (!file) return NextResponse.json({ error: 'No PDF uploaded.' }, { status: 400 })
 
-    const buffer = Buffer.from(await file.arrayBuffer())
-    const { text } = await pdfParse(buffer)
+    const buffer = await file.arrayBuffer()
+    const { text: pages } = await extractText(new Uint8Array(buffer), { mergePages: true })
+    const text = Array.isArray(pages) ? pages.join('\n') : pages
     const parsed = parseT5PO(text)
 
     if (!parsed.poNumber) {
