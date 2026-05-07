@@ -432,7 +432,7 @@ export default function InvoicesPage() {
       {/* ── Parsed PO Preview Modal ──────────────────────────────────────────── */}
       {parsedPO && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-          <div style={{ background: 'var(--panel-1)', borderRadius: 12, padding: 28, width: '100%', maxWidth: 520, border: '1px solid var(--border)', maxHeight: '90vh', overflowY: 'auto' }}>
+          <div style={{ background: 'var(--panel)', borderRadius: 12, padding: 28, width: '100%', maxWidth: 520, border: '1px solid var(--border)', maxHeight: '90vh', overflowY: 'auto' }}>
             <div style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }}>PO #{parsedPO.poNumber} — Confirm Details</div>
             <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginBottom: 20 }}>Review the extracted data before creating the ShipStation order.</div>
 
@@ -485,7 +485,7 @@ export default function InvoicesPage() {
       {/* ── Create Invoice Modal ─────────────────────────────────────────────── */}
       {creating && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-          <div style={{ background: 'var(--panel-1)', borderRadius: 12, padding: 28, width: '100%', maxWidth: 440, border: '1px solid var(--border)' }}>
+          <div style={{ background: 'var(--panel)', borderRadius: 12, padding: 28, width: '100%', maxWidth: 440, border: '1px solid var(--border)' }}>
             <div style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 18 }}>Create Invoice — PO #{creating.order_number}</div>
             <div style={{ marginBottom: 16 }}>
               <div style={{ fontSize: '0.75rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>Line Items</div>
