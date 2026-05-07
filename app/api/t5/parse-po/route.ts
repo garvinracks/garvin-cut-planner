@@ -49,32 +49,61 @@ function parseT5PO(raw: string): ParsedPO {
   // Remove phone segment for cleaner parsing
   const addrBlock = shipToBlock.replace(/Phone:\s*\d+/i, '').trim()
 
-  // City, State ZIP  — anchor on this to split name+street from city
-  const cszMatch = addrBlock.match(/([A-Za-z][A-Za-z\s]+),\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)/)
-  if (cszMatch) {
-    city  = cszMatch[1].trim()
-    state = cszMatch[2]
-    zip   = cszMatch[3]
-    const beforeCsz = addrBlock.slice(0, addrBlock.indexOf(cszMatch[0])).trim()
+  // Anchor on ", STATE ZIP" (unambiguous) to extract state + zip first
+  const szM = addrBlock.match(/,\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)/)
+  if (szM) {
+    state = szM[1]
+    zip   = szM[2]
+    // Everything before ", STATE ZIP" contains: name + street number + street name + [apt] + city
+    const beforeStateZip = addrBlock.slice(0, szM.index!).trim()
 
-    // Name = leading words before first digit (street number)
-    const nameStreetMatch = beforeCsz.match(/^([A-Za-z][A-Za-z\s]+?)\s+(\d+.*)$/)
-    if (nameStreetMatch) {
-      name = nameStreetMatch[1].trim()
-      const streetPart = nameStreetMatch[2].trim()
-      // Apt/unit: short standalone token at the end — e.g. "A209", "#3", "Apt 2B"
-      const aptMatch = streetPart.match(/^(.+?)\s+((?:[A-Z]\d+|\d+[A-Z]?|(?:Apt|Suite|Ste|Unit|#)\s*\w+))\s*$/i)
-      if (aptMatch) { street1 = aptMatch[1].trim(); street2 = aptMatch[2].trim() }
-      else           { street1 = streetPart }
+    // Use the last common street suffix to cleanly split street from city.
+    // This prevents "Randalsville Rd Hamilton" being treated as one city name.
+    const SUFFIX_RE = /\b(Rd|St|Ave|Blvd|Dr|Ln|Way|Ct|Pl|Ter|Cir|Hwy|Pkwy|Trl|Loop|Sq)\b/gi
+    let lastSfx: RegExpExecArray | null = null
+    let sfxM: RegExpExecArray | null
+    while ((sfxM = SUFFIX_RE.exec(beforeStateZip)) !== null) { lastSfx = sfxM }
+
+    if (lastSfx) {
+      const sfxEnd = lastSfx.index + lastSfx[0].length
+      const afterSuffix = beforeStateZip.slice(sfxEnd).trim()
+      const nameStreetBlock = beforeStateZip.slice(0, sfxEnd).trim()
+
+      // After the suffix there may be an apt/unit token before the city
+      // e.g. "A209 Lehi" → street2="A209", city="Lehi"
+      const aptCityM = afterSuffix.match(/^([A-Z]\d+|\d+[A-Z]|(?:Apt|Suite|Ste|Unit|#)\s*\w+)\s+(.+)$/i)
+      if (aptCityM) {
+        street2 = aptCityM[1].trim()
+        city    = aptCityM[2].trim()
+      } else {
+        city = afterSuffix
+      }
+
+      // Parse name and street number+name from nameStreetBlock
+      const nsM = nameStreetBlock.match(/^([A-Za-z][A-Za-z\s]+?)\s+(\d+.*)$/)
+      if (nsM) {
+        name    = nsM[1].trim()
+        street1 = nsM[2].trim()
+      } else {
+        name = nameStreetBlock
+      }
     } else {
-      name = beforeCsz
+      // Fallback: no street suffix — try splitting on last run of alpha words (city)
+      const nsM = beforeStateZip.match(/^([A-Za-z][A-Za-z\s]+?)\s+(\d+.*?)\s+([A-Za-z][A-Za-z\s]*)$/)
+      if (nsM) {
+        name    = nsM[1].trim()
+        street1 = nsM[2].trim()
+        city    = nsM[3].trim()
+      } else {
+        name = beforeStateZip
+      }
     }
   }
 
   // ── Line items ─────────────────────────────────────────────────────────────
-  // Pattern (in flattened text): QTY(1-2d) T5-SKU(4-6d) LOCAL-SKU(alphanum) description $price $extended
+  // SKU can be alphanumeric with hyphens (e.g. "20097-4XE", "44085")
   const items: ParsedPO['items'] = []
-  const itemRe = /\b(\d{1,2})\s+(\d{4,6})\s+([A-Z][A-Z0-9]+)\s+([A-Za-z].*?)\s+\$([\d,]+\.\d{2})\s+\$([\d,]+\.\d{2})/g
+  const itemRe = /\b(\d{1,2})\s+(\d[\dA-Z-]{3,})\s+([A-Z][A-Z0-9]+)\s+([A-Za-z].*?)\s+\$([\d,]+\.\d{2})\s+\$([\d,]+\.\d{2})/g
 
   let m: RegExpExecArray | null
   while ((m = itemRe.exec(text)) !== null) {
