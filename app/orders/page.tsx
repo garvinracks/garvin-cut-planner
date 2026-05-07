@@ -539,8 +539,13 @@ export default function OrdersPage() {
       const res  = await fetch('/api/shipstation/sync', { method: 'POST' })
       const data = await res.json()
       if (!res.ok) { setSyncMessage(`Sync failed: ${data.error}`); return }
-      setSyncMessage(`✓ Synced ${data.imported} orders`)
-      await Promise.all([loadOrders(), loadInventory()])
+      const parts = [`✓ ${data.imported} open`]
+      if (data.shipped  > 0) parts.push(`${data.shipped} shipped`)
+      if (data.cancelled > 0) parts.push(`${data.cancelled} cancelled`)
+      setSyncMessage(parts.join(' · '))
+      const reloads: Promise<void>[] = [loadOrders(), loadInventory()]
+      if (histLoaded) reloads.push(loadHistory())
+      await Promise.all(reloads)
     } finally { setSyncing(false) }
   }
 

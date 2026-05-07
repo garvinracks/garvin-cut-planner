@@ -18,20 +18,29 @@ async function ssGet(path: string) {
   return res.json()
 }
 
-// Fetch ALL pages of orders with a given status for a store
-async function fetchOrdersByStatus(storeId: number, orderStatus: string, modifyDateStart?: string): Promise<any[]> {
+// Fetch ALL pages of awaiting_shipment orders for a given store
+async function fetchAwaitingOrders(storeId: number): Promise<any[]> {
   const all: any[] = []
   let page = 1
   while (true) {
-    let url = `/orders?storeId=${storeId}&orderStatus=${orderStatus}&pageSize=500&page=${page}`
-    if (modifyDateStart) url += `&modifyDateStart=${modifyDateStart}`
-    const data = await ssGet(url)
+    const data = await ssGet(
+      `/orders?storeId=${storeId}&orderStatus=awaiting_shipment&pageSize=500&page=${page}`
+    )
     const batch: any[] = data.orders ?? []
     all.push(...batch)
     if (batch.length < 500 || all.length >= (data.total ?? 0)) break
     page++
   }
   return all
+}
+
+// Look up a single order's real status from ShipStation
+async function ssGetOrder(ssOrderId: number): Promise<{ orderStatus: string; shippingAmount?: number } | null> {
+  try {
+    return await ssGet(`/orders/${ssOrderId}`)
+  } catch {
+    return null
+  }
 }
 
 export async function POST() {
@@ -64,17 +73,11 @@ export async function POST() {
     let skipped  = 0
     let cancelled = 0
 
-    // Track every ShipStation order ID seen in this sync across all stores
     const seenSsOrderIds = new Set<number>()
 
-    // Shipped orders: look back 90 days so recently-shipped orders are captured
-    const since90 = new Date()
-    since90.setDate(since90.getDate() - 90)
-    const sinceStr = since90.toISOString().split('T')[0]
-
     for (const store of enabled) {
-      // ── 1. awaiting_shipment → status: 'open' ─────────────────────────────
-      const awaitingOrders = await fetchOrdersByStatus(store.storeId, 'awaiting_shipment')
+      // ── 1. Sync awaiting_shipment → status 'open' ────────────────────────────
+      const awaitingOrders = await fetchAwaitingOrders(store.storeId)
 
       for (const o of awaitingOrders) {
         seenSsOrderIds.add(o.orderId)
@@ -134,66 +137,48 @@ export async function POST() {
 
         imported++
       }
-
-      // ── 2. shipped (last 90 days) → status: 'shipped' ─────────────────────
-      // This corrects orders that were wrongly marked 'cancelled' after shipping.
-      const shippedOrders = await fetchOrdersByStatus(store.storeId, 'shipped', sinceStr)
-
-      for (const o of shippedOrders) {
-        seenSsOrderIds.add(o.orderId)
-
-        const customerName =
-          o.shipTo?.name || o.billTo?.name || o.customerUsername || null
-
-        // Upsert but do NOT overwrite shipping_cost if already recorded locally
-        const { data: existing } = await supabase
-          .from('orders')
-          .select('id, shipping_cost')
-          .eq('shipstation_order_id', o.orderId)
-          .single()
-
-        const { error: shipErr } = await supabase
-          .from('orders')
-          .upsert(
-            {
-              shipstation_order_id: o.orderId,
-              order_number: o.orderNumber,
-              channel: store.channel,
-              customer_name: customerName,
-              customer_email: o.customerEmail ?? null,
-              order_date: o.orderDate ?? null,
-              ship_by_date: o.shipByDate ?? null,
-              ss_status: 'shipped',
-              status: 'shipped',
-              // Use locally-recorded shipping cost if set, otherwise pull from ShipStation
-              shipping_cost: existing?.shipping_cost ?? (o.shippingAmount ?? null),
-              synced_at: new Date().toISOString(),
-            },
-            { onConflict: 'shipstation_order_id' }
-          )
-
-        if (!shipErr) shipped++
-      }
     }
 
-    // ── 3. Mark truly-cancelled: open orders absent from both lists ────────────
-    if (seenSsOrderIds.size > 0) {
-      const { data: openOrders } = await supabase
-        .from('orders')
-        .select('id, shipstation_order_id')
-        .eq('status', 'open')
+    // ── 2. Resolve orders absent from awaiting_shipment ──────────────────────
+    // Any order that is 'open' OR 'cancelled' in our DB but not in the sync
+    // may have been shipped or explicitly cancelled in ShipStation.
+    // Look each one up individually to get the real status.
+    const { data: unresolvedOrders } = await supabase
+      .from('orders')
+      .select('id, shipstation_order_id, shipping_cost')
+      .in('status', ['open', 'cancelled'])
+      .not('shipstation_order_id', 'is', null)
 
-      const toCancel = (openOrders ?? []).filter(
-        (o: any) => o.shipstation_order_id && !seenSsOrderIds.has(o.shipstation_order_id)
-      )
+    const toResolve = (unresolvedOrders ?? []).filter(
+      (o: any) => !seenSsOrderIds.has(o.shipstation_order_id)
+    )
 
-      if (toCancel.length > 0) {
+    for (const row of toResolve) {
+      const ssOrder = await ssGetOrder(row.shipstation_order_id)
+      if (!ssOrder) { skipped++; continue }
+
+      const ssStatus = ssOrder.orderStatus ?? ''
+
+      if (ssStatus === 'shipped') {
         await supabase
           .from('orders')
-          .update({ status: 'cancelled', synced_at: new Date().toISOString() })
-          .in('id', toCancel.map((o: any) => o.id))
-        cancelled = toCancel.length
+          .update({
+            status: 'shipped',
+            ss_status: 'shipped',
+            // Preserve any locally-recorded shipping cost; fall back to SS value
+            shipping_cost: row.shipping_cost ?? ssOrder.shippingAmount ?? null,
+            synced_at: new Date().toISOString(),
+          })
+          .eq('id', row.id)
+        shipped++
+      } else if (ssStatus === 'cancelled' || ssStatus === 'on_hold') {
+        await supabase
+          .from('orders')
+          .update({ status: 'cancelled', ss_status: ssStatus, synced_at: new Date().toISOString() })
+          .eq('id', row.id)
+        cancelled++
       }
+      // If still awaiting_shipment somehow, leave as-is
     }
 
     return NextResponse.json({
