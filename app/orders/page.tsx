@@ -1748,6 +1748,7 @@ export default function OrdersPage() {
                           <th>Order Date</th>
                           <th style={{ textAlign: 'center' }}>Qty</th>
                           <th>Status</th>
+                          <th>Notes</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1804,6 +1805,9 @@ export default function OrdersPage() {
                                     </span>
                                   )}
                                 </div>
+                              </td>
+                              <td style={{ maxWidth: 220, fontSize: '0.78rem', color: 'var(--warning)', fontStyle: order.notes ? 'normal' : undefined }}>
+                                {order.notes ?? ''}
                               </td>
                             </tr>
                           )
