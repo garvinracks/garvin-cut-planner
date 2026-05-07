@@ -729,10 +729,17 @@ export default function PowderPage() {
                 const totalWeight = linked.reduce((s, b) => s + calcBatchWeight(b.id), 0)
                 const isOpen      = runReturnOpen === pb.id
                 const estCpl      = runReturnCost && totalWeight > 0 ? parseFloat(runReturnCost) / totalWeight : null
+                // Collect all missing-weight parts across linked batches (deduped)
+                const runMissingMap = new Map<string, Part>()
+                for (const b of linked) {
+                  for (const p of getMissingWeightParts(b.id)) runMissingMap.set(p.id, p)
+                }
+                const runMissingParts = Array.from(runMissingMap.values())
+                const isWeightFixOpen = weightFixOpen === pb.id
                 return (
-                  <div key={pb.id} style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+                  <div key={pb.id} style={{ border: `1px solid ${runMissingParts.length > 0 ? 'rgba(239,68,68,0.4)' : 'var(--border)'}`, borderRadius: 8, overflow: 'hidden' }}>
                     {/* Run header */}
-                    <div style={{ padding: '12px 16px', background: 'var(--panel-2)', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+                    <div style={{ padding: '12px 16px', background: runMissingParts.length > 0 ? 'rgba(239,68,68,0.05)' : 'var(--panel-2)', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
                       <div style={{ width: 36, height: 36, borderRadius: 8, background: 'rgba(167,139,250,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.1rem', flexShrink: 0 }}>🎨</div>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontWeight: 700, fontSize: '0.92rem' }}>{pb.batch_name}</div>
@@ -742,6 +749,16 @@ export default function PowderPage() {
                           {totalWeight > 0 ? ` · ${fmtWeight(totalWeight)}` : ''}
                         </div>
                       </div>
+                      {runMissingParts.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => { setWeightFixOpen(isWeightFixOpen ? null : pb.id); setWeightEdits({}) }}
+                          style={{ background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.35)', color: 'var(--danger)', borderRadius: 8, padding: '5px 12px', fontSize: '0.78rem', fontWeight: 700, cursor: 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6 }}
+                        >
+                          ⚠ {runMissingParts.length} part{runMissingParts.length !== 1 ? 's' : ''} missing weight
+                          <span style={{ opacity: 0.6, fontSize: '0.7rem' }}>{isWeightFixOpen ? '▲' : '▼ fix'}</span>
+                        </button>
+                      )}
                       {!isOpen && (
                         <button
                           className="btn btn-primary"
@@ -757,6 +774,45 @@ export default function PowderPage() {
                         </button>
                       )}
                     </div>
+
+                    {/* Weight fix panel for run */}
+                    {isWeightFixOpen && (
+                      <div style={{ borderTop: '1px solid rgba(239,68,68,0.25)', background: 'rgba(239,68,68,0.04)', padding: '12px 16px' }}>
+                        <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--danger)', marginBottom: 10 }}>
+                          Enter weight (lbs) for each part — required for accurate powder coat cost calculation
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          {runMissingParts.map((part) => (
+                            <div key={part.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                              <span style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: '0.82rem', minWidth: 90, color: 'var(--text-1)' }}>{part.part_number}</span>
+                              <span style={{ flex: 1, fontSize: '0.8rem', color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{part.description ?? '—'}</span>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.001"
+                                placeholder="lbs"
+                                className="field"
+                                style={{ width: 88, textAlign: 'right', padding: '4px 8px', fontSize: '0.82rem' }}
+                                value={weightEdits[part.id] ?? ''}
+                                onChange={(e) => setWeightEdits((prev) => ({ ...prev, [part.id]: e.target.value }))}
+                              />
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+                          <button
+                            className="btn btn-primary"
+                            disabled={savingWeights || !Object.values(weightEdits).some((v) => v.trim() !== '')}
+                            onClick={() => void saveWeightEdits()}
+                          >
+                            {savingWeights ? '⏳ Saving…' : '💾 Save Weights'}
+                          </button>
+                          <button className="btn btn-secondary" onClick={() => { setWeightFixOpen(null); setWeightEdits({}) }}>
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Linked build batch chips */}
                     <div style={{ padding: '8px 16px', display: 'flex', gap: 6, flexWrap: 'wrap', borderBottom: '1px solid var(--border)', background: 'rgba(167,139,250,0.04)' }}>
