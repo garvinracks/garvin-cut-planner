@@ -37,7 +37,7 @@ type PowderBatch = {
 type SkuPart = { sku_id: string; part_id: string; qty: number }
 type SkuSubAssembly = { sku_id: string; sub_assembly_id: string; qty: number }
 type SubAssemblyPart = { sub_assembly_id: string; part_id: string; qty: number }
-type Part = { id: string; weight_lbs: number | null }
+type Part = { id: string; part_number: string; description: string | null; weight_lbs: number | null }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -92,6 +92,12 @@ export default function PowderPage() {
   // History expand
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
+  // Inline weight-fix panel: batchId → open/closed
+  const [weightFixOpen, setWeightFixOpen] = useState<string | null>(null)
+  // Edited weight values: partId → string
+  const [weightEdits, setWeightEdits] = useState<Record<string, string>>({})
+  const [savingWeights, setSavingWeights] = useState(false)
+
   // ── Data loading ──────────────────────────────────────────────────────────────
 
   async function loadAll() {
@@ -114,7 +120,7 @@ export default function PowderPage() {
       supabase.from('sku_parts').select('sku_id, part_id, qty'),
       supabase.from('sku_sub_assemblies').select('sku_id, sub_assembly_id, qty'),
       supabase.from('sub_assembly_parts').select('sub_assembly_id, part_id, qty'),
-      supabase.from('parts').select('id, weight_lbs'),
+      supabase.from('parts').select('id, part_number, description, weight_lbs'),
     ])
     setBuildBatches((bbData ?? []) as BuildBatch[])
     setBatchLines((blData ?? []) as BuildBatchLine[])
@@ -150,6 +156,45 @@ export default function PowderPage() {
     return batchLines
       .filter((l) => l.batch_id === batchId)
       .reduce((s, l) => s + calcSkuWeight(l.sku_id) * l.qty, 0)
+  }
+
+  // Parts with missing weight_lbs for a given batch (deduped by part id)
+  function getMissingWeightParts(batchId: string): Part[] {
+    const seen = new Set<string>()
+    const missing: Part[] = []
+    for (const line of batchLines.filter((l) => l.batch_id === batchId)) {
+      for (const sp of skuParts.filter((s) => s.sku_id === line.sku_id)) {
+        if (!seen.has(sp.part_id)) {
+          seen.add(sp.part_id)
+          const part = parts.find((p) => p.id === sp.part_id)
+          if (part && (part.weight_lbs === null || part.weight_lbs === undefined)) missing.push(part)
+        }
+      }
+      for (const ss of skuSubs.filter((s) => s.sku_id === line.sku_id)) {
+        for (const sap of subParts.filter((s) => s.sub_assembly_id === ss.sub_assembly_id)) {
+          if (!seen.has(sap.part_id)) {
+            seen.add(sap.part_id)
+            const part = parts.find((p) => p.id === sap.part_id)
+            if (part && (part.weight_lbs === null || part.weight_lbs === undefined)) missing.push(part)
+          }
+        }
+      }
+    }
+    return missing
+  }
+
+  async function saveWeightEdits() {
+    const entries = Object.entries(weightEdits).filter(([, v]) => v.trim() !== '' && !isNaN(parseFloat(v)))
+    if (!entries.length) return
+    setSavingWeights(true)
+    for (const [partId, val] of entries) {
+      await supabase.from('parts').update({ weight_lbs: parseFloat(val) }).eq('id', partId)
+    }
+    setWeightEdits({})
+    setWeightFixOpen(null)
+    await loadAll()
+    setSavingWeights(false)
+    setMessage(`✓ Weights saved for ${entries.length} part${entries.length !== 1 ? 's' : ''}.`)
   }
 
   // ── Derived ───────────────────────────────────────────────────────────────────
@@ -458,67 +503,109 @@ export default function PowderPage() {
                   const lineCount = batchLines.filter((l) => l.batch_id === batch.id).length
                   const selected  = returnMode ? returnSelected.has(batch.id) : groupSelected.has(batch.id)
 
+                  const missingParts = getMissingWeightParts(batch.id)
+                  const isFixOpen = weightFixOpen === batch.id
                   return (
-                    <div
-                      key={batch.id}
-                      onClick={() => (returnMode || groupMode) && toggleBatch(batch.id)}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 14,
-                        padding: '12px 16px',
-                        background: selected ? 'var(--accent-soft)' : 'var(--panel-2)',
-                        border: `1px solid ${selected ? 'var(--accent-border)' : 'var(--border)'}`,
-                        borderRadius: 8,
-                        cursor: (returnMode || groupMode) ? 'pointer' : 'default',
-                        transition: 'background 0.12s, border-color 0.12s',
-                        userSelect: 'none',
-                      }}
-                    >
-                      {/* Checkbox (only shown in return or group mode) */}
-                      {(returnMode || groupMode) && (
-                        <input
-                          type="checkbox"
-                          checked={returnMode ? returnSelected.has(batch.id) : groupSelected.has(batch.id)}
-                          onChange={() => {}}
-                          style={{
-                            width: 17, height: 17,
-                            accentColor: 'var(--accent)',
-                            flexShrink: 0,
-                            pointerEvents: 'none',
-                          }}
-                        />
-                      )}
+                    <div key={batch.id} style={{ borderRadius: 8, border: `1px solid ${missingParts.length > 0 ? 'rgba(239,68,68,0.4)' : selected ? 'var(--accent-border)' : 'var(--border)'}`, overflow: 'hidden' }}>
+                      {/* Main row */}
+                      <div
+                        onClick={() => (returnMode || groupMode) && toggleBatch(batch.id)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 14,
+                          padding: '12px 16px',
+                          background: selected ? 'var(--accent-soft)' : missingParts.length > 0 ? 'rgba(239,68,68,0.05)' : 'var(--panel-2)',
+                          cursor: (returnMode || groupMode) ? 'pointer' : 'default',
+                          transition: 'background 0.12s',
+                          userSelect: 'none',
+                        }}
+                      >
+                        {/* Checkbox (only shown in return or group mode) */}
+                        {(returnMode || groupMode) && (
+                          <input
+                            type="checkbox"
+                            checked={returnMode ? returnSelected.has(batch.id) : groupSelected.has(batch.id)}
+                            onChange={() => {}}
+                            style={{ width: 17, height: 17, accentColor: 'var(--accent)', flexShrink: 0, pointerEvents: 'none' }}
+                          />
+                        )}
 
-                      {/* Icon */}
-                      <div style={{
-                        width: 38, height: 38, borderRadius: 8, flexShrink: 0,
-                        background: 'rgba(167,139,250,0.15)',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        fontSize: '1.1rem',
-                      }}>
-                        🎨
-                      </div>
-
-                      {/* Info */}
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontWeight: 700, fontSize: '0.92rem' }}>{batch.name}</div>
-                        <div style={{ fontSize: '0.76rem', color: 'var(--muted)', marginTop: 2 }}>
-                          {lineCount} SKU{lineCount !== 1 ? 's' : ''} · sent {daysAgo(batch.created_at)}
+                        {/* Icon */}
+                        <div style={{ width: 38, height: 38, borderRadius: 8, flexShrink: 0, background: 'rgba(167,139,250,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.1rem' }}>
+                          🎨
                         </div>
-                      </div>
 
-                      {/* Weight */}
-                      <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                        {weight > 0 ? (
-                          <>
-                            <div style={{ fontWeight: 700, fontSize: '0.92rem' }}>{fmtWeight(weight)}</div>
-                            <div style={{ fontSize: '0.72rem', color: 'var(--muted)' }}>est. weight</div>
-                          </>
+                        {/* Info */}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 700, fontSize: '0.92rem' }}>{batch.name}</div>
+                          <div style={{ fontSize: '0.76rem', color: 'var(--muted)', marginTop: 2 }}>
+                            {lineCount} SKU{lineCount !== 1 ? 's' : ''} · sent {daysAgo(batch.created_at)}
+                          </div>
+                        </div>
+
+                        {/* Weight or warning */}
+                        {missingParts.length > 0 ? (
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); setWeightFixOpen(isFixOpen ? null : batch.id); setWeightEdits({}) }}
+                            style={{ background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.35)', color: 'var(--danger)', borderRadius: 8, padding: '5px 12px', fontSize: '0.78rem', fontWeight: 700, cursor: 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6 }}
+                          >
+                            ⚠ {missingParts.length} part{missingParts.length !== 1 ? 's' : ''} missing weight
+                            <span style={{ opacity: 0.6, fontSize: '0.7rem' }}>{isFixOpen ? '▲' : '▼ fix'}</span>
+                          </button>
                         ) : (
-                          <div style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>no weight data</div>
+                          <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                            {weight > 0 ? (
+                              <>
+                                <div style={{ fontWeight: 700, fontSize: '0.92rem' }}>{fmtWeight(weight)}</div>
+                                <div style={{ fontSize: '0.72rem', color: 'var(--muted)' }}>est. weight</div>
+                              </>
+                            ) : (
+                              <div style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>no weight data</div>
+                            )}
+                          </div>
                         )}
                       </div>
+
+                      {/* Weight fix panel */}
+                      {isFixOpen && (
+                        <div style={{ borderTop: '1px solid rgba(239,68,68,0.25)', background: 'rgba(239,68,68,0.04)', padding: '12px 16px' }}>
+                          <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--danger)', marginBottom: 10 }}>
+                            Enter weight (lbs) for each part — required for accurate powder coat cost calculation
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                            {missingParts.map((part) => (
+                              <div key={part.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                <span style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: '0.82rem', minWidth: 90, color: 'var(--text-1)' }}>{part.part_number}</span>
+                                <span style={{ flex: 1, fontSize: '0.8rem', color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{part.description ?? '—'}</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.001"
+                                  placeholder="lbs"
+                                  className="field"
+                                  style={{ width: 88, textAlign: 'right', padding: '4px 8px', fontSize: '0.82rem' }}
+                                  value={weightEdits[part.id] ?? ''}
+                                  onChange={(e) => setWeightEdits((prev) => ({ ...prev, [part.id]: e.target.value }))}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                          <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+                            <button
+                              className="btn btn-primary"
+                              disabled={savingWeights || !Object.values(weightEdits).some((v) => v.trim() !== '')}
+                              onClick={() => void saveWeightEdits()}
+                            >
+                              {savingWeights ? '⏳ Saving…' : '💾 Save Weights'}
+                            </button>
+                            <button className="btn btn-secondary" onClick={() => { setWeightFixOpen(null); setWeightEdits({}) }}>
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )
                 })}
