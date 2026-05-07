@@ -165,8 +165,6 @@ export async function POST() {
           .update({
             status: 'shipped',
             ss_status: 'shipped',
-            shipped_at: new Date().toISOString(),
-            shipping_cost: ssOrder.shippingAmount ?? null,
             synced_at: new Date().toISOString(),
           })
           .eq('id', row.id)
