@@ -751,9 +751,9 @@ export default function OrdersPage() {
       const [ordersRes, skusRes, batchLinesRes, batchesRes, powderRes] = await Promise.all([
         supabase
           .from('orders')
-          .select('id, order_number, channel, customer_name, order_date, status, order_lines(id, sku_id, ss_sku, description, qty, unit_price)')
+          .select('id, order_number, channel, customer_name, order_date, shipped_at, shipping_cost, status, notes, order_lines(id, sku_id, ss_sku, description, qty, unit_price)')
           .eq('status', 'shipped')
-          .order('order_date', { ascending: false }),
+          .order('shipped_at', { ascending: false }),
         supabase.from('skus').select('id, description, bolt_kit_cost, packaging_cost, labor_cost_per_unit, setup_complete'),
         supabase.from('build_batch_lines').select('batch_id, sku_id, qty, mat_cost_snapshot'),
         supabase.from('build_batches').select('id, name, status, completed_at, powder_batch_id'),
