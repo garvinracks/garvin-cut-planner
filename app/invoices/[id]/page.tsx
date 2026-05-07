@@ -10,6 +10,7 @@ type OrderLine = {
   description: string | null
   qty: number
   unit_price: number | null
+  skus: { description: string } | null
 }
 
 type Order = {
@@ -50,7 +51,7 @@ export default function InvoicePrintPage() {
       setInvoice(inv as T5Invoice)
       const { data: ord } = await supabase
         .from('orders')
-        .select('id, order_number, order_date, shipping_cost, order_lines(id, ss_sku, description, qty, unit_price)')
+        .select('id, order_number, order_date, shipping_cost, order_lines(id, ss_sku, description, qty, unit_price, skus(description))')
         .eq('id', inv.order_id)
         .single()
       setOrder(ord as Order)
@@ -309,6 +310,7 @@ export default function InvoicePrintPage() {
             <tr>
               <th>PO Number</th>
               <th>SKU</th>
+              <th>Description</th>
               <th className="right">QTY</th>
               <th className="right">Rate</th>
               <th className="right">Amount</th>
@@ -318,10 +320,13 @@ export default function InvoicePrintPage() {
             {order.order_lines.map((line) => {
               const rate   = line.unit_price ?? 0
               const amount = rate * line.qty
+              // Prefer Garvin SKU description; fall back to ShipStation description
+              const desc = line.skus?.description ?? line.description ?? '—'
               return (
                 <tr key={line.id}>
                   <td>{order.order_number}</td>
-                  <td className="mono">{line.ss_sku ?? line.description ?? '—'}</td>
+                  <td className="mono">{line.ss_sku ?? '—'}</td>
+                  <td>{desc}</td>
                   <td className="right">{line.qty}</td>
                   <td className="right">{fmt(rate)}</td>
                   <td className="right">{fmt(amount)}</td>

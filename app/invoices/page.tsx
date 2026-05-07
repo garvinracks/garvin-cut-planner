@@ -13,6 +13,7 @@ type OrderLine = {
   description: string | null
   qty: number
   unit_price: number | null
+  skus: { description: string } | null
 }
 
 type Order = {
@@ -93,7 +94,7 @@ export default function InvoicesPage() {
     const [{ data: oData }, { data: iData }] = await Promise.all([
       supabase
         .from('orders')
-        .select('id, order_number, order_date, customer_name, shipping_cost, shipstation_order_id, ss_status, status, order_lines(id, sku_id, ss_sku, description, qty, unit_price)')
+        .select('id, order_number, order_date, customer_name, shipping_cost, shipstation_order_id, ss_status, status, order_lines(id, sku_id, ss_sku, description, qty, unit_price, skus(description))')
         .eq('channel', 'turn5')
         .order('order_date', { ascending: false }),
       supabase.from('turn5_invoices').select('*').order('created_at', { ascending: false }),
@@ -289,6 +290,9 @@ export default function InvoicesPage() {
                               <div key={l.id} style={{ fontSize: '0.8rem' }}>
                                 <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{l.ss_sku ?? '—'}</span>
                                 <span style={{ color: 'var(--muted)', marginLeft: 4 }}>× {l.qty}</span>
+                                {(l.skus?.description ?? l.description) && (
+                                  <div style={{ color: 'var(--text-2)', fontSize: '0.75rem', marginTop: 1 }}>{l.skus?.description ?? l.description}</div>
+                                )}
                               </div>
                             ))}
                           </td>
@@ -491,8 +495,14 @@ export default function InvoicesPage() {
               <div style={{ fontSize: '0.75rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>Line Items</div>
               {creating.order_lines.map((l) => (
                 <div key={l.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--border)', fontSize: '0.88rem' }}>
-                  <span><span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{l.ss_sku ?? '—'}</span><span style={{ color: 'var(--muted)', marginLeft: 8 }}>× {l.qty}</span></span>
-                  <span style={{ fontWeight: 600 }}>{fmt((l.unit_price ?? 0) * l.qty)}</span>
+                  <span>
+                    <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{l.ss_sku ?? '—'}</span>
+                    <span style={{ color: 'var(--muted)', marginLeft: 8 }}>× {l.qty}</span>
+                    {(l.skus?.description ?? l.description) && (
+                      <div style={{ color: 'var(--text-2)', fontSize: '0.78rem', marginTop: 2 }}>{l.skus?.description ?? l.description}</div>
+                    )}
+                  </span>
+                  <span style={{ fontWeight: 600, whiteSpace: 'nowrap', marginLeft: 12 }}>{fmt((l.unit_price ?? 0) * l.qty)}</span>
                 </div>
               ))}
             </div>
