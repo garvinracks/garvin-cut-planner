@@ -542,9 +542,6 @@ export default function OrdersPage() {
       const parts = [`✓ ${data.imported} open`]
       if (data.shipped  > 0) parts.push(`${data.shipped} shipped`)
       if (data.cancelled > 0) parts.push(`${data.cancelled} cancelled`)
-      if (data.skipped  > 0) parts.push(`${data.skipped} skipped`)
-      const d = data.debug
-      if (d) parts.push(`[dbg: open=${d.openCount} cancelled=${d.cancelledCount} resolve=${d.toResolveCount} seen=${d.seenCount} err=${d.openErr ?? d.cancelledErr ?? 'none'} ss=${JSON.stringify(d.ssStatuses)}]`)
       setSyncMessage(parts.join(' · '))
       const reloads: Promise<void>[] = [loadOrders(), loadInventory()]
       if (histLoaded) reloads.push(loadHistory())

@@ -153,24 +153,11 @@ export async function POST() {
       (o: any) => !seenSsOrderIds.has(o.shipstation_order_id)
     )
 
-    // Debug info to surface in the UI
-    const debug = {
-      openErr: openErr?.message ?? null,
-      cancelledErr: cancelledErr?.message ?? null,
-      openCount: openRows?.length ?? 0,
-      cancelledCount: cancelledRows?.length ?? 0,
-      unresolvedTotal: unresolvedOrders.length,
-      toResolveCount: toResolve.length,
-      seenCount: seenSsOrderIds.size,
-      ssStatuses: [] as string[],
-    }
-
     for (const row of toResolve) {
       const ssOrder = await ssGetOrder(row.shipstation_order_id)
       if (!ssOrder) { skipped++; continue }
 
       const ssStatus = ssOrder.orderStatus ?? ''
-      debug.ssStatuses.push(ssStatus)
 
       if (ssStatus === 'shipped') {
         await supabase
@@ -197,7 +184,6 @@ export async function POST() {
       shipped,
       skipped,
       cancelled,
-      debug,
       stores: enabled.map((s) => ({ name: s.storeName, channel: s.channel })),
     })
   } catch (err: unknown) {
