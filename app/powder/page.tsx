@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createBrowserClient } from '@/lib/supabase'
+import DxfPartPreview from '@/components/DxfPartPreview'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -621,8 +622,12 @@ export default function PowderPage() {
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                             {missingParts.map((part) => (
                               <div key={part.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                                <span style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: '0.82rem', minWidth: 90, color: 'var(--text-1)' }}>{part.part_number}</span>
-                                <span style={{ flex: 1, fontSize: '0.8rem', color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{part.description ?? '—'}</span>
+                                <DxfPartPreview dxfFile={part.dxf_file} partNumber={part.part_number} size="tiny" />
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: '0.82rem', color: 'var(--text-1)' }}>{part.part_number}</div>
+                                  <div style={{ fontSize: '0.75rem', color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{part.description ?? '—'}</div>
+                                </div>
+                                <div style={{ flex: 1 }} />
                                 <input
                                   type="number"
                                   min="0"
