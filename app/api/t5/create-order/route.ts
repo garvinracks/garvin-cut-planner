@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
     // ── Get Turn5 store ID from app_settings ──────────────────────────────────
     const supabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
     )
     const { data: setting } = await supabase
       .from('app_settings')
