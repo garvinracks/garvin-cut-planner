@@ -1,8 +1,11 @@
 export const runtime = 'nodejs'
 
 import { NextRequest, NextResponse } from 'next/server'
-// @ts-ignore
-import pdfParse from 'pdf-parse'
+import { createRequire } from 'module'
+
+const require = createRequire(import.meta.url)
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const pdfParse = require('pdf-parse') as (buf: Buffer) => Promise<{ text: string }>
 
 export interface ParsedPO {
   poNumber: string
