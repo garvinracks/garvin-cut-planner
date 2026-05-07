@@ -143,28 +143,25 @@ export async function POST() {
     // Any order that is 'open' OR 'cancelled' in our DB but not in the sync
     // may have been shipped or explicitly cancelled in ShipStation.
     // Look each one up individually to get the real status.
-    const { data: unresolvedOrders, error: unresolvedErr } = await supabase
-      .from('orders')
-      .select('id, shipstation_order_id, shipping_cost, status')
-      .in('status', ['open', 'cancelled'])
-      .not('shipstation_order_id', 'is', null)
+    // Query open and cancelled orders separately to avoid any .in() issues
+    const { data: openRows,      error: openErr }      = await supabase.from('orders').select('id, shipstation_order_id, shipping_cost, status').eq('status', 'open').not('shipstation_order_id', 'is', null)
+    const { data: cancelledRows, error: cancelledErr } = await supabase.from('orders').select('id, shipstation_order_id, shipping_cost, status').eq('status', 'cancelled').not('shipstation_order_id', 'is', null)
 
-    const toResolve = (unresolvedOrders ?? []).filter(
+    const unresolvedOrders = [...(openRows ?? []), ...(cancelledRows ?? [])]
+
+    const toResolve = unresolvedOrders.filter(
       (o: any) => !seenSsOrderIds.has(o.shipstation_order_id)
     )
 
     // Debug info to surface in the UI
     const debug = {
-      unresolvedQueryErr: unresolvedErr?.message ?? null,
-      unresolvedTotal: unresolvedOrders?.length ?? 0,
+      openErr: openErr?.message ?? null,
+      cancelledErr: cancelledErr?.message ?? null,
+      openCount: openRows?.length ?? 0,
+      cancelledCount: cancelledRows?.length ?? 0,
+      unresolvedTotal: unresolvedOrders.length,
       toResolveCount: toResolve.length,
       seenCount: seenSsOrderIds.size,
-      statusBreakdown: Object.fromEntries(
-        ['open', 'cancelled'].map((s) => [
-          s,
-          (unresolvedOrders ?? []).filter((o: any) => o.status === s).length,
-        ])
-      ),
       ssStatuses: [] as string[],
     }
 
