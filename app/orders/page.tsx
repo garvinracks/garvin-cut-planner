@@ -1988,12 +1988,11 @@ export default function OrdersPage() {
             {!histLoading && !histError && histLoaded && (
               <>
                 {/* Summary stat cards */}
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 20 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 20 }}>
                   {[
-                    { label: 'Total Revenue',     value: histFmtCurrency(histStats.totalRevenue) },
-                    { label: 'Orders Shipped',    value: String(histStats.orderCount) },
-                    { label: 'Avg Order Value',   value: histFmtCurrency(histStats.avgOrderValue) },
-                    { label: 'Total Shipping Cost', value: histFmtCurrency(histStats.totalShipping) },
+                    { label: 'Orders Shipped',      value: String(histStats.orderCount) },
+                    { label: 'Total Revenue',        value: histFmtCurrency(histStats.totalRevenue) },
+                    { label: 'Total Shipping Cost',  value: histFmtCurrency(histStats.totalShipping) },
                   ].map(({ label, value }) => (
                     <div key={label} style={{ background: 'var(--panel-2)', borderRadius: 10, padding: '16px 20px', border: '1px solid var(--border)' }}>
                       <div style={{ fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--muted)', marginBottom: 8 }}>{label}</div>
@@ -2051,13 +2050,6 @@ export default function OrdersPage() {
                             <th>SKUs</th>
                             <th style={{ textAlign: 'right' }}>Revenue</th>
                             <th style={{ textAlign: 'right' }}>Shipping</th>
-                            <th style={{ textAlign: 'right' }}>Mat Cost</th>
-                            <th style={{ textAlign: 'right' }}>Bolt Kit</th>
-                            <th style={{ textAlign: 'right' }}>Packaging</th>
-                            <th style={{ textAlign: 'right' }}>Labor</th>
-                            <th style={{ textAlign: 'right' }}>Total COGS</th>
-                            <th style={{ textAlign: 'right' }}>Gross Margin</th>
-                            <th style={{ textAlign: 'right' }}>Margin %</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -2098,17 +2090,10 @@ export default function OrdersPage() {
                                   </td>
                                   <td style={{ textAlign: 'right', fontWeight: 600 }}>{histFmtCurrency(costs.revenue)}</td>
                                   <td style={{ textAlign: 'right', color: 'var(--text-2)' }}>{histFmtCurrency(costs.shipping)}</td>
-                                  <td style={{ textAlign: 'right', color: 'var(--text-2)', fontStyle: costs.matEstimated ? 'italic' : undefined }}>{histFmtCurrency(costs.matCost)}</td>
-                                  <td style={{ textAlign: 'right', color: 'var(--text-2)' }}>{histFmtCurrency(costs.boltKit)}</td>
-                                  <td style={{ textAlign: 'right', color: 'var(--text-2)' }}>{histFmtCurrency(costs.packaging)}</td>
-                                  <td style={{ textAlign: 'right', color: 'var(--text-2)' }}>{histFmtCurrency(costs.labor)}</td>
-                                  <td style={{ textAlign: 'right' }}>{histFmtCurrency(costs.totalCOGS)}</td>
-                                  <td style={{ textAlign: 'right', ...marginStyle(costs.grossMargin) }}>{histFmtCurrency(costs.grossMargin)}</td>
-                                  <td style={{ textAlign: 'right', ...marginStyle(costs.marginPct) }}>{histFmtPct(costs.marginPct)}</td>
                                 </tr>
                                 {isExpanded && (
                                   <tr key={order.id + '-exp'} style={{ background: 'var(--panel-2)' }}>
-                                    <td colSpan={14} style={{ padding: '12px 16px 16px 32px' }}>
+                                    <td colSpan={7} style={{ padding: '12px 16px 16px 32px' }}>
                                       {/* ── Edit shipping cost / date ── */}
                                       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10, marginBottom: 16, padding: '10px 14px', background: 'var(--panel)', borderRadius: 8, border: '1px solid var(--border)' }}>
                                         <div>
@@ -2145,13 +2130,31 @@ export default function OrdersPage() {
                                           )}
                                         </div>
                                       </div>
-                                      <HistLineBreakdown
-                                        order={order}
-                                        skuMap={histSkuMap}
-                                        batchLines={histBatchLines}
-                                        batches={histBatches}
-                                        powderMap={histPowderMap}
-                                      />
+                                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.83rem' }}>
+                                        <thead>
+                                          <tr style={{ color: 'var(--muted)', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                                            <th style={{ textAlign: 'left', padding: '4px 8px 6px 0', fontWeight: 600 }}>SKU</th>
+                                            <th style={{ textAlign: 'left', padding: '4px 8px 6px', fontWeight: 600 }}>Description</th>
+                                            <th style={{ textAlign: 'right', padding: '4px 0 6px 8px', fontWeight: 600 }}>Qty</th>
+                                            <th style={{ textAlign: 'right', padding: '4px 0 6px 8px', fontWeight: 600 }}>Unit Price</th>
+                                            <th style={{ textAlign: 'right', padding: '4px 0 6px 8px', fontWeight: 600 }}>Amount</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {order.order_lines.map((l) => {
+                                            const sku = l.sku_id ? histSkuMap.get(l.sku_id) : null
+                                            return (
+                                              <tr key={l.id} style={{ borderTop: '1px solid var(--border)' }}>
+                                                <td style={{ padding: '7px 8px 7px 0', fontFamily: 'monospace', fontWeight: 600 }}>{l.ss_sku ?? '—'}</td>
+                                                <td style={{ padding: '7px 8px', color: 'var(--text-2)' }}>{sku?.description ?? l.description ?? '—'}</td>
+                                                <td style={{ textAlign: 'right', padding: '7px 0 7px 8px' }}>{l.qty}</td>
+                                                <td style={{ textAlign: 'right', padding: '7px 0 7px 8px' }}>{histFmtCurrency(l.unit_price)}</td>
+                                                <td style={{ textAlign: 'right', padding: '7px 0 7px 8px', fontWeight: 600 }}>{histFmtCurrency((l.unit_price ?? 0) * l.qty)}</td>
+                                              </tr>
+                                            )
+                                          })}
+                                        </tbody>
+                                      </table>
                                     </td>
                                   </tr>
                                 )}
@@ -2164,13 +2167,6 @@ export default function OrdersPage() {
                             <td colSpan={5} style={{ color: 'var(--text-2)' }}>Totals ({histFiltered.length} orders)</td>
                             <td style={{ textAlign: 'right' }}>{histFmtCurrency(histTotals.revenue)}</td>
                             <td style={{ textAlign: 'right' }}>{histFmtCurrency(histTotals.shipping)}</td>
-                            <td style={{ textAlign: 'right' }}>{histFmtCurrency(histTotals.matCost)}</td>
-                            <td style={{ textAlign: 'right' }}>{histFmtCurrency(histTotals.boltKit)}</td>
-                            <td style={{ textAlign: 'right' }}>{histFmtCurrency(histTotals.packaging)}</td>
-                            <td style={{ textAlign: 'right' }}>{histFmtCurrency(histTotals.labor)}</td>
-                            <td style={{ textAlign: 'right' }}>{histFmtCurrency(histTotals.totalCOGS)}</td>
-                            <td style={{ textAlign: 'right', color: (histTotals.grossMargin ?? 0) >= 0 ? 'var(--success)' : 'var(--danger)', fontWeight: 700 }}>{histFmtCurrency(histTotals.grossMargin)}</td>
-                            <td style={{ textAlign: 'right', color: (histTotals.marginPct ?? 0) >= 0 ? 'var(--success)' : 'var(--danger)', fontWeight: 700 }}>{histFmtPct(histTotals.marginPct)}</td>
                           </tr>
                         </tfoot>
                       </table>
