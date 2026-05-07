@@ -143,9 +143,9 @@ export async function POST() {
     // Any order that is 'open' OR 'cancelled' in our DB but not in the sync
     // may have been shipped or explicitly cancelled in ShipStation.
     // Look each one up individually to get the real status.
-    const { data: unresolvedOrders } = await supabase
+    const { data: unresolvedOrders, error: unresolvedErr } = await supabase
       .from('orders')
-      .select('id, shipstation_order_id, shipping_cost')
+      .select('id, shipstation_order_id, shipping_cost, status')
       .in('status', ['open', 'cancelled'])
       .not('shipstation_order_id', 'is', null)
 
@@ -153,11 +153,27 @@ export async function POST() {
       (o: any) => !seenSsOrderIds.has(o.shipstation_order_id)
     )
 
+    // Debug info to surface in the UI
+    const debug = {
+      unresolvedQueryErr: unresolvedErr?.message ?? null,
+      unresolvedTotal: unresolvedOrders?.length ?? 0,
+      toResolveCount: toResolve.length,
+      seenCount: seenSsOrderIds.size,
+      statusBreakdown: Object.fromEntries(
+        ['open', 'cancelled'].map((s) => [
+          s,
+          (unresolvedOrders ?? []).filter((o: any) => o.status === s).length,
+        ])
+      ),
+      ssStatuses: [] as string[],
+    }
+
     for (const row of toResolve) {
       const ssOrder = await ssGetOrder(row.shipstation_order_id)
       if (!ssOrder) { skipped++; continue }
 
       const ssStatus = ssOrder.orderStatus ?? ''
+      debug.ssStatuses.push(ssStatus)
 
       if (ssStatus === 'shipped') {
         await supabase
@@ -165,7 +181,6 @@ export async function POST() {
           .update({
             status: 'shipped',
             ss_status: 'shipped',
-            // Preserve any locally-recorded shipping cost; fall back to SS value
             shipping_cost: row.shipping_cost ?? ssOrder.shippingAmount ?? null,
             synced_at: new Date().toISOString(),
           })
@@ -178,7 +193,6 @@ export async function POST() {
           .eq('id', row.id)
         cancelled++
       }
-      // If still awaiting_shipment somehow, leave as-is
     }
 
     return NextResponse.json({
@@ -187,6 +201,7 @@ export async function POST() {
       shipped,
       skipped,
       cancelled,
+      debug,
       stores: enabled.map((s) => ({ name: s.storeName, channel: s.channel })),
     })
   } catch (err: unknown) {
