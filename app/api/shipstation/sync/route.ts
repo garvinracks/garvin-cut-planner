@@ -18,14 +18,14 @@ async function ssGet(path: string) {
   return res.json()
 }
 
-// Fetch ALL pages of awaiting_shipment orders for a given store
-async function fetchAllOrders(storeId: number): Promise<any[]> {
+// Fetch ALL pages of orders with a given status for a store
+async function fetchOrdersByStatus(storeId: number, orderStatus: string, modifyDateStart?: string): Promise<any[]> {
   const all: any[] = []
   let page = 1
   while (true) {
-    const data = await ssGet(
-      `/orders?storeId=${storeId}&orderStatus=awaiting_shipment&pageSize=500&page=${page}`
-    )
+    let url = `/orders?storeId=${storeId}&orderStatus=${orderStatus}&pageSize=500&page=${page}`
+    if (modifyDateStart) url += `&modifyDateStart=${modifyDateStart}`
+    const data = await ssGet(url)
     const batch: any[] = data.orders ?? []
     all.push(...batch)
     if (batch.length < 500 || all.length >= (data.total ?? 0)) break
@@ -60,22 +60,28 @@ export async function POST() {
     }
 
     let imported = 0
-    let skipped = 0
+    let shipped  = 0
+    let skipped  = 0
     let cancelled = 0
 
     // Track every ShipStation order ID seen in this sync across all stores
     const seenSsOrderIds = new Set<number>()
 
-    for (const store of enabled) {
-      const ssOrders = await fetchAllOrders(store.storeId)
+    // Shipped orders: look back 90 days so recently-shipped orders are captured
+    const since90 = new Date()
+    since90.setDate(since90.getDate() - 90)
+    const sinceStr = since90.toISOString().split('T')[0]
 
-      for (const o of ssOrders) {
+    for (const store of enabled) {
+      // ── 1. awaiting_shipment → status: 'open' ─────────────────────────────
+      const awaitingOrders = await fetchOrdersByStatus(store.storeId, 'awaiting_shipment')
+
+      for (const o of awaitingOrders) {
         seenSsOrderIds.add(o.orderId)
 
         const customerName =
           o.shipTo?.name || o.billTo?.name || o.customerUsername || null
 
-        // ── Upsert order ────────────────────────────────────────────────────────
         const { data: orderRow, error: orderErr } = await supabase
           .from('orders')
           .upsert(
@@ -102,7 +108,7 @@ export async function POST() {
           continue
         }
 
-        // ── Re-sync line items: delete old then insert fresh ────────────────────
+        // Re-sync line items: delete old then insert fresh
         await supabase.from('order_lines').delete().eq('order_id', orderRow.id)
 
         const items: any[] = (o.items ?? []).filter(
@@ -110,7 +116,6 @@ export async function POST() {
         )
 
         for (const item of items) {
-          // Exact match against our skus table
           const { data: skuMatch } = await supabase
             .from('skus')
             .select('id')
@@ -129,11 +134,49 @@ export async function POST() {
 
         imported++
       }
+
+      // ── 2. shipped (last 90 days) → status: 'shipped' ─────────────────────
+      // This corrects orders that were wrongly marked 'cancelled' after shipping.
+      const shippedOrders = await fetchOrdersByStatus(store.storeId, 'shipped', sinceStr)
+
+      for (const o of shippedOrders) {
+        seenSsOrderIds.add(o.orderId)
+
+        const customerName =
+          o.shipTo?.name || o.billTo?.name || o.customerUsername || null
+
+        // Upsert but do NOT overwrite shipping_cost if already recorded locally
+        const { data: existing } = await supabase
+          .from('orders')
+          .select('id, shipping_cost')
+          .eq('shipstation_order_id', o.orderId)
+          .single()
+
+        const { error: shipErr } = await supabase
+          .from('orders')
+          .upsert(
+            {
+              shipstation_order_id: o.orderId,
+              order_number: o.orderNumber,
+              channel: store.channel,
+              customer_name: customerName,
+              customer_email: o.customerEmail ?? null,
+              order_date: o.orderDate ?? null,
+              ship_by_date: o.shipByDate ?? null,
+              ss_status: 'shipped',
+              status: 'shipped',
+              // Use locally-recorded shipping cost if set, otherwise pull from ShipStation
+              shipping_cost: existing?.shipping_cost ?? (o.shippingAmount ?? null),
+              synced_at: new Date().toISOString(),
+            },
+            { onConflict: 'shipstation_order_id' }
+          )
+
+        if (!shipErr) shipped++
+      }
     }
 
-    // ── Mark cancelled: open orders no longer in ShipStation ───────────────────
-    // Any order that is still 'open' in our DB but wasn't in the latest sync
-    // has been cancelled or shipped in ShipStation — close it here too.
+    // ── 3. Mark truly-cancelled: open orders absent from both lists ────────────
     if (seenSsOrderIds.size > 0) {
       const { data: openOrders } = await supabase
         .from('orders')
@@ -156,6 +199,7 @@ export async function POST() {
     return NextResponse.json({
       success: true,
       imported,
+      shipped,
       skipped,
       cancelled,
       stores: enabled.map((s) => ({ name: s.storeName, channel: s.channel })),
