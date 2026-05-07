@@ -144,8 +144,8 @@ export async function POST() {
     // may have been shipped or explicitly cancelled in ShipStation.
     // Look each one up individually to get the real status.
     // Query open and cancelled orders separately to avoid any .in() issues
-    const { data: openRows,      error: openErr }      = await supabase.from('orders').select('id, shipstation_order_id, shipping_cost, status').eq('status', 'open').not('shipstation_order_id', 'is', null)
-    const { data: cancelledRows, error: cancelledErr } = await supabase.from('orders').select('id, shipstation_order_id, shipping_cost, status').eq('status', 'cancelled').not('shipstation_order_id', 'is', null)
+    const { data: openRows,      error: openErr }      = await supabase.from('orders').select('id, shipstation_order_id, status').eq('status', 'open').not('shipstation_order_id', 'is', null)
+    const { data: cancelledRows, error: cancelledErr } = await supabase.from('orders').select('id, shipstation_order_id, status').eq('status', 'cancelled').not('shipstation_order_id', 'is', null)
 
     const unresolvedOrders = [...(openRows ?? []), ...(cancelledRows ?? [])]
 
@@ -178,7 +178,6 @@ export async function POST() {
           .update({
             status: 'shipped',
             ss_status: 'shipped',
-            shipping_cost: row.shipping_cost ?? ssOrder.shippingAmount ?? null,
             synced_at: new Date().toISOString(),
           })
           .eq('id', row.id)
