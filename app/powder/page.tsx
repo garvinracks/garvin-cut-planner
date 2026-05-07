@@ -37,7 +37,25 @@ type PowderBatch = {
 type SkuPart = { sku_id: string; part_id: string; qty: number }
 type SkuSubAssembly = { sku_id: string; sub_assembly_id: string; qty: number }
 type SubAssemblyPart = { sub_assembly_id: string; part_id: string; qty: number }
-type Part = { id: string; part_number: string; description: string | null; weight_lbs: number | null }
+type Part = {
+  id: string
+  part_number: string
+  description: string | null
+  weight_lbs: number | null
+  part_type: 'tube' | 'sheet'
+  dxf_file: string | null
+  cut_length: number | null
+  tube_od: string | null
+  tube_wall: string | null
+}
+type Material = {
+  id: string
+  material_type: 'tube' | 'sheet'
+  tube_od: string | null
+  tube_wall: string | null
+  unit_weight_lbs: number | null
+  stock_length_in: number | null
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -68,6 +86,7 @@ export default function PowderPage() {
   const [skuSubs, setSkuSubs]           = useState<SkuSubAssembly[]>([])
   const [subParts, setSubParts]         = useState<SubAssemblyPart[]>([])
   const [parts, setParts]               = useState<Part[]>([])
+  const [materials, setMaterials]       = useState<Material[]>([])
 
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState('')
@@ -110,6 +129,7 @@ export default function PowderPage() {
       { data: ssData },
       { data: sapData },
       { data: partData },
+      { data: matData },
     ] = await Promise.all([
       supabase.from('build_batches')
         .select('*')
@@ -120,7 +140,8 @@ export default function PowderPage() {
       supabase.from('sku_parts').select('sku_id, part_id, qty'),
       supabase.from('sku_sub_assemblies').select('sku_id, sub_assembly_id, qty'),
       supabase.from('sub_assembly_parts').select('sub_assembly_id, part_id, qty'),
-      supabase.from('parts').select('id, part_number, description, weight_lbs'),
+      supabase.from('parts').select('id, part_number, description, weight_lbs, part_type, dxf_file, cut_length, tube_od, tube_wall'),
+      supabase.from('materials').select('id, material_type, tube_od, tube_wall, unit_weight_lbs, stock_length_in'),
     ])
     setBuildBatches((bbData ?? []) as BuildBatch[])
     setBatchLines((blData ?? []) as BuildBatchLine[])
@@ -129,6 +150,7 @@ export default function PowderPage() {
     setSkuSubs((ssData ?? []) as SkuSubAssembly[])
     setSubParts((sapData ?? []) as SubAssemblyPart[])
     setParts((partData ?? []) as Part[])
+    setMaterials((matData ?? []) as Material[])
     setLoading(false)
   }
 
@@ -136,17 +158,32 @@ export default function PowderPage() {
 
   // ── Weight calculation ────────────────────────────────────────────────────────
 
+  // Weight (lbs) of one part instance, accounting for type:
+  // • tube  → (cut_length / stock_length_in) × unit_weight_lbs
+  // • sheet → weight_lbs (manually entered)
+  function partWeight(part: Part): number {
+    if (part.part_type === 'tube') {
+      if (!part.cut_length) return 0
+      const mat = materials.find(
+        (m) => m.material_type === 'tube' && m.tube_od === part.tube_od && m.tube_wall === part.tube_wall
+      )
+      if (!mat?.stock_length_in || !mat?.unit_weight_lbs) return 0
+      return (part.cut_length / mat.stock_length_in) * mat.unit_weight_lbs
+    }
+    return part.weight_lbs ?? 0
+  }
+
   // Weight of one unit of a SKU (all parts + sub-assembly parts)
   function calcSkuWeight(skuId: string): number {
     let total = 0
     for (const sp of skuParts.filter((s) => s.sku_id === skuId)) {
       const part = parts.find((p) => p.id === sp.part_id)
-      total += (part?.weight_lbs ?? 0) * sp.qty
+      if (part) total += partWeight(part) * sp.qty
     }
     for (const ss of skuSubs.filter((s) => s.sku_id === skuId)) {
       for (const sap of subParts.filter((s) => s.sub_assembly_id === ss.sub_assembly_id)) {
         const part = parts.find((p) => p.id === sap.part_id)
-        total += (part?.weight_lbs ?? 0) * sap.qty * ss.qty
+        if (part) total += partWeight(part) * sap.qty * ss.qty
       }
     }
     return total
@@ -158,7 +195,13 @@ export default function PowderPage() {
       .reduce((s, l) => s + calcSkuWeight(l.sku_id) * l.qty, 0)
   }
 
-  // Parts with missing weight_lbs for a given batch (deduped by part id)
+  // Sheet parts with a DXF file but no weight_lbs (deduped by part id).
+  // Tubes are excluded — their weight is auto-calculated from stock material.
+  // Parts without a DXF are hardware/bought parts — not powder coated, no weight needed.
+  function needsWeight(part: Part): boolean {
+    return part.part_type === 'sheet' && !!part.dxf_file && (part.weight_lbs === null || part.weight_lbs === undefined)
+  }
+
   function getMissingWeightParts(batchId: string): Part[] {
     const seen = new Set<string>()
     const missing: Part[] = []
@@ -167,7 +210,7 @@ export default function PowderPage() {
         if (!seen.has(sp.part_id)) {
           seen.add(sp.part_id)
           const part = parts.find((p) => p.id === sp.part_id)
-          if (part && (part.weight_lbs === null || part.weight_lbs === undefined)) missing.push(part)
+          if (part && needsWeight(part)) missing.push(part)
         }
       }
       for (const ss of skuSubs.filter((s) => s.sku_id === line.sku_id)) {
@@ -175,7 +218,7 @@ export default function PowderPage() {
           if (!seen.has(sap.part_id)) {
             seen.add(sap.part_id)
             const part = parts.find((p) => p.id === sap.part_id)
-            if (part && (part.weight_lbs === null || part.weight_lbs === undefined)) missing.push(part)
+            if (part && needsWeight(part)) missing.push(part)
           }
         }
       }
@@ -188,7 +231,8 @@ export default function PowderPage() {
     if (!entries.length) return
     setSavingWeights(true)
     for (const [partId, val] of entries) {
-      await supabase.from('parts').update({ weight_lbs: parseFloat(val) }).eq('id', partId)
+      // Input is in oz — convert to lbs before saving
+      await supabase.from('parts').update({ weight_lbs: parseFloat(val) / 16 }).eq('id', partId)
     }
     setWeightEdits({})
     setWeightFixOpen(null)
@@ -582,13 +626,14 @@ export default function PowderPage() {
                                 <input
                                   type="number"
                                   min="0"
-                                  step="0.001"
-                                  placeholder="lbs"
+                                  step="0.01"
+                                  placeholder="oz"
                                   className="field"
-                                  style={{ width: 88, textAlign: 'right', padding: '4px 8px', fontSize: '0.82rem' }}
+                                  style={{ width: 72, textAlign: 'right', padding: '4px 8px', fontSize: '0.82rem' }}
                                   value={weightEdits[part.id] ?? ''}
                                   onChange={(e) => setWeightEdits((prev) => ({ ...prev, [part.id]: e.target.value }))}
                                 />
+                                <span style={{ fontSize: '0.78rem', color: 'var(--muted)', flexShrink: 0 }}>oz</span>
                               </div>
                             ))}
                           </div>
