@@ -410,6 +410,9 @@ export default function OrdersPage() {
   const [histChannelFilter, setHistChannelFilter] = useState('all')
   const [histSearch, setHistSearch]           = useState('')
   const [histExpandedRows, setHistExpandedRows] = useState<Set<string>>(new Set())
+  const [histEditId, setHistEditId]             = useState<string | null>(null)
+  const [histEditCost, setHistEditCost]         = useState('')
+  const [histEditDate, setHistEditDate]         = useState('')
 
   // ── Data loading ────────────────────────────────────────────────────────────
 
@@ -724,6 +727,19 @@ export default function OrdersPage() {
     setShippingOrderId(null)
     setShippingCost('')
     await Promise.all([loadOrders(), loadInventory()])
+  }
+
+  async function saveHistShipping(orderId: string) {
+    const cost = histEditCost.trim() !== '' ? parseFloat(histEditCost) : null
+    const date = histEditDate ? new Date(histEditDate + 'T12:00:00').toISOString() : null
+    const update: Record<string, unknown> = {}
+    if (cost !== null) update.shipping_cost = cost
+    if (date) update.shipped_at = date
+    await supabase.from('orders').update(update).eq('id', orderId)
+    setHistEditId(null)
+    setHistEditCost('')
+    setHistEditDate('')
+    await loadHistory()
   }
 
   // ── History loading ─────────────────────────────────────────────────────────
@@ -2092,7 +2108,43 @@ export default function OrdersPage() {
                                 </tr>
                                 {isExpanded && (
                                   <tr key={order.id + '-exp'} style={{ background: 'var(--panel-2)' }}>
-                                    <td colSpan={14} style={{ padding: '0 16px 16px 32px' }}>
+                                    <td colSpan={14} style={{ padding: '12px 16px 16px 32px' }}>
+                                      {/* ── Edit shipping cost / date ── */}
+                                      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10, marginBottom: 16, padding: '10px 14px', background: 'var(--panel)', borderRadius: 8, border: '1px solid var(--border)' }}>
+                                        <div>
+                                          <div style={{ fontSize: '0.72rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Shipping Cost</div>
+                                          {histEditId === order.id ? (
+                                            <input className="field" type="number" step="0.01" min="0" placeholder="0.00"
+                                              value={histEditCost} onChange={(e) => setHistEditCost(e.target.value)}
+                                              style={{ width: 110 }} autoFocus />
+                                          ) : (
+                                            <div style={{ fontWeight: 600 }}>{order.shipping_cost != null ? `$${order.shipping_cost.toFixed(2)}` : <span style={{ color: 'var(--muted)' }}>—</span>}</div>
+                                          )}
+                                        </div>
+                                        <div>
+                                          <div style={{ fontSize: '0.72rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Shipped Date</div>
+                                          {histEditId === order.id ? (
+                                            <input className="field" type="date"
+                                              value={histEditDate} onChange={(e) => setHistEditDate(e.target.value)}
+                                              style={{ width: 150 }} />
+                                          ) : (
+                                            <div style={{ fontWeight: 600, color: 'var(--text-2)' }}>{order.shipped_at ? formatDate(order.shipped_at) : <span style={{ color: 'var(--warning)' }}>Not set</span>}</div>
+                                          )}
+                                        </div>
+                                        <div style={{ display: 'flex', gap: 6 }}>
+                                          {histEditId === order.id ? (
+                                            <>
+                                              <button className="btn btn-primary" style={{ fontSize: '0.78rem' }} onClick={() => void saveHistShipping(order.id)}>Save</button>
+                                              <button className="btn btn-secondary" style={{ fontSize: '0.78rem' }} onClick={() => { setHistEditId(null); setHistEditCost(''); setHistEditDate('') }}>Cancel</button>
+                                            </>
+                                          ) : (
+                                            <button className="btn btn-secondary" style={{ fontSize: '0.78rem' }}
+                                              onClick={(e) => { e.stopPropagation(); setHistEditId(order.id); setHistEditCost(order.shipping_cost != null ? String(order.shipping_cost) : ''); setHistEditDate(order.shipped_at ? order.shipped_at.split('T')[0] : '') }}>
+                                              ✏ Edit
+                                            </button>
+                                          )}
+                                        </div>
+                                      </div>
                                       <HistLineBreakdown
                                         order={order}
                                         skuMap={histSkuMap}
