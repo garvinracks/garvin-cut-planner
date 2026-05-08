@@ -391,7 +391,6 @@ export default function OrdersPage() {
 
   // Ship modal
   const [shippingOrderId, setShippingOrderId] = useState<string | null>(null)
-  const [shippingCost, setShippingCost]       = useState('')
 
   // Auto-allocate flash message (triggered from powder page)
   const [autoMessage, setAutoMessage] = useState('')
@@ -708,11 +707,9 @@ export default function OrdersPage() {
   // ── Mark Shipped ───────────────────────────────────────────────────────────
 
   async function markShipped(orderId: string) {
-    const cost = shippingCost.trim() ? parseFloat(shippingCost) : null
     await supabase.from('orders').update({
       status: 'shipped',
       shipped_at: new Date().toISOString(),
-      shipping_cost: cost,
     }).eq('id', orderId)
     // Deduct from sku_inventory for each matched line
     const order = orders.find((o) => o.id === orderId)
@@ -725,7 +722,6 @@ export default function OrdersPage() {
       }
     }
     setShippingOrderId(null)
-    setShippingCost('')
     await Promise.all([loadOrders(), loadInventory()])
   }
 
@@ -1217,23 +1213,11 @@ export default function OrdersPage() {
                     <div style={{ background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 10, padding: 24, width: 340, boxShadow: '0 8px 32px rgba(0,0,0,0.4)' }}
                       onClick={(e) => e.stopPropagation()}>
                       <div style={{ fontWeight: 800, fontSize: '1rem', marginBottom: 4 }}>Mark as Shipped</div>
-                      <div style={{ color: 'var(--text-2)', fontSize: '0.85rem', marginBottom: 16 }}>
+                      <div style={{ color: 'var(--text-2)', fontSize: '0.85rem', marginBottom: 12 }}>
                         Order {order?.order_number} · {order?.customer_name ?? 'Unknown'}
                       </div>
-                      <label className="label">Shipping Cost ($)</label>
-                      <input
-                        className="field"
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        value={shippingCost}
-                        onChange={(e) => setShippingCost(e.target.value)}
-                        placeholder="0.00"
-                        autoFocus
-                        style={{ marginBottom: 16 }}
-                      />
-                      <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: 16 }}>
-                        This will mark the order as shipped and deduct SKU quantities from inventory.
+                      <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: 20 }}>
+                        This will mark the order as shipped and deduct SKU quantities from inventory. Shipping cost will be pulled from ShipStation on next sync.
                       </div>
                       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                         <button className="btn btn-secondary" style={{ height: 32 }} onClick={() => setShippingOrderId(null)}>Cancel</button>
