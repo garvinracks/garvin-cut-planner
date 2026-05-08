@@ -529,13 +529,21 @@ export default function InvoicesPage() {
                                   className="btn btn-secondary" style={{ fontSize: '0.75rem' }}>🖨 Print</a>
                               )}
                               {inv?.status === 'draft' && (
-                                <button className="btn btn-primary"
-                                  style={{ fontSize: '0.75rem', background: 'var(--success)', borderColor: 'var(--success)' }}
-                                  onClick={() => void markSent(inv.id)}>✓ Sent</button>
+                                <>
+                                  <button className="btn btn-primary"
+                                    style={{ fontSize: '0.75rem', background: 'var(--success)', borderColor: 'var(--success)' }}
+                                    onClick={() => void markSent(inv.id)}>✓ Sent</button>
+                                  <button className="btn btn-secondary"
+                                    style={{ fontSize: '0.75rem', color: 'var(--danger)' }}
+                                    onClick={() => void deleteInvoice(inv.id)}
+                                    title="Delete this draft invoice">✕ Invoice</button>
+                                </>
                               )}
-                              <button className="btn btn-secondary"
-                                style={{ fontSize: '0.75rem', color: 'var(--danger)' }}
-                                onClick={() => void cancelOrder(order)}>✕ Cancel</button>
+                              {order.status !== 'shipped' && (
+                                <button className="btn btn-secondary"
+                                  style={{ fontSize: '0.75rem', color: 'var(--danger)' }}
+                                  onClick={() => void cancelOrder(order)}>✕ Cancel</button>
+                              )}
                             </div>
                           </td>
                         </tr>
