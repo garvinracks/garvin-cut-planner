@@ -75,15 +75,17 @@ export default function InvoicesPage() {
   const [message, setMessage]   = useState('')
   const [msgType, setMsgType]   = useState<'error' | 'success'>('error')
 
-  // PO import state
-  const [parsing, setParsing]     = useState(false)
-  const [parsedPO, setParsedPO]   = useState<ParsedPO | null>(null)
-  const [importing, setImporting] = useState(false)
+  // PO import state — supports multiple files
+  const [parsedQueue, setParsedQueue]   = useState<ParsedPO[]>([])
+  const [parsingCount, setParsingCount] = useState(0)   // files still being parsed
+  const [importingAll, setImportingAll] = useState(false)
+  const [importResults, setImportResults] = useState<{ po: string; ok: boolean; msg: string }[]>([])
 
   // Create invoice modal state
   const [creating, setCreating]      = useState<Order | null>(null)
   const [shippingInput, setShipping] = useState('')
   const [saving, setSaving]          = useState(false)
+  const [bulkCreating, setBulkCreating] = useState(false)
 
   function showMsg(text: string, type: 'error' | 'success' = 'error') {
     setMessage(text); setMsgType(type)
@@ -107,44 +109,66 @@ export default function InvoicesPage() {
 
   useEffect(() => { void load() }, [])
 
-  // ── PO Import ──────────────────────────────────────────────────────────────
+  // ── PO Import (multi-file) ─────────────────────────────────────────────────
 
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (!file) return
-    if (!file.name.toLowerCase().endsWith('.pdf')) { showMsg('Please select a PDF file.'); return }
-
-    setParsing(true)
-    setParsedPO(null)
-    const form = new FormData()
-    form.append('pdf', file)
-
-    const res = await fetch('/api/t5/parse-po', { method: 'POST', body: form })
-    const data = await res.json()
-    setParsing(false)
-
-    if (!res.ok || data.error) { showMsg(data.error ?? 'Failed to parse PDF.'); return }
-    setParsedPO(data as ParsedPO)
-    // Reset file input so the same file can be re-selected if needed
+    const files = Array.from(e.target.files ?? []).filter((f) => f.name.toLowerCase().endsWith('.pdf'))
+    if (files.length === 0) return
     if (fileInput.current) fileInput.current.value = ''
+
+    setParsingCount(files.length)
+    setImportResults([])
+    const results: ParsedPO[] = []
+
+    await Promise.all(files.map(async (file) => {
+      const form = new FormData()
+      form.append('pdf', file)
+      try {
+        const res  = await fetch('/api/t5/parse-po', { method: 'POST', body: form })
+        const data = await res.json()
+        if (res.ok && !data.error) results.push(data as ParsedPO)
+        else showMsg(`${file.name}: ${data.error ?? 'parse failed'}`)
+      } catch {
+        showMsg(`${file.name}: network error`)
+      } finally {
+        setParsingCount((n) => n - 1)
+      }
+    }))
+
+    // Deduplicate by PO number (in case same file uploaded twice)
+    setParsedQueue((prev) => {
+      const existing = new Set(prev.map((p) => p.poNumber))
+      return [...prev, ...results.filter((r) => !existing.has(r.poNumber))]
+    })
   }
 
-  async function confirmImport() {
-    if (!parsedPO) return
-    setImporting(true)
+  async function importAll() {
+    if (parsedQueue.length === 0) return
+    setImportingAll(true)
+    const results: { po: string; ok: boolean; msg: string }[] = []
 
-    const res = await fetch('/api/t5/create-order', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(parsedPO),
-    })
-    const data = await res.json()
-    setImporting(false)
+    for (const po of parsedQueue) {
+      const res  = await fetch('/api/t5/create-order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(po),
+      })
+      const data = await res.json()
+      results.push({
+        po:  po.poNumber,
+        ok:  res.ok && !data.error,
+        msg: res.ok && !data.error ? `PO ${po.poNumber} created` : (data.error ?? 'Failed'),
+      })
+    }
 
-    if (!res.ok || data.error) { showMsg(data.error ?? 'Failed to create order.'); return }
-    setParsedPO(null)
-    showMsg(`✓ PO ${parsedPO.poNumber} created in ShipStation. It will appear in Orders after the next sync.`, 'success')
+    setImportResults(results)
+    setParsedQueue([])
+    setImportingAll(false)
     await load()
+  }
+
+  function removeFromQueue(poNumber: string) {
+    setParsedQueue((prev) => prev.filter((p) => p.poNumber !== poNumber))
   }
 
   // ── Cancel order ───────────────────────────────────────────────────────────
@@ -183,6 +207,29 @@ export default function InvoicesPage() {
     setCreating(null); setShipping('')
     await load()
     window.open(`/invoices/${data.id}`, '_blank')
+  }
+
+  async function createAllShippedInvoices() {
+    const toInvoice = openOrders.filter((o) => o.status === 'shipped' && !invoiceMap.has(o.id))
+    if (toInvoice.length === 0) return
+    if (!confirm(`Create draft invoices for all ${toInvoice.length} shipped orders?`)) return
+    setBulkCreating(true)
+    const today = new Date().toISOString().split('T')[0]
+    const due   = addDays(today, 30)
+    let created = 0
+    for (const order of toInvoice) {
+      const { error } = await supabase.from('turn5_invoices').insert({
+        order_id:      order.id,
+        issue_date:    today,
+        due_date:      due,
+        shipping_cost: order.shipping_cost,
+        status:        'draft',
+      })
+      if (!error) created++
+    }
+    setBulkCreating(false)
+    showMsg(`✓ Created ${created} draft invoice${created !== 1 ? 's' : ''}.`, 'success')
+    await load()
   }
 
   async function markSent(invoiceId: string) {
@@ -242,16 +289,90 @@ export default function InvoicesPage() {
             ref={fileInput}
             type="file"
             accept=".pdf"
+            multiple
             style={{ display: 'none' }}
             onChange={handleFileChange}
           />
-          <button
-            className="btn btn-primary"
-            disabled={parsing}
-            onClick={() => fileInput.current?.click()}
-          >
-            {parsing ? '⏳ Parsing PDF…' : '📄 Upload T5 PO PDF'}
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <button
+              className="btn btn-primary"
+              disabled={parsingCount > 0}
+              onClick={() => fileInput.current?.click()}
+            >
+              {parsingCount > 0 ? `⏳ Parsing ${parsingCount} file${parsingCount !== 1 ? 's' : ''}…` : '📄 Upload T5 PO PDFs'}
+            </button>
+            <span style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>You can select multiple PDFs at once</span>
+          </div>
+
+          {/* Parsed PO queue */}
+          {parsedQueue.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>{parsedQueue.length} PO{parsedQueue.length !== 1 ? 's' : ''} ready to import</span>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn btn-secondary" style={{ fontSize: '0.82rem' }} onClick={() => setParsedQueue([])}>Clear All</button>
+                  <button
+                    className="btn btn-primary"
+                    style={{ fontSize: '0.82rem' }}
+                    disabled={importingAll}
+                    onClick={() => void importAll()}
+                  >
+                    {importingAll ? '⏳ Importing…' : `✓ Import All ${parsedQueue.length} POs`}
+                  </button>
+                </div>
+              </div>
+              <table className="table" style={{ fontSize: '0.84rem' }}>
+                <thead>
+                  <tr>
+                    <th>PO #</th>
+                    <th>Ship To</th>
+                    <th>Items</th>
+                    <th>Total</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {parsedQueue.map((po) => {
+                    const total = po.items.reduce((s, i) => s + i.unitPrice * i.qty, 0)
+                    return (
+                      <tr key={po.poNumber}>
+                        <td style={{ fontWeight: 700 }}>{po.poNumber}</td>
+                        <td style={{ fontSize: '0.8rem' }}>
+                          <div style={{ fontWeight: 600 }}>{po.shipTo.name}</div>
+                          <div style={{ color: 'var(--muted)' }}>{po.shipTo.city}, {po.shipTo.state}</div>
+                        </td>
+                        <td style={{ fontSize: '0.8rem' }}>
+                          {po.items.map((i, idx) => (
+                            <div key={idx}><span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{i.sku}</span> × {i.qty}</div>
+                          ))}
+                        </td>
+                        <td style={{ fontWeight: 700 }}>${total.toFixed(2)}</td>
+                        <td>
+                          <button
+                            className="btn btn-secondary"
+                            style={{ fontSize: '0.75rem', color: 'var(--danger)' }}
+                            onClick={() => removeFromQueue(po.poNumber)}
+                          >✕ Remove</button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* Import results */}
+          {importResults.length > 0 && (
+            <div style={{ marginTop: 12 }}>
+              {importResults.map((r) => (
+                <div key={r.po} style={{ fontSize: '0.82rem', color: r.ok ? 'var(--success)' : 'var(--danger)', marginBottom: 3 }}>
+                  {r.ok ? '✓' : '✗'} {r.msg}
+                </div>
+              ))}
+              <button className="btn btn-secondary" style={{ fontSize: '0.78rem', marginTop: 8 }} onClick={() => setImportResults([])}>Dismiss</button>
+            </div>
+          )}
         </div>
       </section>
 
@@ -262,13 +383,27 @@ export default function InvoicesPage() {
           {/* ── Active Orders ──────────────────────────────────────────────── */}
           {openOrders.length > 0 && (
             <section className="card" style={{ marginBottom: 24 }}>
-              <div className="card-header">
-                <h2 className="card-title">Active Orders</h2>
-                <div className="card-subtitle">
-                  {awaitingCount > 0 && <span>{awaitingCount} awaiting shipment</span>}
-                  {awaitingCount > 0 && shippedCount > 0 && <span style={{ margin: '0 6px', opacity: 0.4 }}>·</span>}
-                  {shippedCount > 0 && <span style={{ color: 'var(--success)' }}>{shippedCount} shipped</span>}
+              <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                <div>
+                  <h2 className="card-title">Active Orders</h2>
+                  <div className="card-subtitle">
+                    {awaitingCount > 0 && <span>{awaitingCount} awaiting shipment</span>}
+                    {awaitingCount > 0 && shippedCount > 0 && <span style={{ margin: '0 6px', opacity: 0.4 }}>·</span>}
+                    {shippedCount > 0 && <span style={{ color: 'var(--success)' }}>{shippedCount} shipped</span>}
+                  </div>
                 </div>
+                {openOrders.filter((o) => o.status === 'shipped' && !invoiceMap.has(o.id)).length > 0 && (
+                  <button
+                    className="btn btn-primary"
+                    style={{ fontSize: '0.82rem', background: 'var(--success)', borderColor: 'var(--success)' }}
+                    disabled={bulkCreating}
+                    onClick={() => void createAllShippedInvoices()}
+                  >
+                    {bulkCreating
+                      ? '⏳ Creating…'
+                      : `📄 Create Invoices for All Shipped (${openOrders.filter((o) => o.status === 'shipped' && !invoiceMap.has(o.id)).length})`}
+                  </button>
+                )}
               </div>
               <div className="card-body" style={{ padding: 0 }}>
                 <table className="table">
@@ -458,59 +593,6 @@ export default function InvoicesPage() {
             </section>
           )}
         </>
-      )}
-
-      {/* ── Parsed PO Preview Modal ──────────────────────────────────────────── */}
-      {parsedPO && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-          <div style={{ background: 'var(--panel)', borderRadius: 12, padding: 28, width: '100%', maxWidth: 520, border: '1px solid var(--border)', maxHeight: '90vh', overflowY: 'auto' }}>
-            <div style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }}>PO #{parsedPO.poNumber} — Confirm Details</div>
-            <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginBottom: 20 }}>Review the extracted data before creating the ShipStation order.</div>
-
-            {/* Ship To */}
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--muted)', marginBottom: 8 }}>Ship To</div>
-              <div style={{ background: 'var(--panel-2)', borderRadius: 8, padding: '10px 14px', fontSize: '0.85rem', lineHeight: 1.7 }}>
-                <div style={{ fontWeight: 700 }}>{parsedPO.shipTo.name}</div>
-                <div>{parsedPO.shipTo.street1}</div>
-                {parsedPO.shipTo.street2 && <div>{parsedPO.shipTo.street2}</div>}
-                <div>{parsedPO.shipTo.city}, {parsedPO.shipTo.state} {parsedPO.shipTo.zip}</div>
-                {parsedPO.shipTo.phone && <div style={{ color: 'var(--muted)' }}>📞 {parsedPO.shipTo.phone}</div>}
-              </div>
-            </div>
-
-            {/* Line items */}
-            <div style={{ marginBottom: 20 }}>
-              <div style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--muted)', marginBottom: 8 }}>Items</div>
-              {parsedPO.items.map((item, i) => (
-                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)', fontSize: '0.88rem' }}>
-                  <div>
-                    <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{item.sku}</span>
-                    <span style={{ color: 'var(--muted)', marginLeft: 8, fontSize: '0.8rem' }}>{item.description}</span>
-                  </div>
-                  <span style={{ fontWeight: 600, whiteSpace: 'nowrap', marginLeft: 12 }}>× {item.qty} @ {fmt(item.unitPrice)}</span>
-                </div>
-              ))}
-              <div style={{ display: 'flex', justifyContent: 'flex-end', fontWeight: 700, paddingTop: 8 }}>
-                Total: {fmt(parsedPO.items.reduce((s, i) => s + i.unitPrice * i.qty, 0))}
-              </div>
-            </div>
-
-            {/* Warnings */}
-            {(!parsedPO.shipTo.name || !parsedPO.shipTo.city) && (
-              <div style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: 8, padding: '8px 12px', fontSize: '0.8rem', color: 'var(--danger)', marginBottom: 16 }}>
-                ⚠ Address looks incomplete — double-check before confirming.
-              </div>
-            )}
-
-            <div style={{ display: 'flex', gap: 10 }}>
-              <button className="btn btn-primary" style={{ flex: 1 }} disabled={importing} onClick={() => void confirmImport()}>
-                {importing ? '⏳ Creating…' : '✓ Create ShipStation Order'}
-              </button>
-              <button className="btn btn-secondary" onClick={() => setParsedPO(null)}>Cancel</button>
-            </div>
-          </div>
-        </div>
       )}
 
       {/* ── Create Invoice Modal ─────────────────────────────────────────────── */}
