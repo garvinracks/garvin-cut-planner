@@ -7,6 +7,8 @@ import { createBrowserClient } from '@/lib/supabase'
 
 type SKU = { id: string; description: string; bolt_kit_cost: number | null }
 
+type KitNeed = { sku_id: string; description: string; qty: number }
+
 type OrderLine = {
   sku_id: string
   qty: string
@@ -48,7 +50,9 @@ export default function BoltKitsPage() {
 
   const [skus, setSkus]       = useState<SKU[]>([])
   const [orders, setOrders]   = useState<SavedOrder[]>([])
+  const [needs, setNeeds]     = useState<KitNeed[]>([])
   const [loading, setLoading] = useState(true)
+  const [copied, setCopied]   = useState(false)
   const [saving, setSaving]   = useState(false)
   const [message, setMessage] = useState('')
   const [msgOk, setMsgOk]     = useState(true)
@@ -66,15 +70,33 @@ export default function BoltKitsPage() {
   }
 
   async function load() {
-    const [{ data: skuData }, { data: ordData }] = await Promise.all([
+    const [{ data: skuData }, { data: ordData }, { data: openLines }] = await Promise.all([
       supabase.from('skus').select('id, description, bolt_kit_cost').eq('active', true).order('id'),
       supabase
         .from('bolt_kit_orders')
         .select('id, order_date, supplier, shipping_cost, notes, created_at, bolt_kit_order_lines(id, sku_id, qty, unit_cost, true_cost, skus(description))')
         .order('order_date', { ascending: false }),
+      // Open orders (not shipped, not cancelled) → tally kit needs
+      supabase
+        .from('order_lines')
+        .select('sku_id, qty, skus(description), orders!inner(status)')
+        .not('orders.status', 'in', '("shipped","cancelled")')
+        .not('sku_id', 'is', null),
     ])
     setSkus((skuData ?? []) as SKU[])
     setOrders((ordData ?? []) as unknown as SavedOrder[])
+
+    // Aggregate qty by SKU from open orders
+    const needMap = new Map<string, KitNeed>()
+    for (const line of (openLines ?? []) as any[]) {
+      if (!line.sku_id) continue
+      const existing = needMap.get(line.sku_id)
+      const desc = line.skus?.description ?? line.sku_id
+      if (existing) { existing.qty += line.qty }
+      else { needMap.set(line.sku_id, { sku_id: line.sku_id, description: desc, qty: line.qty }) }
+    }
+    setNeeds([...needMap.values()].sort((a, b) => a.sku_id.localeCompare(b.sku_id)))
+
     setLoading(false)
   }
 
@@ -170,6 +192,52 @@ export default function BoltKitsPage() {
           Log Ababa orders — shipping is prorated per kit and SKU costs update automatically.
         </p>
       </div>
+
+      {/* ── Kits Needed ── */}
+      {!loading && needs.length > 0 && (
+        <section className="card" style={{ marginBottom: 24 }}>
+          <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <h2 className="card-title">Kits Needed</h2>
+              <div className="card-subtitle">From all open (unshipped) orders</div>
+            </div>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{ fontSize: '0.82rem' }}
+              onClick={() => {
+                const text = needs.map((n) => `${n.sku_id} × ${n.qty}  — ${n.description}`).join('\n')
+                void navigator.clipboard.writeText(text).then(() => {
+                  setCopied(true)
+                  setTimeout(() => setCopied(false), 2500)
+                })
+              }}
+            >
+              {copied ? '✓ Copied!' : '📋 Copy List'}
+            </button>
+          </div>
+          <div className="card-body" style={{ padding: 0 }}>
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>SKU</th>
+                  <th>Description</th>
+                  <th style={{ textAlign: 'center' }}>Qty Needed</th>
+                </tr>
+              </thead>
+              <tbody>
+                {needs.map((n) => (
+                  <tr key={n.sku_id}>
+                    <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>{n.sku_id}</td>
+                    <td style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>{n.description}</td>
+                    <td style={{ textAlign: 'center', fontWeight: 700, fontSize: '1rem' }}>{n.qty}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
 
       {message && (
         <div style={{
