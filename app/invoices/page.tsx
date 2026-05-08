@@ -81,6 +81,24 @@ export default function InvoicesPage() {
   const [importingAll, setImportingAll] = useState(false)
   const [importResults, setImportResults] = useState<{ po: string; ok: boolean; msg: string }[]>([])
 
+  // Bulk print selection
+  const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<Set<string>>(new Set())
+
+  function toggleInvoiceSelect(id: string) {
+    setSelectedInvoiceIds((prev) => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
+  function openPrintAll(ids?: string[]) {
+    const url = ids && ids.length > 0
+      ? `/invoices/print-all?ids=${ids.join(',')}`
+      : '/invoices/print-all'
+    window.open(url, '_blank')
+  }
+
   // Create invoice modal state
   const [creating, setCreating]      = useState<Order | null>(null)
   const [shippingInput, setShipping] = useState('')
@@ -535,14 +553,44 @@ export default function InvoicesPage() {
           {/* ── Invoice History ────────────────────────────────────────────── */}
           {invoiced.length > 0 && (
             <section className="card">
-              <div className="card-header">
-                <h2 className="card-title">Invoice History</h2>
-                <div className="card-subtitle">{invoiced.length} invoice{invoiced.length !== 1 ? 's' : ''}</div>
+              <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                <div>
+                  <h2 className="card-title">Invoice History</h2>
+                  <div className="card-subtitle">{invoiced.length} invoice{invoiced.length !== 1 ? 's' : ''}</div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  {selectedInvoiceIds.size > 0 && (
+                    <button
+                      className="btn btn-secondary"
+                      style={{ fontSize: '0.82rem' }}
+                      onClick={() => openPrintAll([...selectedInvoiceIds])}
+                    >
+                      🖨 Print Selected ({selectedInvoiceIds.size})
+                    </button>
+                  )}
+                  <button
+                    className="btn btn-primary"
+                    style={{ fontSize: '0.82rem' }}
+                    onClick={() => openPrintAll()}
+                  >
+                    🖨 Print All
+                  </button>
+                </div>
               </div>
               <div className="card-body" style={{ padding: 0 }}>
                 <table className="table">
                   <thead>
                     <tr>
+                      <th style={{ width: 36 }}>
+                        <input
+                          type="checkbox"
+                          checked={selectedInvoiceIds.size === invoiced.length && invoiced.length > 0}
+                          onChange={(e) => {
+                            if (e.target.checked) setSelectedInvoiceIds(new Set(invoiced.map((o) => invoiceMap.get(o.id)!.id)))
+                            else setSelectedInvoiceIds(new Set())
+                          }}
+                        />
+                      </th>
                       <th>Invoice #</th>
                       <th>Issue Date</th>
                       <th>Due Date</th>
@@ -557,6 +605,13 @@ export default function InvoicesPage() {
                       const total = orderTotal(order, inv.shipping_cost)
                       return (
                         <tr key={order.id}>
+                          <td>
+                            <input
+                              type="checkbox"
+                              checked={selectedInvoiceIds.has(inv.id)}
+                              onChange={() => toggleInvoiceSelect(inv.id)}
+                            />
+                          </td>
                           <td style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: '0.85rem' }}>TURN INV-{order.order_number}</td>
                           <td style={{ color: 'var(--muted)' }}>{fmtDate(inv.issue_date)}</td>
                           <td style={{ color: 'var(--muted)' }}>{fmtDate(inv.due_date)}</td>
