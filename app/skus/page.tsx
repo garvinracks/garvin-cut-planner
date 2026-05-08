@@ -2663,9 +2663,6 @@ export default function SkusPage() {
                                   </td>
                                   <td>
                                     <div style={{ fontSize: '0.83rem', color: 'var(--text-2)' }}>{row.part_description}</div>
-                                    {fullPart?.weight_lbs != null && (
-                                      <div style={{ fontSize: '0.72rem', color: 'var(--muted)' }}>{fullPart.weight_lbs} lb/ea</div>
-                                    )}
                                   </td>
                                   <td>
                                     <input
@@ -2721,7 +2718,6 @@ export default function SkusPage() {
                               <th>Part #</th>
                               <th>Description</th>
                               <th style={{ textAlign: 'center' }}>Total Qty</th>
-                              <th style={{ textAlign: 'right' }}>Weight (lbs)</th>
                               <th style={{ textAlign: 'right' }}>Mat Cost</th>
                             </tr>
                           </thead>
@@ -2748,9 +2744,6 @@ export default function SkusPage() {
                                   <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>{row.part_number}</td>
                                   <td>{row.description}</td>
                                   <td style={{ fontWeight: 700, textAlign: 'center' }}>{row.qty}</td>
-                                  <td style={{ textAlign: 'right', fontSize: '0.83rem', color: 'var(--text-2)' }}>
-                                    {totalWeight != null ? totalWeight.toFixed(3) : <span style={{ color: 'var(--muted)' }}>—</span>}
-                                  </td>
                                   <td style={{ textAlign: 'right', fontSize: '0.83rem' }}>
                                     {lineCost != null
                                       ? <span style={{ color: 'var(--success)', fontWeight: 600 }}>${lineCost.toFixed(2)}</span>
@@ -2764,18 +2757,8 @@ export default function SkusPage() {
                           {/* Material subtotal row */}
                           <tfoot>
                             <tr style={{ borderTop: '2px solid var(--border)' }}>
-                              <td colSpan={3} style={{ fontWeight: 700, fontSize: '0.83rem', paddingTop: 8 }}>
+                              <td colSpan={4} style={{ fontWeight: 700, fontSize: '0.83rem', paddingTop: 8 }}>
                                 Material subtotal
-                              </td>
-                              <td />
-                              <td style={{ textAlign: 'right', fontWeight: 700, fontSize: '0.83rem', paddingTop: 8 }}>
-                                {(() => {
-                                  const totalW = fullExplosion.reduce((sum, r) => {
-                                    const w = getPartWeight(r.part_id, r.weight_lbs, r.cut_length)
-                                    return w != null ? sum + w * r.qty : sum
-                                  }, 0)
-                                  return totalW > 0 ? totalW.toFixed(3) : '—'
-                                })()}
                               </td>
                               <td style={{ textAlign: 'right', fontWeight: 700, fontSize: '0.83rem', paddingTop: 8, color: 'var(--success)' }}>
                                 {matEstCost != null ? `$${matEstCost.toFixed(2)}` : '—'}
