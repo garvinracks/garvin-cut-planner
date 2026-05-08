@@ -43,6 +43,22 @@ async function ssGetOrder(ssOrderId: number): Promise<{ orderStatus: string; shi
   }
 }
 
+// Get the actual label cost + ship date from the shipments on an order.
+// shipmentCost = what Garvin paid for the USPS/UPS label (not what the buyer paid).
+async function ssGetLabelCost(ssOrderId: number): Promise<{ labelCost: number | null; shipDate: string | null }> {
+  try {
+    const data = await ssGet(`/shipments?orderId=${ssOrderId}`)
+    const shipments: any[] = (data.shipments ?? []).filter((s: any) => !s.voided)
+    if (shipments.length === 0) return { labelCost: null, shipDate: null }
+    // Use the most recent non-voided shipment
+    const s = shipments[shipments.length - 1]
+    const labelCost = (s.shipmentCost ?? 0) + (s.insuranceCost ?? 0)
+    return { labelCost: labelCost > 0 ? labelCost : null, shipDate: s.shipDate ?? null }
+  } catch {
+    return { labelCost: null, shipDate: null }
+  }
+}
+
 export async function POST() {
   try {
     const supabase = createClient(
@@ -160,13 +176,14 @@ export async function POST() {
       const ssStatus = ssOrder.orderStatus ?? ''
 
       if (ssStatus === 'shipped') {
+        const { labelCost, shipDate } = await ssGetLabelCost(row.shipstation_order_id)
         await supabase
           .from('orders')
           .update({
             status: 'shipped',
             ss_status: 'shipped',
-            shipped_at: new Date().toISOString(),
-            shipping_cost: ssOrder.shippingAmount ?? null,
+            shipped_at: shipDate ?? new Date().toISOString(),
+            shipping_cost: labelCost,
             synced_at: new Date().toISOString(),
           })
           .eq('id', row.id)
@@ -180,25 +197,23 @@ export async function POST() {
       }
     }
 
-    // ── 3. Backfill shipped orders missing date or cost ───────────────────────
-    // Orders marked shipped before these fields were tracked need a one-time
-    // lookup to pull shippingAmount + the actual ship date from ShipStation.
+    // ── 3. Backfill shipped orders missing date or label cost ─────────────────
+    // Orders shipped before label-cost tracking was added, plus any that came
+    // back with $0 (shippingAmount from the order, not the actual label cost).
     let backfilled = 0
     const { data: incompleteShipped } = await supabase
       .from('orders')
       .select('id, shipstation_order_id')
       .eq('status', 'shipped')
       .not('shipstation_order_id', 'is', null)
-      .or('shipping_cost.is.null,shipped_at.is.null')
+      .or('shipping_cost.is.null,shipped_at.is.null,shipping_cost.eq.0')
 
     for (const row of (incompleteShipped ?? [])) {
-      const ssOrder = await ssGetOrder(row.shipstation_order_id)
-      if (!ssOrder) continue
-      const shipDate = ssOrder.shipDate ?? null
+      const { labelCost, shipDate } = await ssGetLabelCost(row.shipstation_order_id)
       await supabase
         .from('orders')
         .update({
-          shipping_cost: ssOrder.shippingAmount ?? null,
+          shipping_cost: labelCost,
           shipped_at:    shipDate ?? new Date().toISOString(),
           synced_at:     new Date().toISOString(),
         })
