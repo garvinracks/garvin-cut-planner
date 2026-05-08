@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useMemo, useState } from 'react'
 import { createBrowserClient } from '@/lib/supabase'
 import { useSearchParams } from 'next/navigation'
+import JSZip from 'jszip'
 
 type OrderLine = {
   id: string
@@ -42,8 +43,9 @@ function PrintAllInner() {
   const searchParams = useSearchParams()
   const idsParam     = searchParams.get('ids')   // comma-separated invoice IDs, or null = all
 
-  const [items, setItems]     = useState<InvoiceWithOrder[]>([])
-  const [loading, setLoading] = useState(true)
+  const [items, setItems]       = useState<InvoiceWithOrder[]>([])
+  const [loading, setLoading]   = useState(true)
+  const [zipping, setZipping]   = useState(false)
 
   useEffect(() => {
     async function load() {
@@ -77,6 +79,139 @@ function PrintAllInner() {
     }
     void load()
   }, [idsParam, supabase])
+
+  async function downloadZip() {
+    setZipping(true)
+    // Dynamically import jsPDF to keep initial bundle small
+    const { jsPDF } = await import('jspdf')
+    const zip = new JSZip()
+
+    for (const { invoice, order } of items) {
+      const shipping  = invoice.shipping_cost ?? order.shipping_cost ?? 0
+      const lineTotal = order.order_lines.reduce((s, l) => s + (l.unit_price ?? 0) * l.qty, 0)
+      const total     = lineTotal + shipping
+      const invoiceNum = `TURN INV-${order.order_number}`
+
+      const doc = new jsPDF({ unit: 'pt', format: 'letter' })
+      const W = 612  // letter width in pt
+      const margin = 56
+      let y = 56
+
+      // ── Header ──
+      doc.setFont('helvetica', 'bold')
+      doc.setFontSize(28)
+      doc.text('Invoice', margin, y)
+
+      // Company block (right)
+      doc.setFontSize(8)
+      doc.setFont('helvetica', 'bold')
+      doc.text('Garvin Industries LLC', W - margin, y, { align: 'right' })
+      doc.setFont('helvetica', 'normal')
+      const companyLines = ['14324 172nd Ave.', 'Grand Haven, MI 49417', '231-375-7197', 'charlie@garvinracks.com', 'garvinracks.com']
+      companyLines.forEach((line) => { y += 11; doc.text(line, W - margin, y, { align: 'right' }) })
+
+      y += 28
+
+      // ── Invoice details ──
+      doc.setFont('helvetica', 'bold')
+      doc.setFontSize(7)
+      doc.setTextColor(150)
+      doc.text('INVOICE DETAILS', margin, y)
+      doc.text('BILL TO', W / 2, y)
+      doc.setTextColor(0)
+      y += 14
+
+      const detailRows = [
+        ['Invoice #', invoiceNum],
+        ['Date of Issue', fmtDate(invoice.issue_date)],
+        ['Due Date', fmtDate(invoice.due_date)],
+      ]
+      doc.setFontSize(8.5)
+      for (const [key, val] of detailRows) {
+        doc.setFont('helvetica', 'normal'); doc.setTextColor(120)
+        doc.text(key, margin, y)
+        doc.setFont('helvetica', 'bold'); doc.setTextColor(0)
+        doc.text(val, margin + 80, y)
+        y += 13
+      }
+
+      // Bill to (alongside)
+      let by = y - (detailRows.length * 13) - 1
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(0)
+      doc.text('Turn5', W / 2, by); by += 13
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(80)
+      doc.text('600 Cedar Hollow Rd', W / 2, by); by += 11
+      doc.text('Paoli, PA 19301', W / 2, by)
+
+      y += 20
+
+      // ── Table header ──
+      doc.setFillColor(17, 17, 17)
+      doc.rect(margin, y, W - margin * 2, 20, 'F')
+      doc.setTextColor(255); doc.setFont('helvetica', 'bold'); doc.setFontSize(7.5)
+      const cols = [margin + 6, 150, 220, 430, 490, 540]
+      const headers = ['PO NUMBER', 'SKU', 'DESCRIPTION', 'QTY', 'RATE', 'AMOUNT']
+      const aligns: Array<'left' | 'right'> = ['left', 'left', 'left', 'right', 'right', 'right']
+      headers.forEach((h, i) => doc.text(h, cols[i], y + 13, { align: aligns[i] }))
+      y += 20
+
+      // ── Line items ──
+      doc.setTextColor(0); doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5)
+      for (const line of order.order_lines) {
+        y += 16
+        const rate   = line.unit_price ?? 0
+        const amount = rate * line.qty
+        const desc   = (line.skus as any)?.[0]?.description ?? line.description ?? '—'
+        doc.setTextColor(0)
+        doc.text(order.order_number, cols[0], y)
+        doc.setFont('helvetica', 'bold')
+        doc.text(line.ss_sku ?? '—', cols[1], y)
+        doc.setFont('helvetica', 'normal')
+        doc.text(doc.splitTextToSize(desc, 200)[0], cols[2], y)
+        doc.text(String(line.qty), cols[3], y, { align: 'right' })
+        doc.text(fmt(rate), cols[4], y, { align: 'right' })
+        doc.text(fmt(amount), cols[5] + 10, y, { align: 'right' })
+        doc.setDrawColor(220); doc.line(margin, y + 4, W - margin, y + 4)
+      }
+
+      // Shipping row
+      y += 16
+      doc.setTextColor(100); doc.setFontSize(8)
+      doc.text('Shipping Cost', cols[0], y)
+      doc.text(fmt(shipping), cols[5] + 10, y, { align: 'right' })
+
+      // Total row
+      y += 6
+      doc.setDrawColor(17); doc.setLineWidth(1.5)
+      doc.line(margin, y, W - margin, y)
+      doc.setLineWidth(0.5)
+      y += 14
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(0)
+      doc.text('TOTAL', cols[3], y, { align: 'right' })
+      doc.text(fmt(total), cols[5] + 10, y, { align: 'right' })
+
+      // Terms
+      y += 40
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(7); doc.setTextColor(150)
+      doc.text('TERMS', W / 2, y, { align: 'center' })
+      y += 12
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(0)
+      doc.text('NET 30', W / 2, y, { align: 'center' })
+
+      zip.file(`TURN-INV-${order.order_number}.pdf`, doc.output('arraybuffer'))
+    }
+
+    const blob = await zip.generateAsync({ type: 'blob' })
+    const url  = URL.createObjectURL(blob)
+    const a    = document.createElement('a')
+    a.href     = url
+    a.download = items.length === 1
+      ? `TURN-INV-${items[0].order.order_number}.pdf`
+      : `Turn5-Invoices-${items.length}.zip`
+    a.click()
+    URL.revokeObjectURL(url)
+    setZipping(false)
+  }
 
   if (loading) return <div style={{ padding: 40, fontFamily: 'sans-serif' }}>Loading…</div>
   if (items.length === 0) return <div style={{ padding: 40, fontFamily: 'sans-serif' }}>No invoices found.</div>
@@ -243,6 +378,9 @@ function PrintAllInner() {
         <a href="/invoices" className="btn-back">← Back</a>
         <button className="btn-print" onClick={() => window.print()}>
           🖨 Print / Save as PDF
+        </button>
+        <button className="btn-print" style={{ background: '#1d4ed8' }} onClick={() => void downloadZip()} disabled={zipping}>
+          {zipping ? '⏳ Building ZIP…' : `⬇ Download ${items.length > 1 ? 'ZIP' : 'PDF'}`}
         </button>
         <span className="count-label">{items.length} invoice{items.length !== 1 ? 's' : ''}</span>
       </div>
