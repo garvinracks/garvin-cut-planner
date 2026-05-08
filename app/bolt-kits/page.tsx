@@ -7,7 +7,12 @@ import { createBrowserClient } from '@/lib/supabase'
 
 type SKU = { id: string; description: string; bolt_kit_cost: number | null }
 
-type KitNeed = { sku_id: string; description: string; qty: number }
+type BatchNeed = {
+  batch_id: string
+  batch_name: string
+  status: string
+  lines: { sku_id: string; qty: number }[]
+}
 
 type OrderLine = {
   sku_id: string
@@ -48,11 +53,12 @@ function fmtDate(iso: string) {
 export default function BoltKitsPage() {
   const supabase = useMemo(() => createBrowserClient(), [])
 
-  const [skus, setSkus]       = useState<SKU[]>([])
-  const [orders, setOrders]   = useState<SavedOrder[]>([])
-  const [needs, setNeeds]     = useState<KitNeed[]>([])
-  const [loading, setLoading] = useState(true)
-  const [copied, setCopied]   = useState(false)
+  const [skus, setSkus]             = useState<SKU[]>([])
+  const [orders, setOrders]         = useState<SavedOrder[]>([])
+  const [batches, setBatches]       = useState<BatchNeed[]>([])
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [loading, setLoading]       = useState(true)
+  const [copied, setCopied]         = useState(false)
   const [saving, setSaving]   = useState(false)
   const [message, setMessage] = useState('')
   const [msgOk, setMsgOk]     = useState(true)
@@ -70,39 +76,52 @@ export default function BoltKitsPage() {
   }
 
   async function load() {
-    const [{ data: skuData }, { data: ordData }, { data: openLines }] = await Promise.all([
+    const [{ data: skuData }, { data: ordData }, { data: batchData }] = await Promise.all([
       supabase.from('skus').select('id, description, bolt_kit_cost').eq('active', true).order('id'),
       supabase
         .from('bolt_kit_orders')
         .select('id, order_date, supplier, shipping_cost, notes, created_at, bolt_kit_order_lines(id, sku_id, qty, unit_cost, true_cost, skus(description))')
         .order('order_date', { ascending: false }),
-      // Active build batches with their lines → tally kit needs
+      // All non-complete batches with their lines
       supabase
         .from('build_batches')
-        .select('id, status, build_batch_lines(sku_id, qty)')
-        .in('status', ['draft', 'planned', 'in_progress']),
+        .select('id, name, status, build_batch_lines(sku_id, qty)')
+        .not('status', 'eq', 'complete')
+        .order('created_at', { ascending: false }),
     ])
     const skuMap = new Map<string, string>((skuData ?? []).map((s: any) => [s.id, s.description]))
     setSkus((skuData ?? []) as SKU[])
     setOrders((ordData ?? []) as unknown as SavedOrder[])
 
-    // Flatten lines from all active batches and aggregate qty by SKU
-    const needMap = new Map<string, KitNeed>()
-    for (const batch of (openLines ?? []) as any[]) {
-      for (const line of (batch.build_batch_lines ?? [])) {
-        if (!line.sku_id) continue
-        const existing = needMap.get(line.sku_id)
-        const desc = skuMap.get(line.sku_id) ?? line.sku_id
-        if (existing) { existing.qty += line.qty }
-        else { needMap.set(line.sku_id, { sku_id: line.sku_id, description: desc, qty: line.qty }) }
-      }
-    }
-    setNeeds([...needMap.values()].sort((a, b) => a.sku_id.localeCompare(b.sku_id)))
+    const batchList: BatchNeed[] = (batchData ?? []).map((b: any) => ({
+      batch_id:   b.id,
+      batch_name: b.name ?? b.id,
+      status:     b.status,
+      lines:      (b.build_batch_lines ?? [])
+        .filter((l: any) => l.sku_id)
+        .map((l: any) => ({ sku_id: l.sku_id, qty: l.qty })),
+    }))
+    setBatches(batchList)
 
     setLoading(false)
   }
 
   useEffect(() => { void load() }, [])
+
+  // ── Actions ──────────────────────────────────────────────────────────────
+
+  function prefillFromSelected() {
+    const merged = new Map<string, number>()
+    for (const b of batches.filter((b) => selectedIds.has(b.batch_id))) {
+      for (const l of b.lines) {
+        merged.set(l.sku_id, (merged.get(l.sku_id) ?? 0) + l.qty)
+      }
+    }
+    const newLines: OrderLine[] = [...merged.entries()].map(([sku_id, qty]) => ({
+      sku_id, qty: String(qty), unit_cost: '',
+    }))
+    setLines(newLines.length > 0 ? newLines : [{ sku_id: '', qty: '1', unit_cost: '' }])
+  }
 
   // ── Derived ───────────────────────────────────────────────────────────────
 
@@ -196,51 +215,90 @@ export default function BoltKitsPage() {
       </div>
 
       {/* ── Kits Needed ── */}
-      {!loading && (
+      {!loading && batches.length > 0 && (
         <section className="card" style={{ marginBottom: 24 }}>
           <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
-              <h2 className="card-title">Kits Needed</h2>
-              <div className="card-subtitle">From active build batches (draft / planned / in progress)</div>
+              <h2 className="card-title">Kits Needed by Batch</h2>
+              <div className="card-subtitle">Select batches to pre-fill the order form below</div>
             </div>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              style={{ fontSize: '0.82rem' }}
-              onClick={() => {
-                const text = needs.map((n) => `${n.sku_id} × ${n.qty}  — ${n.description}`).join('\n')
-                void navigator.clipboard.writeText(text).then(() => {
-                  setCopied(true)
-                  setTimeout(() => setCopied(false), 2500)
-                })
-              }}
-            >
-              {copied ? '✓ Copied!' : '📋 Copy List'}
-            </button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {selectedIds.size > 0 && (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ fontSize: '0.82rem' }}
+                  onClick={() => {
+                    // Build copy text from selected batches merged
+                    const merged = new Map<string, { qty: number; desc: string }>()
+                    for (const b of batches.filter((b) => selectedIds.has(b.batch_id))) {
+                      for (const l of b.lines) {
+                        const existing = merged.get(l.sku_id)
+                        const desc = skus.find((s) => s.id === l.sku_id)?.description ?? l.sku_id
+                        if (existing) { existing.qty += l.qty }
+                        else { merged.set(l.sku_id, { qty: l.qty, desc }) }
+                      }
+                    }
+                    const text = [...merged.entries()].map(([id, { qty, desc }]) => `${id} × ${qty}  — ${desc}`).join('\n')
+                    void navigator.clipboard.writeText(text).then(() => {
+                      setCopied(true); setTimeout(() => setCopied(false), 2500)
+                    })
+                  }}
+                >{copied ? '✓ Copied!' : '📋 Copy List'}</button>
+              )}
+              {selectedIds.size > 0 && (
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  style={{ fontSize: '0.82rem' }}
+                  onClick={prefillFromSelected}
+                >↓ Pre-fill Order Form ({selectedIds.size} batch{selectedIds.size !== 1 ? 'es' : ''})</button>
+              )}
+            </div>
           </div>
           <div className="card-body" style={{ padding: 0 }}>
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>SKU</th>
-                  <th>Description</th>
-                  <th style={{ textAlign: 'center' }}>Qty Needed</th>
-                </tr>
-              </thead>
-              <tbody>
-                {needs.length === 0 ? (
-                  <tr><td colSpan={3} style={{ textAlign: 'center', color: 'var(--muted)', padding: '20px 0', fontSize: '0.85rem' }}>
-                    No active build batches found (draft / planned / in progress)
-                  </td></tr>
-                ) : needs.map((n) => (
-                  <tr key={n.sku_id}>
-                    <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>{n.sku_id}</td>
-                    <td style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>{n.description}</td>
-                    <td style={{ textAlign: 'center', fontWeight: 700, fontSize: '1rem' }}>{n.qty}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            {batches.map((b) => {
+              const checked = selectedIds.has(b.batch_id)
+              const statusColor = b.status === 'at_powder' ? 'var(--warning)' : b.status === 'in_progress' ? 'var(--success)' : 'var(--muted)'
+              return (
+                <div key={b.batch_id} style={{
+                  borderBottom: '1px solid var(--border)',
+                  padding: '12px 20px',
+                  background: checked ? 'rgba(99,102,241,0.06)' : undefined,
+                  display: 'flex', alignItems: 'flex-start', gap: 14,
+                }}>
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    disabled={b.status === 'at_powder'}
+                    onChange={(e) => setSelectedIds((prev) => {
+                      const next = new Set(prev)
+                      e.target.checked ? next.add(b.batch_id) : next.delete(b.batch_id)
+                      return next
+                    })}
+                    style={{ marginTop: 3, cursor: b.status === 'at_powder' ? 'not-allowed' : 'pointer' }}
+                  />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+                      <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>{b.batch_name}</span>
+                      <span style={{ fontSize: '0.72rem', fontWeight: 700, color: statusColor, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{b.status.replace('_', ' ')}</span>
+                      {b.status === 'at_powder' && <span style={{ fontSize: '0.72rem', color: 'var(--muted)' }}>(already ordered)</span>}
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      {b.lines.map((l) => (
+                        <span key={l.sku_id} style={{
+                          background: 'var(--panel-2)', border: '1px solid var(--border)',
+                          borderRadius: 6, padding: '3px 10px', fontSize: '0.78rem',
+                        }}>
+                          <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{l.sku_id}</span>
+                          <span style={{ color: 'var(--muted)', marginLeft: 5 }}>× {l.qty}</span>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
           </div>
         </section>
       )}
