@@ -207,6 +207,8 @@ export default function InvoicesPage() {
   const uninvoiced    = openOrders.filter((o) => !invoiceMap.has(o.id))
   const invoiced      = orders.filter((o) => invoiceMap.has(o.id))
   const cancelledOrders = orders.filter((o) => o.status === 'cancelled')
+  const shippedCount  = openOrders.filter((o) => o.status === 'shipped').length
+  const awaitingCount = openOrders.filter((o) => o.status === 'open').length
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -261,7 +263,11 @@ export default function InvoicesPage() {
             <section className="card" style={{ marginBottom: 24 }}>
               <div className="card-header">
                 <h2 className="card-title">Active Orders</h2>
-                <div className="card-subtitle">{openOrders.length} open</div>
+                <div className="card-subtitle">
+                  {awaitingCount > 0 && <span>{awaitingCount} awaiting shipment</span>}
+                  {awaitingCount > 0 && shippedCount > 0 && <span style={{ margin: '0 6px', opacity: 0.4 }}>·</span>}
+                  {shippedCount > 0 && <span style={{ color: 'var(--success)' }}>{shippedCount} shipped</span>}
+                </div>
               </div>
               <div className="card-body" style={{ padding: 0 }}>
                 <table className="table">
@@ -271,6 +277,7 @@ export default function InvoicesPage() {
                       <th>Date</th>
                       <th>Ship To</th>
                       <th>SKUs</th>
+                      <th>Status</th>
                       <th style={{ textAlign: 'right' }}>Total</th>
                       <th>Invoice</th>
                       <th></th>
@@ -281,7 +288,7 @@ export default function InvoicesPage() {
                       const inv   = invoiceMap.get(order.id)
                       const total = orderTotal(order, null)
                       return (
-                        <tr key={order.id}>
+                        <tr key={order.id} style={order.status === 'shipped' ? { background: 'rgba(34,197,94,0.04)' } : undefined}>
                           <td style={{ fontWeight: 700 }}>{order.order_number}</td>
                           <td style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>{fmtDate(order.order_date)}</td>
                           <td style={{ fontSize: '0.8rem', color: 'var(--text-2)' }}>{order.customer_name ?? '—'}</td>
@@ -295,6 +302,13 @@ export default function InvoicesPage() {
                                 )}
                               </div>
                             ))}
+                          </td>
+                          <td>
+                            {order.status === 'shipped' ? (
+                              <span style={{ background: 'rgba(34,197,94,0.15)', color: 'var(--success)', borderRadius: 20, padding: '2px 10px', fontSize: '0.75rem', fontWeight: 700, whiteSpace: 'nowrap' }}>✓ Shipped</span>
+                            ) : (
+                              <span style={{ background: 'rgba(99,102,241,0.12)', color: '#818cf8', borderRadius: 20, padding: '2px 10px', fontSize: '0.75rem', fontWeight: 700, whiteSpace: 'nowrap' }}>Awaiting</span>
+                            )}
                           </td>
                           <td style={{ textAlign: 'right', fontWeight: 700 }}>{fmt(total)}</td>
                           <td>
