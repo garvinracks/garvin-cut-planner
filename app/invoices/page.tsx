@@ -57,8 +57,12 @@ function addDays(iso: string, days: number) {
   return d.toISOString().split('T')[0]
 }
 
-function orderTotal(order: Order, shippingOverride: number | null) {
-  const lineTotal = order.order_lines.reduce((s, l) => s + (l.unit_price ?? 0) * l.qty, 0)
+function orderTotal(order: Order, shippingOverride: number | null, linePricesOverride?: Record<string, string>) {
+  const lineTotal = order.order_lines.reduce((s, l) => {
+    const p = linePricesOverride?.[l.id]
+    const price = p !== undefined && p.trim() !== '' ? parseFloat(p) || 0 : (l.unit_price ?? 0)
+    return s + price * l.qty
+  }, 0)
   const shipping  = shippingOverride ?? order.shipping_cost ?? 0
   return lineTotal + shipping
 }
@@ -102,6 +106,7 @@ export default function InvoicesPage() {
   // Create invoice modal state
   const [creating, setCreating]      = useState<Order | null>(null)
   const [shippingInput, setShipping] = useState('')
+  const [linePrices, setLinePrices]  = useState<Record<string, string>>({})  // lineId → price string
   const [saving, setSaving]          = useState(false)
   const [bulkCreating, setBulkCreating] = useState(false)
 
@@ -210,9 +215,29 @@ export default function InvoicesPage() {
 
   async function createInvoice(order: Order) {
     setSaving(true)
+
+    // Save any corrected unit prices back to order_lines
+    for (const line of order.order_lines) {
+      const priceStr = linePrices[line.id]
+      if (priceStr !== undefined) {
+        const newPrice = priceStr.trim() !== '' ? parseFloat(priceStr) : null
+        if (newPrice !== line.unit_price) {
+          await supabase.from('order_lines').update({ unit_price: newPrice }).eq('id', line.id)
+        }
+      }
+    }
+
     const today = new Date().toISOString().split('T')[0]
     const due   = addDays(today, 30)
     const sc    = shippingInput.trim() !== '' ? parseFloat(shippingInput) : order.shipping_cost
+
+    // Recalculate total using edited prices
+    const lineTotal = order.order_lines.reduce((s, l) => {
+      const p = linePrices[l.id]
+      const price = p !== undefined && p.trim() !== '' ? parseFloat(p) : (l.unit_price ?? 0)
+      return s + price * l.qty
+    }, 0)
+
     const { data, error } = await supabase.from('turn5_invoices').insert({
       order_id:      order.id,
       issue_date:    today,
@@ -222,7 +247,7 @@ export default function InvoicesPage() {
     }).select().single()
     setSaving(false)
     if (error || !data) { showMsg('Error creating invoice: ' + error?.message); return }
-    setCreating(null); setShipping('')
+    setCreating(null); setShipping(''); setLinePrices({})
     await load()
     window.open(`/invoices/${data.id}`, '_blank')
   }
@@ -486,7 +511,13 @@ export default function InvoicesPage() {
                               )
                             ) : (
                               <button className="btn btn-secondary" style={{ fontSize: '0.75rem' }}
-                                onClick={() => { setCreating(order); setShipping(order.shipping_cost != null ? String(order.shipping_cost) : '') }}>
+                                onClick={() => {
+                                  setCreating(order)
+                                  setShipping(order.shipping_cost != null ? String(order.shipping_cost) : '')
+                                  const prices: Record<string, string> = {}
+                                  order.order_lines.forEach((l) => { prices[l.id] = l.unit_price != null ? String(l.unit_price) : '' })
+                                  setLinePrices(prices)
+                                }}>
                                 Create Invoice
                               </button>
                             )}
@@ -653,22 +684,49 @@ export default function InvoicesPage() {
       {/* ── Create Invoice Modal ─────────────────────────────────────────────── */}
       {creating && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-          <div style={{ background: 'var(--panel)', borderRadius: 12, padding: 28, width: '100%', maxWidth: 440, border: '1px solid var(--border)' }}>
+          <div style={{ background: 'var(--panel)', borderRadius: 12, padding: 28, width: '100%', maxWidth: 520, border: '1px solid var(--border)' }}>
             <div style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 18 }}>Create Invoice — PO #{creating.order_number}</div>
             <div style={{ marginBottom: 16 }}>
               <div style={{ fontSize: '0.75rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>Line Items</div>
-              {creating.order_lines.map((l) => (
-                <div key={l.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--border)', fontSize: '0.88rem' }}>
-                  <span>
-                    <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{l.ss_sku ?? '—'}</span>
-                    <span style={{ color: 'var(--muted)', marginLeft: 8 }}>× {l.qty}</span>
-                    {(l.skus?.[0]?.description ?? l.description) && (
-                      <div style={{ color: 'var(--text-2)', fontSize: '0.78rem', marginTop: 2 }}>{l.skus?.[0]?.description ?? l.description}</div>
+              {creating.order_lines.map((l) => {
+                const priceVal = linePrices[l.id] ?? (l.unit_price != null ? String(l.unit_price) : '')
+                const priceNum = priceVal.trim() !== '' ? parseFloat(priceVal) || 0 : null
+                const missing  = priceNum == null || priceNum === 0
+                return (
+                  <div key={l.id} style={{ padding: '8px 0', borderBottom: '1px solid var(--border)', fontSize: '0.88rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{l.ss_sku ?? '—'}</span>
+                        <span style={{ color: 'var(--muted)', marginLeft: 8 }}>× {l.qty}</span>
+                        {(l.skus?.[0]?.description ?? l.description) && (
+                          <div style={{ color: 'var(--muted)', fontSize: '0.78rem', marginTop: 1 }}>{l.skus?.[0]?.description ?? l.description}</div>
+                        )}
+                      </span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                        <span style={{ fontSize: '0.78rem', color: 'var(--muted)' }}>$/ea</span>
+                        <input
+                          type="number" step="0.01" min="0"
+                          value={priceVal}
+                          onChange={(e) => setLinePrices((prev) => ({ ...prev, [l.id]: e.target.value }))}
+                          placeholder="0.00"
+                          style={{
+                            width: 80, textAlign: 'right', padding: '4px 8px',
+                            border: `1px solid ${missing ? 'var(--warning)' : 'var(--border)'}`,
+                            borderRadius: 6, background: 'var(--panel-2)',
+                            color: 'var(--text)', fontSize: '0.85rem',
+                          }}
+                        />
+                        <span style={{ width: 70, textAlign: 'right', fontWeight: 600, color: missing ? 'var(--warning)' : 'var(--text)' }}>
+                          {priceNum != null ? fmt(priceNum * l.qty) : '—'}
+                        </span>
+                      </div>
+                    </div>
+                    {missing && (
+                      <div style={{ fontSize: '0.72rem', color: 'var(--warning)', marginTop: 3 }}>⚠ Enter unit price</div>
                     )}
-                  </span>
-                  <span style={{ fontWeight: 600, whiteSpace: 'nowrap', marginLeft: 12 }}>{fmt((l.unit_price ?? 0) * l.qty)}</span>
-                </div>
-              ))}
+                  </div>
+                )
+              })}
             </div>
             <div style={{ marginBottom: 20 }}>
               <label className="label">Shipping Cost ($)</label>
@@ -680,13 +738,13 @@ export default function InvoicesPage() {
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: '1rem', marginBottom: 24, padding: '10px 0', borderTop: '1px solid var(--border)' }}>
               <span>Total</span>
-              <span>{fmt(orderTotal(creating, shippingInput.trim() !== '' ? parseFloat(shippingInput) : creating.shipping_cost))}</span>
+              <span>{fmt(orderTotal(creating, shippingInput.trim() !== '' ? parseFloat(shippingInput) : creating.shipping_cost, linePrices))}</span>
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
               <button className="btn btn-primary" style={{ flex: 1 }} disabled={saving} onClick={() => void createInvoice(creating)}>
                 {saving ? 'Creating…' : '📄 Create & Open Invoice'}
               </button>
-              <button className="btn btn-secondary" onClick={() => { setCreating(null); setShipping('') }}>Cancel</button>
+              <button className="btn btn-secondary" onClick={() => { setCreating(null); setShipping(''); setLinePrices({}) }}>Cancel</button>
             </div>
           </div>
         </div>
