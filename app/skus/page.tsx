@@ -358,6 +358,11 @@ export default function SkusPage() {
   const [skuModalIsEdit, setSkuModalIsEdit] = useState(false)
   const [skuForm, setSkuForm] = useState(emptySkuForm)
 
+  // Inline cost editing
+  const [costEditing, setCostEditing] = useState(false)
+  const [costForm, setCostForm] = useState({ bolt_kit_cost: '', packaging_cost: '', labor_cost_per_unit: '' })
+  const [costSaving, setCostSaving] = useState(false)
+
   // Part modal
   const [partModalOpen, setPartModalOpen] = useState(false)
   const [partModalIsEdit, setPartModalIsEdit] = useState(false)
@@ -997,6 +1002,30 @@ export default function SkusPage() {
     }
 
     setSaving(false)
+  }
+
+  function openCostEdit(sku: SKU) {
+    setCostForm({
+      bolt_kit_cost:       sku.bolt_kit_cost        != null ? String(sku.bolt_kit_cost)        : '',
+      packaging_cost:      sku.packaging_cost       != null ? String(sku.packaging_cost)       : '',
+      labor_cost_per_unit: sku.labor_cost_per_unit  != null ? String(sku.labor_cost_per_unit)  : '',
+    })
+    setCostEditing(true)
+  }
+
+  async function saveCosts(sku: SKU) {
+    setCostSaving(true)
+    const payload = {
+      bolt_kit_cost:       costForm.bolt_kit_cost.trim()       ? parseFloat(costForm.bolt_kit_cost)       : null,
+      packaging_cost:      costForm.packaging_cost.trim()      ? parseFloat(costForm.packaging_cost)      : null,
+      labor_cost_per_unit: costForm.labor_cost_per_unit.trim() ? parseFloat(costForm.labor_cost_per_unit) : null,
+    }
+    const { error } = await supabase.from('skus').update(payload).eq('id', sku.id)
+    if (!error) {
+      setSkus((prev) => prev.map((s) => s.id === sku.id ? { ...s, ...payload } : s))
+      setCostEditing(false)
+    }
+    setCostSaving(false)
   }
 
   async function handleDeleteSku() {
@@ -2030,6 +2059,138 @@ export default function SkusPage() {
                   <div className="message">{relationMessage || builderMessage}</div>
                 )}
 
+                {/* ── Unit Cost Card ── */}
+                <section className="card">
+                  <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <h3 className="card-title">Unit Cost</h3>
+                    {!costEditing && (
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        style={{ fontSize: '0.78rem', padding: '3px 10px' }}
+                        onClick={() => openCostEdit(selectedSku)}
+                      >
+                        ✏ Edit Costs
+                      </button>
+                    )}
+                  </div>
+                  <div className="card-body" style={{ padding: '12px 16px' }}>
+                    {costEditing ? (
+                      <div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 12 }}>
+                          <div>
+                            <label className="label">Bolt Kit Cost ($)</label>
+                            <input
+                              className="field"
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              value={costForm.bolt_kit_cost}
+                              onChange={(e) => setCostForm((p) => ({ ...p, bolt_kit_cost: e.target.value }))}
+                              placeholder="0.00"
+                            />
+                          </div>
+                          <div>
+                            <label className="label">Packaging Cost ($)</label>
+                            <input
+                              className="field"
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              value={costForm.packaging_cost}
+                              onChange={(e) => setCostForm((p) => ({ ...p, packaging_cost: e.target.value }))}
+                              placeholder="0.00"
+                            />
+                          </div>
+                          <div>
+                            <label className="label">Labor Cost ($)</label>
+                            <input
+                              className="field"
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              value={costForm.labor_cost_per_unit}
+                              onChange={(e) => setCostForm((p) => ({ ...p, labor_cost_per_unit: e.target.value }))}
+                              placeholder="0.00"
+                            />
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <button
+                            type="button"
+                            className="btn btn-primary"
+                            disabled={costSaving}
+                            onClick={() => void saveCosts(selectedSku)}
+                            style={{ fontSize: '0.82rem' }}
+                          >
+                            {costSaving ? 'Saving…' : 'Save'}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-secondary"
+                            onClick={() => setCostEditing(false)}
+                            style={{ fontSize: '0.82rem' }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                        <tbody>
+                          <tr>
+                            <td style={{ color: 'var(--text-2)', paddingBottom: 4 }}>Material (est.)</td>
+                            <td style={{ textAlign: 'right', paddingBottom: 4, fontWeight: 600 }}>
+                              {matEstCost != null ? `$${matEstCost.toFixed(2)}` : <span style={{ color: 'var(--muted)' }}>—</span>}
+                            </td>
+                          </tr>
+                          <tr>
+                            <td style={{ color: '#a78bfa', paddingBottom: 4 }}>
+                              Powder Coat (est.)
+                              {latestPowderCostPerLb != null && skuTotalWeight > 0 && (
+                                <span style={{ marginLeft: 6, fontSize: '0.72rem', color: 'var(--muted)' }}>
+                                  ({skuTotalWeight.toFixed(2)} lbs × ${latestPowderCostPerLb.toFixed(2)}/lb)
+                                </span>
+                              )}
+                            </td>
+                            <td style={{ textAlign: 'right', paddingBottom: 4, fontWeight: 600, color: '#a78bfa' }}>
+                              {powderEstCost != null ? `$${powderEstCost.toFixed(2)}` : <span style={{ color: 'var(--muted)' }}>—</span>}
+                            </td>
+                          </tr>
+                          <tr>
+                            <td style={{ color: 'var(--text-2)', paddingBottom: 4 }}>Bolt Kit</td>
+                            <td style={{ textAlign: 'right', paddingBottom: 4, fontWeight: 600 }}>
+                              {selectedSku.bolt_kit_cost != null ? `$${selectedSku.bolt_kit_cost.toFixed(2)}` : <span style={{ color: 'var(--muted)' }}>—</span>}
+                            </td>
+                          </tr>
+                          <tr>
+                            <td style={{ color: 'var(--text-2)', paddingBottom: 4 }}>Packaging</td>
+                            <td style={{ textAlign: 'right', paddingBottom: 4, fontWeight: 600 }}>
+                              {selectedSku.packaging_cost != null ? `$${selectedSku.packaging_cost.toFixed(2)}` : <span style={{ color: 'var(--muted)' }}>—</span>}
+                            </td>
+                          </tr>
+                          <tr>
+                            <td style={{ color: 'var(--text-2)', paddingBottom: 4 }}>Labor</td>
+                            <td style={{ textAlign: 'right', paddingBottom: 4, fontWeight: 600 }}>
+                              {selectedSku.labor_cost_per_unit != null ? `$${selectedSku.labor_cost_per_unit.toFixed(2)}` : <span style={{ color: 'var(--muted)' }}>—</span>}
+                            </td>
+                          </tr>
+                        </tbody>
+                        {totalUnitCost != null && (
+                          <tfoot>
+                            <tr style={{ borderTop: '2px solid var(--border)' }}>
+                              <td style={{ fontWeight: 800, paddingTop: 8, fontSize: '0.9rem' }}>Total (per unit)</td>
+                              <td style={{ textAlign: 'right', fontWeight: 800, paddingTop: 8, fontSize: '0.95rem', color: 'var(--accent)' }}>
+                                ${totalUnitCost.toFixed(2)}
+                              </td>
+                            </tr>
+                          </tfoot>
+                        )}
+                      </table>
+                    )}
+                  </div>
+                </section>
+
                 {/* ── Sub-Assemblies Section ── */}
                 <section className="card">
                   <div className="card-header">
@@ -2600,7 +2761,7 @@ export default function SkusPage() {
                               )
                             })}
                           </tbody>
-                          {/* Totals row */}
+                          {/* Material subtotal row */}
                           <tfoot>
                             <tr style={{ borderTop: '2px solid var(--border)' }}>
                               <td colSpan={3} style={{ fontWeight: 700, fontSize: '0.83rem', paddingTop: 8 }}>
@@ -2620,60 +2781,6 @@ export default function SkusPage() {
                                 {matEstCost != null ? `$${matEstCost.toFixed(2)}` : '—'}
                               </td>
                             </tr>
-                            {powderEstCost != null && (
-                              <tr>
-                                <td colSpan={5} style={{ fontSize: '0.8rem', color: '#a78bfa', paddingTop: 4 }}>
-                                  Powder Coat
-                                  <span style={{ marginLeft: 6, fontSize: '0.72rem', color: 'var(--muted)' }}>
-                                    ({skuTotalWeight.toFixed(2)} lbs × ${latestPowderCostPerLb!.toFixed(2)}/lb)
-                                  </span>
-                                </td>
-                                <td style={{ textAlign: 'right', fontSize: '0.8rem', paddingTop: 4, color: '#a78bfa' }}>
-                                  ${powderEstCost.toFixed(2)}
-                                </td>
-                              </tr>
-                            )}
-                            {powderEstCost == null && latestPowderCostPerLb == null && (
-                              <tr>
-                                <td colSpan={6} style={{ fontSize: '0.75rem', color: 'var(--muted)', paddingTop: 4, fontStyle: 'italic' }}>
-                                  Powder coat cost not yet available — record a return on the Powder Coat page to set the rate.
-                                </td>
-                              </tr>
-                            )}
-                            {selectedSku.bolt_kit_cost != null && (
-                              <tr>
-                                <td colSpan={5} style={{ fontSize: '0.8rem', color: 'var(--muted)', paddingTop: 4 }}>Bolt kit</td>
-                                <td style={{ textAlign: 'right', fontSize: '0.8rem', paddingTop: 4 }}>
-                                  ${selectedSku.bolt_kit_cost.toFixed(2)}
-                                </td>
-                              </tr>
-                            )}
-                            {selectedSku.packaging_cost != null && (
-                              <tr>
-                                <td colSpan={5} style={{ fontSize: '0.8rem', color: 'var(--muted)', paddingTop: 4 }}>Packaging</td>
-                                <td style={{ textAlign: 'right', fontSize: '0.8rem', paddingTop: 4 }}>
-                                  ${selectedSku.packaging_cost.toFixed(2)}
-                                </td>
-                              </tr>
-                            )}
-                            {selectedSku.labor_cost_per_unit != null && (
-                              <tr>
-                                <td colSpan={5} style={{ fontSize: '0.8rem', color: 'var(--muted)', paddingTop: 4 }}>Labor</td>
-                                <td style={{ textAlign: 'right', fontSize: '0.8rem', paddingTop: 4 }}>
-                                  ${selectedSku.labor_cost_per_unit.toFixed(2)}
-                                </td>
-                              </tr>
-                            )}
-                            {totalUnitCost != null && (
-                              <tr style={{ borderTop: '1px solid var(--border)' }}>
-                                <td colSpan={5} style={{ fontWeight: 800, fontSize: '0.88rem', paddingTop: 6 }}>
-                                  Grand Total (per unit)
-                                </td>
-                                <td style={{ textAlign: 'right', fontWeight: 800, fontSize: '0.95rem', paddingTop: 6, color: 'var(--accent)' }}>
-                                  ${totalUnitCost.toFixed(2)}
-                                </td>
-                              </tr>
-                            )}
                           </tfoot>
                         </table>
                       </div>
@@ -2728,45 +2835,6 @@ export default function SkusPage() {
                   <option key={opt} value={opt}>{opt}</option>
                 ))}
               </select>
-            </div>
-
-            <div>
-              <label className="label">Bolt Kit Cost ($)</label>
-              <input
-                className="field"
-                type="number"
-                step="0.01"
-                min="0"
-                value={skuForm.bolt_kit_cost}
-                onChange={(e) => setSkuForm((prev) => ({ ...prev, bolt_kit_cost: e.target.value }))}
-                placeholder="0.00"
-              />
-            </div>
-
-            <div>
-              <label className="label">Packaging Cost ($)</label>
-              <input
-                className="field"
-                type="number"
-                step="0.01"
-                min="0"
-                value={skuForm.packaging_cost}
-                onChange={(e) => setSkuForm((prev) => ({ ...prev, packaging_cost: e.target.value }))}
-                placeholder="0.00"
-              />
-            </div>
-
-            <div>
-              <label className="label">Labor Cost ($)</label>
-              <input
-                className="field"
-                type="number"
-                step="0.01"
-                min="0"
-                value={skuForm.labor_cost_per_unit}
-                onChange={(e) => setSkuForm((prev) => ({ ...prev, labor_cost_per_unit: e.target.value }))}
-                placeholder="0.00"
-              />
             </div>
 
             <div style={{ gridColumn: '1 / -1' }}>
