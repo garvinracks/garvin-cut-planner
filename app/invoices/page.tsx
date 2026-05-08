@@ -22,6 +22,7 @@ type Order = {
   order_date: string
   customer_name: string | null
   shipping_cost: number | null
+  shipped_at: string | null
   shipstation_order_id: number | null
   ss_status: string | null
   status: string
@@ -94,7 +95,7 @@ export default function InvoicesPage() {
     const [{ data: oData }, { data: iData }] = await Promise.all([
       supabase
         .from('orders')
-        .select('id, order_number, order_date, customer_name, shipping_cost, shipstation_order_id, ss_status, status, order_lines(id, sku_id, ss_sku, description, qty, unit_price, skus(description))')
+        .select('id, order_number, order_date, customer_name, shipping_cost, shipped_at, shipstation_order_id, ss_status, status, order_lines(id, sku_id, ss_sku, description, qty, unit_price, skus(description))')
         .eq('channel', 'turn5')
         .order('order_date', { ascending: false }),
       supabase.from('turn5_invoices').select('*').order('created_at', { ascending: false }),
@@ -305,7 +306,19 @@ export default function InvoicesPage() {
                           </td>
                           <td>
                             {order.status === 'shipped' ? (
-                              <span style={{ background: 'rgba(34,197,94,0.15)', color: 'var(--success)', borderRadius: 20, padding: '2px 10px', fontSize: '0.75rem', fontWeight: 700, whiteSpace: 'nowrap' }}>✓ Shipped</span>
+                              <div>
+                                <span style={{ background: 'rgba(34,197,94,0.15)', color: 'var(--success)', borderRadius: 20, padding: '2px 10px', fontSize: '0.75rem', fontWeight: 700, whiteSpace: 'nowrap' }}>✓ Shipped</span>
+                                {order.shipped_at && (
+                                  <div style={{ fontSize: '0.72rem', color: 'var(--muted)', marginTop: 2 }}>
+                                    {fmtDate(order.shipped_at)}
+                                  </div>
+                                )}
+                                {order.shipping_cost != null && (
+                                  <div style={{ fontSize: '0.72rem', color: 'var(--success)', marginTop: 1 }}>
+                                    Ship: ${order.shipping_cost.toFixed(2)}
+                                  </div>
+                                )}
+                              </div>
                             ) : (
                               <span style={{ background: 'rgba(99,102,241,0.12)', color: '#818cf8', borderRadius: 20, padding: '2px 10px', fontSize: '0.75rem', fontWeight: 700, whiteSpace: 'nowrap' }}>Awaiting</span>
                             )}
