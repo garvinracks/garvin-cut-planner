@@ -79,9 +79,10 @@ export default function BoltKitsPage() {
       // Active build batches with their lines → tally kit needs
       supabase
         .from('build_batches')
-        .select('id, status, build_batch_lines(sku_id, qty, skus(description))')
+        .select('id, status, build_batch_lines(sku_id, qty)')
         .in('status', ['draft', 'planned', 'in_progress']),
     ])
+    const skuMap = new Map<string, string>((skuData ?? []).map((s: any) => [s.id, s.description]))
     setSkus((skuData ?? []) as SKU[])
     setOrders((ordData ?? []) as unknown as SavedOrder[])
 
@@ -91,7 +92,7 @@ export default function BoltKitsPage() {
       for (const line of (batch.build_batch_lines ?? [])) {
         if (!line.sku_id) continue
         const existing = needMap.get(line.sku_id)
-        const desc = line.skus?.description ?? line.sku_id
+        const desc = skuMap.get(line.sku_id) ?? line.sku_id
         if (existing) { existing.qty += line.qty }
         else { needMap.set(line.sku_id, { sku_id: line.sku_id, description: desc, qty: line.qty }) }
       }
