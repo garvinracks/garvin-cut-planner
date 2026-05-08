@@ -1573,7 +1573,7 @@ export default function OrdersPage() {
                                       <button
                                         className="btn btn-primary"
                                         style={{ height: 24, fontSize: '0.72rem', padding: '0 8px', flexShrink: 0 }}
-                                        onClick={(e) => { e.stopPropagation(); setShippingOrderId(order.id); setShippingCost('') }}
+                                        onClick={(e) => { e.stopPropagation(); setShippingOrderId(order.id) }}
                                       >
                                         Ship →
                                       </button>
