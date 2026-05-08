@@ -309,6 +309,7 @@ export default function InvoicesPage() {
   const cancelledOrders = orders.filter((o) => o.status === 'cancelled')
   const shippedCount  = openOrders.filter((o) => o.status === 'shipped').length
   const awaitingCount = openOrders.filter((o) => o.status === 'open').length
+  const selectedDraftIds = [...selectedInvoiceIds].filter((id) => invoices.find((i) => i.id === id)?.status === 'draft')
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -607,21 +608,15 @@ export default function InvoicesPage() {
                   <div className="card-subtitle">{invoiced.length} invoice{invoiced.length !== 1 ? 's' : ''}</div>
                 </div>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                  {selectedInvoiceIds.size > 0 && (() => {
-                    const selectedDraftIds = [...selectedInvoiceIds].filter((id) => {
-                      const inv = invoices.find((i) => i.id === id)
-                      return inv?.status === 'draft'
-                    })
-                    return selectedDraftIds.length > 0 ? (
-                      <button
-                        className="btn btn-primary"
-                        style={{ fontSize: '0.82rem', background: 'var(--success)', borderColor: 'var(--success)' }}
-                        onClick={() => void markAllSent(selectedDraftIds)}
-                      >
-                        ✓ Mark {selectedDraftIds.length} Sent
-                      </button>
-                    ) : null
-                  })()}
+                  {selectedDraftIds.length > 0 && (
+                    <button
+                      className="btn btn-primary"
+                      style={{ fontSize: '0.82rem', background: 'var(--success)', borderColor: 'var(--success)' }}
+                      onClick={() => void markAllSent(selectedDraftIds)}
+                    >
+                      ✓ Mark {selectedDraftIds.length} Sent
+                    </button>
+                  )}
                   {selectedInvoiceIds.size > 0 && (
                     <button
                       className="btn btn-secondary"
