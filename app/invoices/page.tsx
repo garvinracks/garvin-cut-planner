@@ -276,8 +276,17 @@ export default function InvoicesPage() {
   }
 
   async function markSent(invoiceId: string) {
-    await supabase.from('turn5_invoices').update({ status: 'sent', sent_at: new Date().toISOString() }).eq('id', invoiceId)
-    await load()
+    const sentAt = new Date().toISOString()
+    await supabase.from('turn5_invoices').update({ status: 'sent', sent_at: sentAt }).eq('id', invoiceId)
+    // Update state in place — no full reload so page doesn't scroll to top
+    setInvoices((prev) => prev.map((inv) => inv.id === invoiceId ? { ...inv, status: 'sent', sent_at: sentAt } : inv))
+  }
+
+  async function markAllSent(invoiceIds: string[]) {
+    const sentAt = new Date().toISOString()
+    await supabase.from('turn5_invoices').update({ status: 'sent', sent_at: sentAt }).in('id', invoiceIds)
+    setInvoices((prev) => prev.map((inv) => invoiceIds.includes(inv.id) ? { ...inv, status: 'sent', sent_at: sentAt } : inv))
+    setSelectedInvoiceIds(new Set())
   }
 
   async function deleteInvoice(invoiceId: string) {
@@ -597,7 +606,22 @@ export default function InvoicesPage() {
                   <h2 className="card-title">Invoice History</h2>
                   <div className="card-subtitle">{invoiced.length} invoice{invoiced.length !== 1 ? 's' : ''}</div>
                 </div>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  {selectedInvoiceIds.size > 0 && (() => {
+                    const selectedDraftIds = [...selectedInvoiceIds].filter((id) => {
+                      const inv = invoices.find((i) => i.id === id)
+                      return inv?.status === 'draft'
+                    })
+                    return selectedDraftIds.length > 0 ? (
+                      <button
+                        className="btn btn-primary"
+                        style={{ fontSize: '0.82rem', background: 'var(--success)', borderColor: 'var(--success)' }}
+                        onClick={() => void markAllSent(selectedDraftIds)}
+                      >
+                        ✓ Mark {selectedDraftIds.length} Sent
+                      </button>
+                    ) : null
+                  })()}
                   {selectedInvoiceIds.size > 0 && (
                     <button
                       className="btn btn-secondary"
