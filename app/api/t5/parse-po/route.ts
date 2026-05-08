@@ -80,7 +80,8 @@ function parseT5PO(raw: string): ParsedPO {
       }
 
       // Parse name and street number+name from nameStreetBlock
-      const nsM = nameStreetBlock.match(/^([A-Za-z][A-Za-z\s]+?)\s+(\d+.*)$/)
+      // Name can contain hyphens (Young-gray), apostrophes (O'Brien), periods (Jr.)
+      const nsM = nameStreetBlock.match(/^([A-Za-z][A-Za-z\s'.-]+?)\s+(\d+.*)$/)
       if (nsM) {
         name    = nsM[1].trim()
         street1 = nsM[2].trim()
@@ -89,7 +90,7 @@ function parseT5PO(raw: string): ParsedPO {
       }
     } else {
       // Fallback: no street suffix — try splitting on last run of alpha words (city)
-      const nsM = beforeStateZip.match(/^([A-Za-z][A-Za-z\s]+?)\s+(\d+.*?)\s+([A-Za-z][A-Za-z\s]*)$/)
+      const nsM = beforeStateZip.match(/^([A-Za-z][A-Za-z\s'.-]+?)\s+(\d+.*?)\s+([A-Za-z][A-Za-z\s]*)$/)
       if (nsM) {
         name    = nsM[1].trim()
         street1 = nsM[2].trim()
