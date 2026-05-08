@@ -35,7 +35,7 @@ async function fetchAwaitingOrders(storeId: number): Promise<any[]> {
 }
 
 // Look up a single order's real status from ShipStation
-async function ssGetOrder(ssOrderId: number): Promise<{ orderStatus: string; shippingAmount?: number } | null> {
+async function ssGetOrder(ssOrderId: number): Promise<{ orderStatus: string; shippingAmount?: number; shipDate?: string } | null> {
   try {
     return await ssGet(`/orders/${ssOrderId}`)
   } catch {
@@ -180,12 +180,39 @@ export async function POST() {
       }
     }
 
+    // ── 3. Backfill shipped orders missing date or cost ───────────────────────
+    // Orders marked shipped before these fields were tracked need a one-time
+    // lookup to pull shippingAmount + the actual ship date from ShipStation.
+    let backfilled = 0
+    const { data: incompleteShipped } = await supabase
+      .from('orders')
+      .select('id, shipstation_order_id')
+      .eq('status', 'shipped')
+      .not('shipstation_order_id', 'is', null)
+      .or('shipping_cost.is.null,shipped_at.is.null')
+
+    for (const row of (incompleteShipped ?? [])) {
+      const ssOrder = await ssGetOrder(row.shipstation_order_id)
+      if (!ssOrder) continue
+      const shipDate = ssOrder.shipDate ?? null
+      await supabase
+        .from('orders')
+        .update({
+          shipping_cost: ssOrder.shippingAmount ?? null,
+          shipped_at:    shipDate ?? new Date().toISOString(),
+          synced_at:     new Date().toISOString(),
+        })
+        .eq('id', row.id)
+      backfilled++
+    }
+
     return NextResponse.json({
       success: true,
       imported,
       shipped,
       skipped,
       cancelled,
+      backfilled,
       stores: enabled.map((s) => ({ name: s.storeName, channel: s.channel })),
     })
   } catch (err: unknown) {
