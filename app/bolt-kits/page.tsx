@@ -196,7 +196,7 @@ export default function BoltKitsPage() {
       </div>
 
       {/* ── Kits Needed ── */}
-      {!loading && needs.length > 0 && (
+      {!loading && (
         <section className="card" style={{ marginBottom: 24 }}>
           <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
@@ -228,7 +228,11 @@ export default function BoltKitsPage() {
                 </tr>
               </thead>
               <tbody>
-                {needs.map((n) => (
+                {needs.length === 0 ? (
+                  <tr><td colSpan={3} style={{ textAlign: 'center', color: 'var(--muted)', padding: '20px 0', fontSize: '0.85rem' }}>
+                    No active build batches found (draft / planned / in progress)
+                  </td></tr>
+                ) : needs.map((n) => (
                   <tr key={n.sku_id}>
                     <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>{n.sku_id}</td>
                     <td style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>{n.description}</td>
