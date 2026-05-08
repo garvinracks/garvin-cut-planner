@@ -76,23 +76,25 @@ export default function BoltKitsPage() {
         .from('bolt_kit_orders')
         .select('id, order_date, supplier, shipping_cost, notes, created_at, bolt_kit_order_lines(id, sku_id, qty, unit_cost, true_cost, skus(description))')
         .order('order_date', { ascending: false }),
-      // Active build batch lines → tally kit needs
+      // Active build batches with their lines → tally kit needs
       supabase
-        .from('build_batch_lines')
-        .select('sku_id, qty, skus(description), build_batches!inner(status)')
-        .in('build_batches.status', ['draft', 'planned', 'in_progress']),
+        .from('build_batches')
+        .select('id, status, build_batch_lines(sku_id, qty, skus(description))')
+        .in('status', ['draft', 'planned', 'in_progress']),
     ])
     setSkus((skuData ?? []) as SKU[])
     setOrders((ordData ?? []) as unknown as SavedOrder[])
 
-    // Aggregate qty by SKU from active batches
+    // Flatten lines from all active batches and aggregate qty by SKU
     const needMap = new Map<string, KitNeed>()
-    for (const line of (openLines ?? []) as any[]) {
-      if (!line.sku_id) continue
-      const existing = needMap.get(line.sku_id)
-      const desc = (line.skus as any)?.description ?? line.sku_id
-      if (existing) { existing.qty += line.qty }
-      else { needMap.set(line.sku_id, { sku_id: line.sku_id, description: desc, qty: line.qty }) }
+    for (const batch of (openLines ?? []) as any[]) {
+      for (const line of (batch.build_batch_lines ?? [])) {
+        if (!line.sku_id) continue
+        const existing = needMap.get(line.sku_id)
+        const desc = line.skus?.description ?? line.sku_id
+        if (existing) { existing.qty += line.qty }
+        else { needMap.set(line.sku_id, { sku_id: line.sku_id, description: desc, qty: line.qty }) }
+      }
     }
     setNeeds([...needMap.values()].sort((a, b) => a.sku_id.localeCompare(b.sku_id)))
 
