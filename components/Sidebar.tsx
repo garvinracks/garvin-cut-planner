@@ -143,6 +143,7 @@ const LINKS = [
   { href: '/orders',        label: 'Orders',         Icon: IconOrders,     group: 'Operations' },
   { href: '/invoices',      label: 'T5 Invoices',    Icon: IconOrders,     group: 'Operations' },
   { href: '/inventory',     label: 'Inventory',      Icon: IconInventory,  group: 'Operations' },
+  { href: '/bolt-kits',     label: 'Bolt Kits',      Icon: IconInventory,  group: 'Operations' },
   { href: '/batches',       label: 'Build Batches',  Icon: IconBatches,    group: 'Operations' },
   { href: '/powder',        label: 'Powder Coat',    Icon: IconPowder,     group: 'Operations' },
   { href: '/skus',          label: 'SKUs',           Icon: IconSKU,        group: 'Library'    },
