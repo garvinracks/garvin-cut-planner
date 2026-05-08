@@ -76,22 +76,21 @@ export default function BoltKitsPage() {
         .from('bolt_kit_orders')
         .select('id, order_date, supplier, shipping_cost, notes, created_at, bolt_kit_order_lines(id, sku_id, qty, unit_cost, true_cost, skus(description))')
         .order('order_date', { ascending: false }),
-      // Open orders (not shipped, not cancelled) → tally kit needs
+      // Active build batch lines → tally kit needs
       supabase
-        .from('order_lines')
-        .select('sku_id, qty, skus(description), orders!inner(status)')
-        .not('orders.status', 'in', '("shipped","cancelled")')
-        .not('sku_id', 'is', null),
+        .from('build_batch_lines')
+        .select('sku_id, qty, skus(description), build_batches!inner(status)')
+        .in('build_batches.status', ['draft', 'planned', 'in_progress']),
     ])
     setSkus((skuData ?? []) as SKU[])
     setOrders((ordData ?? []) as unknown as SavedOrder[])
 
-    // Aggregate qty by SKU from open orders
+    // Aggregate qty by SKU from active batches
     const needMap = new Map<string, KitNeed>()
     for (const line of (openLines ?? []) as any[]) {
       if (!line.sku_id) continue
       const existing = needMap.get(line.sku_id)
-      const desc = line.skus?.description ?? line.sku_id
+      const desc = (line.skus as any)?.description ?? line.sku_id
       if (existing) { existing.qty += line.qty }
       else { needMap.set(line.sku_id, { sku_id: line.sku_id, description: desc, qty: line.qty }) }
     }
@@ -199,7 +198,7 @@ export default function BoltKitsPage() {
           <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
               <h2 className="card-title">Kits Needed</h2>
-              <div className="card-subtitle">From all open (unshipped) orders</div>
+              <div className="card-subtitle">From active build batches (draft / planned / in progress)</div>
             </div>
             <button
               type="button"
