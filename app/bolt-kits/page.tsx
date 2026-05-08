@@ -14,20 +14,13 @@ type BatchNeed = {
   lines: { sku_id: string; qty: number }[]
 }
 
-type OrderLine = {
-  sku_id: string
-  qty: string
-  unit_cost: string
-  // derived
-  skuDesc?: string
-  trueCost?: number
-}
+type OrderLine = { sku_id: string; qty: string }
 
 type SavedOrder = {
   id: string
   order_date: string
   supplier: string
-  shipping_cost: number
+  shipping_cost: number | null
   notes: string | null
   created_at: string
   bolt_kit_order_lines: {
@@ -47,28 +40,35 @@ function fmt(n: number | null | undefined) {
 function fmtDate(iso: string) {
   return new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 }
+function isPending(ord: SavedOrder) {
+  return ord.bolt_kit_order_lines.every((l) => !l.unit_cost || l.unit_cost === 0)
+}
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function BoltKitsPage() {
   const supabase = useMemo(() => createBrowserClient(), [])
 
-  const [skus, setSkus]             = useState<SKU[]>([])
-  const [orders, setOrders]         = useState<SavedOrder[]>([])
-  const [batches, setBatches]       = useState<BatchNeed[]>([])
+  const [skus, setSkus]               = useState<SKU[]>([])
+  const [orders, setOrders]           = useState<SavedOrder[]>([])
+  const [batches, setBatches]         = useState<BatchNeed[]>([])
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const [loading, setLoading]       = useState(true)
-  const [copied, setCopied]         = useState(false)
-  const [saving, setSaving]   = useState(false)
-  const [message, setMessage] = useState('')
-  const [msgOk, setMsgOk]     = useState(true)
+  const [loading, setLoading]         = useState(true)
+  const [copied, setCopied]           = useState(false)
+  const [saving, setSaving]           = useState(false)
+  const [message, setMessage]         = useState('')
+  const [msgOk, setMsgOk]             = useState(true)
 
-  // New order form
-  const [orderDate, setOrderDate]       = useState(() => new Date().toISOString().split('T')[0])
-  const [supplier, setSupplier]         = useState('Ababa')
-  const [shippingCost, setShippingCost] = useState('')
-  const [notes, setNotes]               = useState('')
-  const [lines, setLines]               = useState<OrderLine[]>([{ sku_id: '', qty: '1', unit_cost: '' }])
+  // Step 1 form — just SKU + qty
+  const [orderDate, setOrderDate] = useState(() => new Date().toISOString().split('T')[0])
+  const [supplier, setSupplier]   = useState('Ababa')
+  const [notes, setNotes]         = useState('')
+  const [lines, setLines]         = useState<OrderLine[]>([{ sku_id: '', qty: '1' }])
+
+  // Step 2 — enter invoice on a saved order
+  const [invoicingId, setInvoicingId]       = useState<string | null>(null)
+  const [invoiceLineCosts, setInvoiceLineCosts] = useState<Record<string, string>>({})  // lineId → price
+  const [invoiceShipping, setInvoiceShipping]   = useState('')
 
   function showMsg(text: string, ok = true) {
     setMessage(text); setMsgOk(ok)
@@ -82,118 +82,92 @@ export default function BoltKitsPage() {
         .from('bolt_kit_orders')
         .select('id, order_date, supplier, shipping_cost, notes, created_at, bolt_kit_order_lines(id, sku_id, qty, unit_cost, true_cost, skus(description))')
         .order('order_date', { ascending: false }),
-      // All non-complete batches with their lines
       supabase
         .from('build_batches')
         .select('id, name, status, build_batch_lines(sku_id, qty)')
         .not('status', 'eq', 'complete')
         .order('created_at', { ascending: false }),
     ])
-    const skuMap = new Map<string, string>((skuData ?? []).map((s: any) => [s.id, s.description]))
     setSkus((skuData ?? []) as SKU[])
     setOrders((ordData ?? []) as unknown as SavedOrder[])
-
-    const batchList: BatchNeed[] = (batchData ?? []).map((b: any) => ({
+    setBatches((batchData ?? []).map((b: any) => ({
       batch_id:   b.id,
       batch_name: b.name ?? b.id,
       status:     b.status,
-      lines:      (b.build_batch_lines ?? [])
-        .filter((l: any) => l.sku_id)
-        .map((l: any) => ({ sku_id: l.sku_id, qty: l.qty })),
-    }))
-    setBatches(batchList)
-
+      lines:      (b.build_batch_lines ?? []).filter((l: any) => l.sku_id).map((l: any) => ({ sku_id: l.sku_id, qty: l.qty })),
+    })))
     setLoading(false)
   }
 
   useEffect(() => { void load() }, [])
 
-  // ── Actions ──────────────────────────────────────────────────────────────
+  // ── Actions ───────────────────────────────────────────────────────────────
 
   function prefillFromSelected() {
     const merged = new Map<string, number>()
     for (const b of batches.filter((b) => selectedIds.has(b.batch_id))) {
-      for (const l of b.lines) {
-        merged.set(l.sku_id, (merged.get(l.sku_id) ?? 0) + l.qty)
-      }
+      for (const l of b.lines) merged.set(l.sku_id, (merged.get(l.sku_id) ?? 0) + l.qty)
     }
-    const newLines: OrderLine[] = [...merged.entries()].map(([sku_id, qty]) => ({
-      sku_id, qty: String(qty), unit_cost: '',
-    }))
-    setLines(newLines.length > 0 ? newLines : [{ sku_id: '', qty: '1', unit_cost: '' }])
+    setLines([...merged.entries()].map(([sku_id, qty]) => ({ sku_id, qty: String(qty) })))
   }
 
-  // ── Derived ───────────────────────────────────────────────────────────────
-
-  const validLines = lines.filter((l) => l.sku_id && l.qty && l.unit_cost)
-
-  const totalQty  = validLines.reduce((s, l) => s + (parseInt(l.qty) || 0), 0)
-  const shippingN = parseFloat(shippingCost) || 0
-  const shipPerUnit = totalQty > 0 ? shippingN / totalQty : 0
-
-  const previewLines = validLines.map((l) => ({
-    ...l,
-    skuDesc: skus.find((s) => s.id === l.sku_id)?.description ?? l.sku_id,
-    trueCost: (parseFloat(l.unit_cost) || 0) + shipPerUnit,
-  }))
-
-  const orderTotal = validLines.reduce((s, l) => s + (parseFloat(l.unit_cost) || 0) * (parseInt(l.qty) || 0), 0) + shippingN
-
-  // ── Actions ───────────────────────────────────────────────────────────────
-
-  function addLine() {
-    setLines((prev) => [...prev, { sku_id: '', qty: '1', unit_cost: '' }])
+  function addLine() { setLines((p) => [...p, { sku_id: '', qty: '1' }]) }
+  function removeLine(i: number) { setLines((p) => p.filter((_, j) => j !== i)) }
+  function updateLine(i: number, field: keyof OrderLine, val: string) {
+    setLines((p) => p.map((l, j) => j === i ? { ...l, [field]: val } : l))
   }
 
-  function removeLine(idx: number) {
-    setLines((prev) => prev.filter((_, i) => i !== idx))
-  }
-
-  function updateLine(idx: number, field: keyof OrderLine, value: string) {
-    setLines((prev) => prev.map((l, i) => i === idx ? { ...l, [field]: value } : l))
-  }
-
+  // Step 1: save order with no prices yet
   async function saveOrder() {
-    if (validLines.length === 0) { showMsg('Add at least one SKU line.', false); return }
+    const valid = lines.filter((l) => l.sku_id && l.qty)
+    if (valid.length === 0) { showMsg('Add at least one SKU.', false); return }
     setSaving(true)
 
-    // Insert order
     const { data: ord, error: ordErr } = await supabase
       .from('bolt_kit_orders')
-      .insert({ order_date: orderDate, supplier, shipping_cost: shippingN, notes: notes || null })
-      .select('id')
-      .single()
+      .insert({ order_date: orderDate, supplier, shipping_cost: null, notes: notes || null })
+      .select('id').single()
 
     if (ordErr || !ord) { showMsg('Error saving order: ' + ordErr?.message, false); setSaving(false); return }
 
-    // Insert lines
-    const linePayload = previewLines.map((l) => ({
-      order_id:  ord.id,
-      sku_id:    l.sku_id,
-      qty:       parseInt(l.qty),
-      unit_cost: parseFloat(l.unit_cost),
-      true_cost: l.trueCost,
-    }))
-    const { error: lineErr } = await supabase.from('bolt_kit_order_lines').insert(linePayload)
+    const { error: lineErr } = await supabase.from('bolt_kit_order_lines').insert(
+      valid.map((l) => ({ order_id: ord.id, sku_id: l.sku_id, qty: parseInt(l.qty) || 1, unit_cost: 0, true_cost: null }))
+    )
     if (lineErr) { showMsg('Error saving lines: ' + lineErr.message, false); setSaving(false); return }
 
-    // Auto-update bolt_kit_cost on each SKU
-    let updated = 0
-    for (const l of previewLines) {
-      const { error } = await supabase
-        .from('skus')
-        .update({ bolt_kit_cost: l.trueCost })
-        .eq('id', l.sku_id)
-      if (!error) updated++
+    setSaving(false)
+    showMsg('✓ Order saved. Enter the invoice when it arrives.', true)
+    setLines([{ sku_id: '', qty: '1' }])
+    setNotes('')
+    setSelectedIds(new Set())
+    await load()
+  }
+
+  // Step 2: enter invoice — update prices + shipping, recalculate true costs
+  async function saveInvoice(ord: SavedOrder) {
+    setSaving(true)
+    const shippingN = parseFloat(invoiceShipping) || 0
+    const totalQty  = ord.bolt_kit_order_lines.reduce((s, l) => s + l.qty, 0)
+    const shipPerUnit = totalQty > 0 ? shippingN / totalQty : 0
+
+    // Update each line with unit_cost + true_cost
+    let skuCostUpdates = 0
+    for (const line of ord.bolt_kit_order_lines) {
+      const unitCost = parseFloat(invoiceLineCosts[line.id] ?? '0') || 0
+      const trueCost = unitCost + shipPerUnit
+      await supabase.from('bolt_kit_order_lines').update({ unit_cost: unitCost, true_cost: trueCost }).eq('id', line.id)
+      const { error } = await supabase.from('skus').update({ bolt_kit_cost: trueCost }).eq('id', line.sku_id)
+      if (!error) skuCostUpdates++
     }
 
-    setSaving(false)
-    showMsg(`✓ Order saved. Updated bolt kit cost on ${updated} SKU${updated !== 1 ? 's' : ''}.`, true)
+    // Update order with shipping
+    await supabase.from('bolt_kit_orders').update({ shipping_cost: shippingN }).eq('id', ord.id)
 
-    // Reset form
-    setLines([{ sku_id: '', qty: '1', unit_cost: '' }])
-    setShippingCost('')
-    setNotes('')
+    setSaving(false)
+    setInvoicingId(null)
+    setInvoiceLineCosts({})
+    setInvoiceShipping('')
+    showMsg(`✓ Invoice saved. Updated costs on ${skuCostUpdates} SKU${skuCostUpdates !== 1 ? 's' : ''}.`, true)
     await load()
   }
 
@@ -205,16 +179,20 @@ export default function BoltKitsPage() {
 
   // ── Render ────────────────────────────────────────────────────────────────
 
+  const skuMap = useMemo(() => new Map(skus.map((s) => [s.id, s.description])), [skus])
+  const skuIdLines = lines.filter((l) => l.sku_id && l.qty)
+  const totalQtyForm = skuIdLines.reduce((s, l) => s + (parseInt(l.qty) || 0), 0)
+
   return (
     <main className="container" style={{ paddingTop: 32, paddingBottom: 64 }}>
       <div style={{ marginBottom: 28 }}>
         <h1 style={{ fontSize: '1.5rem', fontWeight: 800, margin: 0 }}>Bolt Kit Orders</h1>
         <p style={{ color: 'var(--muted)', fontSize: '0.85rem', marginTop: 4 }}>
-          Log Ababa orders — shipping is prorated per kit and SKU costs update automatically.
+          Log what you ordered → enter the invoice when it arrives → SKU costs update automatically.
         </p>
       </div>
 
-      {/* ── Kits Needed ── */}
+      {/* ── Kits Needed by Batch ── */}
       {!loading && batches.length > 0 && (
         <section className="card" style={{ marginBottom: 24 }}>
           <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -224,72 +202,48 @@ export default function BoltKitsPage() {
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
               {selectedIds.size > 0 && (
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  style={{ fontSize: '0.82rem' }}
+                <button type="button" className="btn btn-secondary" style={{ fontSize: '0.82rem' }}
                   onClick={() => {
-                    // Build copy text from selected batches merged
                     const merged = new Map<string, { qty: number; desc: string }>()
                     for (const b of batches.filter((b) => selectedIds.has(b.batch_id))) {
                       for (const l of b.lines) {
-                        const existing = merged.get(l.sku_id)
-                        const desc = skus.find((s) => s.id === l.sku_id)?.description ?? l.sku_id
-                        if (existing) { existing.qty += l.qty }
-                        else { merged.set(l.sku_id, { qty: l.qty, desc }) }
+                        const e = merged.get(l.sku_id)
+                        const desc = skuMap.get(l.sku_id) ?? l.sku_id
+                        if (e) { e.qty += l.qty } else { merged.set(l.sku_id, { qty: l.qty, desc }) }
                       }
                     }
                     const text = [...merged.entries()].map(([id, { qty, desc }]) => `${id} × ${qty}  — ${desc}`).join('\n')
-                    void navigator.clipboard.writeText(text).then(() => {
-                      setCopied(true); setTimeout(() => setCopied(false), 2500)
-                    })
+                    void navigator.clipboard.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2500) })
                   }}
                 >{copied ? '✓ Copied!' : '📋 Copy List'}</button>
               )}
               {selectedIds.size > 0 && (
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  style={{ fontSize: '0.82rem' }}
-                  onClick={prefillFromSelected}
-                >↓ Pre-fill Order Form ({selectedIds.size} batch{selectedIds.size !== 1 ? 'es' : ''})</button>
+                <button type="button" className="btn btn-primary" style={{ fontSize: '0.82rem' }} onClick={prefillFromSelected}>
+                  ↓ Pre-fill Order ({selectedIds.size} batch{selectedIds.size !== 1 ? 'es' : ''})
+                </button>
               )}
             </div>
           </div>
           <div className="card-body" style={{ padding: 0 }}>
             {batches.map((b) => {
               const checked = selectedIds.has(b.batch_id)
-              const statusColor = b.status === 'at_powder' ? 'var(--warning)' : b.status === 'in_progress' ? 'var(--success)' : 'var(--muted)'
+              const isPowder = b.status === 'at_powder'
+              const statusColor = isPowder ? 'var(--warning)' : b.status === 'in_progress' ? 'var(--success)' : 'var(--muted)'
               return (
-                <div key={b.batch_id} style={{
-                  borderBottom: '1px solid var(--border)',
-                  padding: '12px 20px',
-                  background: checked ? 'rgba(99,102,241,0.06)' : undefined,
-                  display: 'flex', alignItems: 'flex-start', gap: 14,
-                }}>
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    disabled={b.status === 'at_powder'}
-                    onChange={(e) => setSelectedIds((prev) => {
-                      const next = new Set(prev)
-                      e.target.checked ? next.add(b.batch_id) : next.delete(b.batch_id)
-                      return next
-                    })}
-                    style={{ marginTop: 3, cursor: b.status === 'at_powder' ? 'not-allowed' : 'pointer' }}
+                <div key={b.batch_id} style={{ borderBottom: '1px solid var(--border)', padding: '12px 20px', background: checked ? 'rgba(99,102,241,0.06)' : undefined, display: 'flex', alignItems: 'flex-start', gap: 14 }}>
+                  <input type="checkbox" checked={checked} disabled={isPowder}
+                    onChange={(e) => setSelectedIds((prev) => { const n = new Set(prev); e.target.checked ? n.add(b.batch_id) : n.delete(b.batch_id); return n })}
+                    style={{ marginTop: 3, cursor: isPowder ? 'not-allowed' : 'pointer' }}
                   />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
                       <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>{b.batch_name}</span>
-                      <span style={{ fontSize: '0.72rem', fontWeight: 700, color: statusColor, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{b.status.replace('_', ' ')}</span>
-                      {b.status === 'at_powder' && <span style={{ fontSize: '0.72rem', color: 'var(--muted)' }}>(already ordered)</span>}
+                      <span style={{ fontSize: '0.72rem', fontWeight: 700, color: statusColor, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{b.status.replace(/_/g, ' ')}</span>
+                      {isPowder && <span style={{ fontSize: '0.72rem', color: 'var(--muted)' }}>(already ordered)</span>}
                     </div>
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                       {b.lines.map((l) => (
-                        <span key={l.sku_id} style={{
-                          background: 'var(--panel-2)', border: '1px solid var(--border)',
-                          borderRadius: 6, padding: '3px 10px', fontSize: '0.78rem',
-                        }}>
+                        <span key={l.sku_id} style={{ background: 'var(--panel-2)', border: '1px solid var(--border)', borderRadius: 6, padding: '3px 10px', fontSize: '0.78rem' }}>
                           <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{l.sku_id}</span>
                           <span style={{ color: 'var(--muted)', marginLeft: 5 }}>× {l.qty}</span>
                         </span>
@@ -304,25 +258,19 @@ export default function BoltKitsPage() {
       )}
 
       {message && (
-        <div style={{
-          background: msgOk ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)',
-          border: `1px solid ${msgOk ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`,
-          color: msgOk ? 'var(--success)' : 'var(--danger)',
-          borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: '0.85rem',
-        }}>
+        <div style={{ background: msgOk ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)', border: `1px solid ${msgOk ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`, color: msgOk ? 'var(--success)' : 'var(--danger)', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: '0.85rem' }}>
           {message}
         </div>
       )}
 
-      {/* ── New Order Form ── */}
+      {/* ── Step 1: Log New Order ── */}
       <section className="card" style={{ marginBottom: 24 }}>
         <div className="card-header">
-          <h2 className="card-title">Log New Order</h2>
+          <h2 className="card-title">Step 1 — Log Order</h2>
+          <div className="card-subtitle">Just record what you ordered. Enter prices when the invoice arrives.</div>
         </div>
         <div className="card-body">
-
-          {/* Header fields */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 2fr', gap: 12, marginBottom: 20 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 2fr', gap: 12, marginBottom: 20 }}>
             <div>
               <label className="label">Order Date</label>
               <input className="field" type="date" value={orderDate} onChange={(e) => setOrderDate(e.target.value)} />
@@ -332,108 +280,50 @@ export default function BoltKitsPage() {
               <input className="field" value={supplier} onChange={(e) => setSupplier(e.target.value)} />
             </div>
             <div>
-              <label className="label">Shipping Cost ($)</label>
-              <input
-                className="field" type="number" step="0.01" min="0"
-                value={shippingCost}
-                onChange={(e) => setShippingCost(e.target.value)}
-                placeholder="0.00"
-              />
-            </div>
-            <div>
               <label className="label">Notes</label>
               <input className="field" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional" />
             </div>
           </div>
 
-          {/* Line items */}
           <table className="table" style={{ marginBottom: 12 }}>
             <thead>
               <tr>
                 <th>SKU</th>
-                <th style={{ textAlign: 'center', width: 90 }}>Qty</th>
-                <th style={{ textAlign: 'right', width: 130 }}>Kit Price ($)</th>
-                <th style={{ textAlign: 'right', width: 140 }}>+ Ship/unit</th>
-                <th style={{ textAlign: 'right', width: 130 }}>True Cost</th>
+                <th style={{ textAlign: 'center', width: 100 }}>Qty Ordered</th>
                 <th style={{ width: 40 }}></th>
               </tr>
             </thead>
             <tbody>
-              {lines.map((line, idx) => {
-                const unitC = parseFloat(line.unit_cost) || 0
-                const truC  = unitC + shipPerUnit
-                return (
-                  <tr key={idx}>
-                    <td>
-                      <select
-                        className="select"
-                        value={line.sku_id}
-                        onChange={(e) => updateLine(idx, 'sku_id', e.target.value)}
-                        style={{ fontSize: '0.83rem' }}
-                      >
-                        <option value="">— select SKU —</option>
-                        {skus.map((s) => (
-                          <option key={s.id} value={s.id}>{s.id} — {s.description}</option>
-                        ))}
-                      </select>
-                    </td>
-                    <td>
-                      <input
-                        className="field" type="number" min="1" step="1"
-                        value={line.qty}
-                        onChange={(e) => updateLine(idx, 'qty', e.target.value)}
-                        style={{ textAlign: 'center' }}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        className="field" type="number" step="0.01" min="0"
-                        value={line.unit_cost}
-                        onChange={(e) => updateLine(idx, 'unit_cost', e.target.value)}
-                        placeholder="0.00"
-                        style={{ textAlign: 'right' }}
-                      />
-                    </td>
-                    <td style={{ textAlign: 'right', fontSize: '0.8rem', color: 'var(--muted)' }}>
-                      {shipPerUnit > 0 ? `+$${shipPerUnit.toFixed(3)}` : '—'}
-                    </td>
-                    <td style={{ textAlign: 'right', fontWeight: 700, color: line.unit_cost ? 'var(--success)' : 'var(--muted)' }}>
-                      {line.unit_cost ? `$${truC.toFixed(2)}` : '—'}
-                    </td>
-                    <td>
-                      <button
-                        type="button"
-                        style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: '1rem' }}
-                        onClick={() => removeLine(idx)}
-                      >✕</button>
-                    </td>
-                  </tr>
-                )
-              })}
+              {lines.map((line, idx) => (
+                <tr key={idx}>
+                  <td>
+                    <select className="select" value={line.sku_id} onChange={(e) => updateLine(idx, 'sku_id', e.target.value)} style={{ fontSize: '0.83rem' }}>
+                      <option value="">— select SKU —</option>
+                      {skus.map((s) => <option key={s.id} value={s.id}>{s.id} — {s.description}</option>)}
+                    </select>
+                  </td>
+                  <td>
+                    <input className="field" type="number" min="1" step="1" value={line.qty} onChange={(e) => updateLine(idx, 'qty', e.target.value)} style={{ textAlign: 'center' }} />
+                  </td>
+                  <td>
+                    <button type="button" style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: '1rem' }} onClick={() => removeLine(idx)}>✕</button>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
 
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <button type="button" className="btn btn-secondary" style={{ fontSize: '0.82rem' }} onClick={addLine}>
-              + Add SKU
-            </button>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
-              {validLines.length > 0 && (
-                <div style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>
-                  {totalQty} kits &nbsp;·&nbsp; Order total: <strong style={{ color: 'var(--text)' }}>${orderTotal.toFixed(2)}</strong>
-                </div>
+            <button type="button" className="btn btn-secondary" style={{ fontSize: '0.82rem' }} onClick={addLine}>+ Add SKU</button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+              {skuIdLines.length > 0 && (
+                <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>{totalQtyForm} kits</span>
               )}
-              <button
-                type="button"
-                className="btn btn-primary"
-                disabled={saving || validLines.length === 0}
-                onClick={() => void saveOrder()}
-              >
-                {saving ? 'Saving…' : '✓ Save Order & Update SKU Costs'}
+              <button type="button" className="btn btn-primary" disabled={saving || skuIdLines.length === 0} onClick={() => void saveOrder()}>
+                {saving ? 'Saving…' : '✓ Save Order'}
               </button>
             </div>
           </div>
-
         </div>
       </section>
 
@@ -446,42 +336,134 @@ export default function BoltKitsPage() {
           </div>
           <div className="card-body" style={{ padding: 0 }}>
             {orders.map((ord) => {
-              const totalKits = ord.bolt_kit_order_lines.reduce((s, l) => s + l.qty, 0)
-              const lineTotal = ord.bolt_kit_order_lines.reduce((s, l) => s + l.unit_cost * l.qty, 0)
+              const pending    = isPending(ord)
+              const isEditing  = invoicingId === ord.id
+              const totalKits  = ord.bolt_kit_order_lines.reduce((s, l) => s + l.qty, 0)
+              const lineTotal  = ord.bolt_kit_order_lines.reduce((s, l) => s + l.unit_cost * l.qty, 0)
+              const shipN      = parseFloat(invoiceShipping) || 0
+              const shipPerUnit = isEditing && totalKits > 0 ? shipN / totalKits : 0
+
               return (
-                <div key={ord.id} style={{ borderBottom: '1px solid var(--border)', padding: '14px 20px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                <div key={ord.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                  {/* Order header row */}
+                  <div style={{ padding: '14px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                     <div>
                       <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>{ord.supplier}</span>
                       <span style={{ color: 'var(--muted)', fontSize: '0.82rem', marginLeft: 12 }}>{fmtDate(ord.order_date)}</span>
-                      <span style={{ color: 'var(--muted)', fontSize: '0.82rem', marginLeft: 12 }}>{totalKits} kits · {fmt(lineTotal + ord.shipping_cost)} total</span>
-                      {ord.shipping_cost > 0 && (
-                        <span style={{ color: 'var(--muted)', fontSize: '0.82rem', marginLeft: 12 }}>({fmt(ord.shipping_cost)} shipping)</span>
-                      )}
+                      <span style={{ color: 'var(--muted)', fontSize: '0.82rem', marginLeft: 12 }}>{totalKits} kits</span>
+                      {!pending && <span style={{ color: 'var(--muted)', fontSize: '0.82rem', marginLeft: 8 }}>· {fmt(lineTotal + (ord.shipping_cost ?? 0))} total</span>}
                       {ord.notes && <span style={{ color: 'var(--muted)', fontSize: '0.8rem', marginLeft: 12, fontStyle: 'italic' }}>{ord.notes}</span>}
+                      {pending && (
+                        <span style={{ marginLeft: 12, background: 'rgba(245,158,11,0.15)', color: 'var(--warning)', borderRadius: 20, padding: '2px 10px', fontSize: '0.72rem', fontWeight: 700 }}>
+                          ⏳ Awaiting Invoice
+                        </span>
+                      )}
                     </div>
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      style={{ fontSize: '0.75rem', color: 'var(--danger)' }}
-                      onClick={() => void deleteOrder(ord.id)}
-                    >✕ Delete</button>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      {pending && !isEditing && (
+                        <button type="button" className="btn btn-primary" style={{ fontSize: '0.75rem' }}
+                          onClick={() => {
+                            setInvoicingId(ord.id)
+                            const costs: Record<string, string> = {}
+                            ord.bolt_kit_order_lines.forEach((l) => { costs[l.id] = '' })
+                            setInvoiceLineCosts(costs)
+                            setInvoiceShipping('')
+                          }}>
+                          📄 Enter Invoice
+                        </button>
+                      )}
+                      {isEditing && (
+                        <button type="button" className="btn btn-secondary" style={{ fontSize: '0.75rem' }} onClick={() => setInvoicingId(null)}>
+                          Cancel
+                        </button>
+                      )}
+                      <button type="button" className="btn btn-secondary" style={{ fontSize: '0.75rem', color: 'var(--danger)' }} onClick={() => void deleteOrder(ord.id)}>
+                        ✕ Delete
+                      </button>
+                    </div>
                   </div>
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+
+                  {/* SKU chips */}
+                  <div style={{ padding: '0 20px 12px', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     {ord.bolt_kit_order_lines.map((l) => (
-                      <div key={l.id} style={{
-                        background: 'var(--panel-2)', borderRadius: 6, padding: '4px 10px',
-                        fontSize: '0.78rem', border: '1px solid var(--border)',
-                      }}>
+                      <div key={l.id} style={{ background: 'var(--panel-2)', borderRadius: 6, padding: '4px 10px', fontSize: '0.78rem', border: '1px solid var(--border)' }}>
                         <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{l.sku_id}</span>
                         <span style={{ color: 'var(--muted)', marginLeft: 6 }}>×{l.qty}</span>
-                        <span style={{ marginLeft: 6 }}>${l.unit_cost.toFixed(2)}/kit</span>
+                        {!pending && <span style={{ marginLeft: 6 }}>{fmt(l.unit_cost)}/kit</span>}
                         {l.true_cost != null && l.true_cost !== l.unit_cost && (
-                          <span style={{ marginLeft: 4, color: 'var(--success)' }}>→ ${l.true_cost.toFixed(2)} true</span>
+                          <span style={{ marginLeft: 4, color: 'var(--success)' }}>→ {fmt(l.true_cost)} true</span>
                         )}
                       </div>
                     ))}
                   </div>
+
+                  {/* Step 2: Enter Invoice inline form */}
+                  {isEditing && (
+                    <div style={{ margin: '0 20px 16px', background: 'var(--panel-2)', borderRadius: 10, padding: '16px 18px', border: '1px solid var(--border)' }}>
+                      <div style={{ fontWeight: 700, fontSize: '0.88rem', marginBottom: 14 }}>Step 2 — Enter Invoice from {ord.supplier}</div>
+
+                      <table className="table" style={{ marginBottom: 14 }}>
+                        <thead>
+                          <tr>
+                            <th>SKU</th>
+                            <th style={{ textAlign: 'center' }}>Qty</th>
+                            <th style={{ textAlign: 'right', width: 130 }}>Kit Price ($/ea)</th>
+                            <th style={{ textAlign: 'right', width: 130 }}>+ Ship/unit</th>
+                            <th style={{ textAlign: 'right', width: 110 }}>True Cost</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {ord.bolt_kit_order_lines.map((l) => {
+                            const unitC = parseFloat(invoiceLineCosts[l.id] ?? '') || 0
+                            const trueC = unitC + shipPerUnit
+                            return (
+                              <tr key={l.id}>
+                                <td>
+                                  <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{l.sku_id}</span>
+                                  <span style={{ color: 'var(--muted)', fontSize: '0.78rem', marginLeft: 8 }}>{skuMap.get(l.sku_id) ?? ''}</span>
+                                </td>
+                                <td style={{ textAlign: 'center' }}>{l.qty}</td>
+                                <td>
+                                  <input
+                                    className="field" type="number" step="0.01" min="0"
+                                    value={invoiceLineCosts[l.id] ?? ''}
+                                    onChange={(e) => setInvoiceLineCosts((p) => ({ ...p, [l.id]: e.target.value }))}
+                                    placeholder="0.00"
+                                    style={{ textAlign: 'right' }}
+                                  />
+                                </td>
+                                <td style={{ textAlign: 'right', fontSize: '0.8rem', color: 'var(--muted)' }}>
+                                  {shipPerUnit > 0 ? `+$${shipPerUnit.toFixed(3)}` : '—'}
+                                </td>
+                                <td style={{ textAlign: 'right', fontWeight: 700, color: unitC > 0 ? 'var(--success)' : 'var(--muted)' }}>
+                                  {unitC > 0 ? `$${trueC.toFixed(2)}` : '—'}
+                                </td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                          <label className="label" style={{ margin: 0 }}>Total Shipping ($)</label>
+                          <input
+                            className="field" type="number" step="0.01" min="0"
+                            value={invoiceShipping}
+                            onChange={(e) => setInvoiceShipping(e.target.value)}
+                            placeholder="0.00"
+                            style={{ width: 110 }}
+                          />
+                          {shipPerUnit > 0 && (
+                            <span style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>= ${shipPerUnit.toFixed(3)}/kit prorated</span>
+                          )}
+                        </div>
+                        <button type="button" className="btn btn-primary" disabled={saving} onClick={() => void saveInvoice(ord)}>
+                          {saving ? 'Saving…' : '✓ Save Invoice & Update SKU Costs'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )
             })}
@@ -491,7 +473,7 @@ export default function BoltKitsPage() {
 
       {!loading && orders.length === 0 && (
         <div className="card">
-          <div className="card-body empty">No bolt kit orders yet. Log your first order above.</div>
+          <div className="card-body empty">No bolt kit orders yet. Select batches above and log your first order.</div>
         </div>
       )}
     </main>
