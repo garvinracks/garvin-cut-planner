@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { Suspense, useEffect, useMemo, useState } from 'react'
 import { createBrowserClient } from '@/lib/supabase'
 import { useSearchParams } from 'next/navigation'
 
@@ -37,7 +37,7 @@ function fmtDate(iso: string) {
   return new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' })
 }
 
-export default function PrintAllPage() {
+function PrintAllInner() {
   const supabase     = useMemo(() => createBrowserClient(), [])
   const searchParams = useSearchParams()
   const idsParam     = searchParams.get('ids')   // comma-separated invoice IDs, or null = all
@@ -332,5 +332,13 @@ export default function PrintAllPage() {
         )
       })}
     </>
+  )
+}
+
+export default function PrintAllPage() {
+  return (
+    <Suspense fallback={<div style={{ padding: 40, fontFamily: 'sans-serif' }}>Loading…</div>}>
+      <PrintAllInner />
+    </Suspense>
   )
 }
