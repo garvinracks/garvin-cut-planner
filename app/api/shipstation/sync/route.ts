@@ -169,9 +169,23 @@ export async function POST() {
       (o: any) => !seenSsOrderIds.has(o.shipstation_order_id)
     )
 
-    // Track which customer names got a shipped order this sync run
-    // so we can detect combined orders (SS marks absorbed orders as "cancelled")
+    // Track customer names with a shipped order — both from this sync run
+    // AND recently shipped in the DB (covers cases where surviving order
+    // was already shipped in a prior sync run)
     const shippedCustomerNames = new Set<string>()
+
+    // Pre-load recently shipped orders (last 30 days) from DB
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+    const { data: recentShipped } = await supabase
+      .from('orders')
+      .select('customer_name')
+      .eq('status', 'shipped')
+      .gte('shipped_at', thirtyDaysAgo)
+      .not('customer_name', 'is', null)
+    for (const r of recentShipped ?? []) {
+      if (r.customer_name) shippedCustomerNames.add(r.customer_name.toLowerCase().trim())
+    }
+
     const pendingCancels: Array<{ row: any; ssStatus: string }> = []
 
     for (const row of toResolve) {
@@ -192,24 +206,22 @@ export async function POST() {
             synced_at: new Date().toISOString(),
           })
           .eq('id', row.id)
-        // Record this customer as having a shipped order this sync run
         const { data: ord } = await supabase.from('orders').select('customer_name').eq('id', row.id).single()
         if (ord?.customer_name) shippedCustomerNames.add(ord.customer_name.toLowerCase().trim())
         shipped++
       } else if (ssStatus === 'cancelled' || ssStatus === 'on_hold') {
-        // Defer cancels — check after all shipped orders are processed
         pendingCancels.push({ row, ssStatus })
       }
     }
 
-    // Process deferred cancels — if the same customer had an order ship this
-    // sync run, it was likely a ShipStation order combine, not a true cancel
+    // Process deferred cancels — if the same customer has a recently shipped
+    // order, this was likely a ShipStation order combine, not a true cancel
     for (const { row, ssStatus } of pendingCancels) {
       const { data: ord } = await supabase.from('orders').select('customer_name, status').eq('id', row.id).single()
       const customerKey = ord?.customer_name?.toLowerCase().trim() ?? ''
+      const isCombined  = ssStatus === 'cancelled' && customerKey && shippedCustomerNames.has(customerKey)
 
-      if (ssStatus === 'cancelled' && ord?.status === 'open' && customerKey && shippedCustomerNames.has(customerKey)) {
-        // Same customer had an order ship → treat this as a combined shipment
+      if (isCombined) {
         await supabase
           .from('orders')
           .update({
