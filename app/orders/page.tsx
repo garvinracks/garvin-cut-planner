@@ -392,6 +392,12 @@ export default function OrdersPage() {
   // Ship modal
   const [shippingOrderId, setShippingOrderId] = useState<string | null>(null)
 
+  // Combine & Ship modal
+  const [combineOpen, setCombineOpen]         = useState(false)
+  const [combinePrimary, setCombinePrimary]   = useState<string>('')   // order id to keep
+  const [combineShipping, setCombineShipping] = useState('')
+  const [combineSaving, setCombineSaving]     = useState(false)
+
   // Auto-allocate flash message (triggered from powder page)
   const [autoMessage, setAutoMessage] = useState('')
 
@@ -722,6 +728,47 @@ export default function OrdersPage() {
       }
     }
     setShippingOrderId(null)
+    await Promise.all([loadOrders(), loadInventory()])
+  }
+
+  async function combineAndShip() {
+    const [idA, idB] = [...selectedIds]
+    const primary   = orders.find((o) => o.id === combinePrimary)!
+    const secondary = orders.find((o) => o.id === (combinePrimary === idA ? idB : idA))!
+    if (!primary || !secondary) return
+    setCombineSaving(true)
+
+    // Move secondary's lines to primary
+    await supabase.from('order_lines').update({ order_id: primary.id }).eq('order_id', secondary.id)
+
+    // Cancel secondary with a note
+    await supabase.from('orders').update({
+      status: 'cancelled',
+      notes: `Combined into PO ${primary.order_number}`,
+    }).eq('id', secondary.id)
+
+    // Ship primary with combined shipping cost
+    const shippingN = parseFloat(combineShipping) || 0
+    await supabase.from('orders').update({
+      status: 'shipped',
+      shipped_at: new Date().toISOString(),
+      shipping_cost: shippingN > 0 ? shippingN : null,
+    }).eq('id', primary.id)
+
+    // Deduct inventory for ALL lines (both orders combined)
+    const allLines = [...primary.order_lines, ...secondary.order_lines]
+    for (const line of allLines) {
+      if (!line.sku_id) continue
+      const inv = inventory.find((i) => i.sku_id === line.sku_id)
+      const current = inv?.qty_on_hand ?? 0
+      await supabase.from('sku_inventory').update({ qty_on_hand: Math.max(0, current - line.qty) }).eq('sku_id', line.sku_id)
+    }
+
+    setCombineOpen(false)
+    setCombinePrimary('')
+    setCombineShipping('')
+    setCombineSaving(false)
+    setSelectedIds(new Set())
     await Promise.all([loadOrders(), loadInventory()])
   }
 
@@ -1177,6 +1224,19 @@ export default function OrdersPage() {
             <button className="btn btn-primary" style={{ height: 30, fontSize: '0.8rem' }} onClick={sendToBatch}>
               ⚡ Create Batch →
             </button>
+            {selectedIds.size === 2 && (() => {
+              const [idA, idB] = [...selectedIds]
+              const a = orders.find((o) => o.id === idA)
+              const b = orders.find((o) => o.id === idB)
+              if (!a || !b) return null
+              return (
+                <button className="btn btn-primary"
+                  style={{ height: 30, fontSize: '0.8rem', background: 'var(--success)', borderColor: 'var(--success)' }}
+                  onClick={() => { setCombineOpen(true); setCombinePrimary(idA) }}>
+                  🔗 Combine & Ship (PO {a.order_number} + {b.order_number})
+                </button>
+              )
+            })()}
             <button className="btn btn-secondary" style={{ height: 30, fontSize: '0.8rem' }} onClick={() => setSelectedIds(new Set())}>
               Clear Selection
             </button>
@@ -1227,6 +1287,78 @@ export default function OrdersPage() {
                         <button className="btn btn-primary" style={{ height: 32, background: 'var(--success)', borderColor: 'var(--success)' }}
                           onClick={() => markShipped(shippingOrderId)}>
                           ✓ Confirm Ship
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })()}
+
+              {/* ── Combine & Ship modal ───────────────────────────────────── */}
+              {combineOpen && (() => {
+                const [idA, idB] = [...selectedIds]
+                const orderA = orders.find((o) => o.id === idA)!
+                const orderB = orders.find((o) => o.id === idB)!
+                const primary   = combinePrimary === idA ? orderA : orderB
+                const secondary = combinePrimary === idA ? orderB : orderA
+                const allLines  = [...(primary?.order_lines ?? []), ...(secondary?.order_lines ?? [])]
+                return (
+                  <div style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.5)' }}
+                    onClick={() => setCombineOpen(false)}>
+                    <div style={{ background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 10, padding: 24, width: 480, maxWidth: '95vw', boxShadow: '0 8px 32px rgba(0,0,0,0.4)' }}
+                      onClick={(e) => e.stopPropagation()}>
+                      <div style={{ fontWeight: 800, fontSize: '1rem', marginBottom: 4 }}>Combine & Ship</div>
+                      <div style={{ fontSize: '0.82rem', color: 'var(--muted)', marginBottom: 16 }}>
+                        These two orders will be merged into one shipment. The secondary order will be cancelled.
+                      </div>
+
+                      {/* Pick primary PO */}
+                      <div style={{ marginBottom: 16 }}>
+                        <label className="label">Keep this PO number (primary)</label>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          {[orderA, orderB].map((o) => (
+                            <button key={o.id} type="button"
+                              className={`btn ${combinePrimary === o.id ? 'btn-primary' : 'btn-secondary'}`}
+                              style={{ flex: 1, fontSize: '0.85rem' }}
+                              onClick={() => setCombinePrimary(o.id)}>
+                              PO {o.order_number}
+                              <span style={{ display: 'block', fontSize: '0.72rem', opacity: 0.8 }}>{o.customer_name ?? ''}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Combined line items preview */}
+                      <div style={{ marginBottom: 16 }}>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>Combined Line Items</div>
+                        {allLines.map((l) => (
+                          <div key={l.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.83rem', padding: '3px 0', borderBottom: '1px solid var(--border)' }}>
+                            <span>
+                              <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{l.ss_sku ?? l.sku_id ?? '—'}</span>
+                              <span style={{ color: 'var(--muted)', marginLeft: 8, fontSize: '0.75rem' }}>{l.description ?? ''}</span>
+                            </span>
+                            <span style={{ color: 'var(--muted)' }}>× {l.qty}</span>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Shipping cost */}
+                      <div style={{ marginBottom: 20 }}>
+                        <label className="label">Combined Shipping Cost ($)</label>
+                        <input className="field" type="number" step="0.01" min="0" placeholder="0.00"
+                          value={combineShipping} onChange={(e) => setCombineShipping(e.target.value)} autoFocus />
+                        <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: 4 }}>
+                          Leave blank — shipping cost will sync from ShipStation automatically.
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                        <button className="btn btn-secondary" onClick={() => setCombineOpen(false)}>Cancel</button>
+                        <button className="btn btn-primary"
+                          style={{ background: 'var(--success)', borderColor: 'var(--success)' }}
+                          disabled={combineSaving}
+                          onClick={() => void combineAndShip()}>
+                          {combineSaving ? 'Combining…' : `✓ Combine into PO ${primary?.order_number} & Ship`}
                         </button>
                       </div>
                     </div>
