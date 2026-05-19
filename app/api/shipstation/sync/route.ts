@@ -169,6 +169,11 @@ export async function POST() {
       (o: any) => !seenSsOrderIds.has(o.shipstation_order_id)
     )
 
+    // Track which customer names got a shipped order this sync run
+    // so we can detect combined orders (SS marks absorbed orders as "cancelled")
+    const shippedCustomerNames = new Set<string>()
+    const pendingCancels: Array<{ row: any; ssStatus: string }> = []
+
     for (const row of toResolve) {
       const ssOrder = await ssGetOrder(row.shipstation_order_id)
       if (!ssOrder) { skipped++; continue }
@@ -187,8 +192,36 @@ export async function POST() {
             synced_at: new Date().toISOString(),
           })
           .eq('id', row.id)
+        // Record this customer as having a shipped order this sync run
+        const { data: ord } = await supabase.from('orders').select('customer_name').eq('id', row.id).single()
+        if (ord?.customer_name) shippedCustomerNames.add(ord.customer_name.toLowerCase().trim())
         shipped++
       } else if (ssStatus === 'cancelled' || ssStatus === 'on_hold') {
+        // Defer cancels — check after all shipped orders are processed
+        pendingCancels.push({ row, ssStatus })
+      }
+    }
+
+    // Process deferred cancels — if the same customer had an order ship this
+    // sync run, it was likely a ShipStation order combine, not a true cancel
+    for (const { row, ssStatus } of pendingCancels) {
+      const { data: ord } = await supabase.from('orders').select('customer_name, status').eq('id', row.id).single()
+      const customerKey = ord?.customer_name?.toLowerCase().trim() ?? ''
+
+      if (ssStatus === 'cancelled' && ord?.status === 'open' && customerKey && shippedCustomerNames.has(customerKey)) {
+        // Same customer had an order ship → treat this as a combined shipment
+        await supabase
+          .from('orders')
+          .update({
+            status: 'shipped',
+            ss_status: 'cancelled',
+            shipped_at: new Date().toISOString(),
+            notes: 'Combined shipment — orders merged in ShipStation',
+            synced_at: new Date().toISOString(),
+          })
+          .eq('id', row.id)
+        shipped++
+      } else {
         await supabase
           .from('orders')
           .update({ status: 'cancelled', ss_status: ssStatus, synced_at: new Date().toISOString() })
