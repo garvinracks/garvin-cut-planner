@@ -186,6 +186,7 @@ export async function POST() {
     }
 
     const pendingCancels: Array<{ row: any; ssStatus: string }> = []
+    const resolveLog: Array<{ dbId: string; ssOrderId: number; dbStatus: string; ssStatus: string; customerKey: string; inShippedSet: boolean; action: string }> = []
 
     for (const row of toResolve) {
       const ssOrder = await ssGetOrder(row.shipstation_order_id)
@@ -207,9 +208,13 @@ export async function POST() {
           .eq('id', row.id)
         const { data: ord } = await supabase.from('orders').select('customer_name').eq('id', row.id).single()
         if (ord?.customer_name) shippedCustomerNames.add(ord.customer_name.toLowerCase().trim())
+        resolveLog.push({ dbId: row.id, ssOrderId: row.shipstation_order_id, dbStatus: row.status, ssStatus, customerKey: ord?.customer_name ?? '', inShippedSet: true, action: 'marked_shipped' })
         shipped++
       } else if (ssStatus === 'cancelled' || ssStatus === 'on_hold') {
         pendingCancels.push({ row, ssStatus })
+        resolveLog.push({ dbId: row.id, ssOrderId: row.shipstation_order_id, dbStatus: row.status, ssStatus, customerKey: '', inShippedSet: false, action: 'pending_cancel' })
+      } else {
+        resolveLog.push({ dbId: row.id, ssOrderId: row.shipstation_order_id, dbStatus: row.status, ssStatus, customerKey: '', inShippedSet: false, action: 'no_change' })
       }
     }
 
@@ -219,6 +224,10 @@ export async function POST() {
       const { data: ord } = await supabase.from('orders').select('customer_name, status').eq('id', row.id).single()
       const customerKey = ord?.customer_name?.toLowerCase().trim() ?? ''
       const isCombined  = ssStatus === 'cancelled' && customerKey && shippedCustomerNames.has(customerKey)
+
+      // Update resolveLog entry
+      const logEntry = resolveLog.find(l => l.dbId === row.id)
+      if (logEntry) { logEntry.customerKey = customerKey; logEntry.inShippedSet = shippedCustomerNames.has(customerKey) }
 
       if (isCombined) {
         await supabase
@@ -231,12 +240,14 @@ export async function POST() {
             synced_at: new Date().toISOString(),
           })
           .eq('id', row.id)
+        if (logEntry) logEntry.action = 'combined_shipped'
         shipped++
       } else {
         await supabase
           .from('orders')
           .update({ status: 'cancelled', ss_status: ssStatus, synced_at: new Date().toISOString() })
           .eq('id', row.id)
+        if (logEntry) logEntry.action = 'cancelled'
         cancelled++
       }
     }
@@ -273,6 +284,7 @@ export async function POST() {
       cancelled,
       backfilled,
       stores: enabled.map((s) => ({ name: s.storeName, channel: s.channel })),
+      debug: { resolveLog, shippedNamesCount: shippedCustomerNames.size, shippedNames: [...shippedCustomerNames] },
     })
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
