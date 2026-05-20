@@ -90,7 +90,6 @@ export async function POST() {
     let cancelled = 0
 
     const seenSsOrderIds = new Set<number>()
-    const awaitingLog: Array<{ ssOrderId: number; orderNumber: string; customerName: string }> = []
 
     for (const store of enabled) {
       // ── 1. Sync awaiting_shipment → status 'open' ────────────────────────────
@@ -98,11 +97,6 @@ export async function POST() {
 
       for (const o of awaitingOrders) {
         seenSsOrderIds.add(o.orderId)
-        awaitingLog.push({
-          ssOrderId: o.orderId,
-          orderNumber: o.orderNumber ?? '',
-          customerName: o.shipTo?.name || o.billTo?.name || o.customerUsername || '',
-        })
 
         const customerName =
           o.shipTo?.name || o.billTo?.name || o.customerUsername || null
@@ -165,9 +159,8 @@ export async function POST() {
     // Any order that is 'open' OR 'cancelled' in our DB but not in the sync
     // may have been shipped or explicitly cancelled in ShipStation.
     // Look each one up individually to get the real status.
-    // Query open and cancelled orders separately to avoid any .in() issues
-    const { data: openRows,      error: openErr }      = await supabase.from('orders').select('id, shipstation_order_id, status').eq('status', 'open').not('shipstation_order_id', 'is', null)
-    const { data: cancelledRows, error: cancelledErr } = await supabase.from('orders').select('id, shipstation_order_id, status').eq('status', 'cancelled').not('shipstation_order_id', 'is', null)
+    const { data: openRows }      = await supabase.from('orders').select('id, shipstation_order_id, status').eq('status', 'open').not('shipstation_order_id', 'is', null)
+    const { data: cancelledRows } = await supabase.from('orders').select('id, shipstation_order_id, status').eq('status', 'cancelled').not('shipstation_order_id', 'is', null)
 
     const unresolvedOrders = [...(openRows ?? []), ...(cancelledRows ?? [])]
 
@@ -176,23 +169,22 @@ export async function POST() {
     )
 
     // Track customer names with a shipped order — both from this sync run
-    // AND recently shipped in the DB (covers cases where surviving order
-    // was already shipped in a prior sync run)
+    // AND from the DB (covers cases where surviving order was already shipped
+    // in a prior sync run)
     const shippedCustomerNames = new Set<string>()
 
     // Pre-load ALL shipped orders from DB so we can detect combined shipments
-    // regardless of whether shipped_at is populated (some manual combines may lack it)
-    const { data: recentShipped } = await supabase
+    // regardless of whether shipped_at is populated
+    const { data: allShipped } = await supabase
       .from('orders')
       .select('customer_name')
       .eq('status', 'shipped')
       .not('customer_name', 'is', null)
-    for (const r of recentShipped ?? []) {
+    for (const r of allShipped ?? []) {
       if (r.customer_name) shippedCustomerNames.add(r.customer_name.toLowerCase().trim())
     }
 
     const pendingCancels: Array<{ row: any; ssStatus: string }> = []
-    const resolveLog: Array<{ dbId: string; ssOrderId: number; dbStatus: string; ssStatus: string; customerKey: string; inShippedSet: boolean; action: string }> = []
 
     for (const row of toResolve) {
       const ssOrder = await ssGetOrder(row.shipstation_order_id)
@@ -214,26 +206,18 @@ export async function POST() {
           .eq('id', row.id)
         const { data: ord } = await supabase.from('orders').select('customer_name').eq('id', row.id).single()
         if (ord?.customer_name) shippedCustomerNames.add(ord.customer_name.toLowerCase().trim())
-        resolveLog.push({ dbId: row.id, ssOrderId: row.shipstation_order_id, dbStatus: row.status, ssStatus, customerKey: ord?.customer_name ?? '', inShippedSet: true, action: 'marked_shipped' })
         shipped++
       } else if (ssStatus === 'cancelled' || ssStatus === 'on_hold') {
         pendingCancels.push({ row, ssStatus })
-        resolveLog.push({ dbId: row.id, ssOrderId: row.shipstation_order_id, dbStatus: row.status, ssStatus, customerKey: '', inShippedSet: false, action: 'pending_cancel' })
-      } else {
-        resolveLog.push({ dbId: row.id, ssOrderId: row.shipstation_order_id, dbStatus: row.status, ssStatus, customerKey: '', inShippedSet: false, action: 'no_change' })
       }
     }
 
-    // Process deferred cancels — if the same customer has a recently shipped
-    // order, this was likely a ShipStation order combine, not a true cancel
+    // Process deferred cancels — if the same customer has a shipped order,
+    // this was likely a ShipStation order combine, not a true cancel
     for (const { row, ssStatus } of pendingCancels) {
       const { data: ord } = await supabase.from('orders').select('customer_name, status').eq('id', row.id).single()
       const customerKey = ord?.customer_name?.toLowerCase().trim() ?? ''
       const isCombined  = ssStatus === 'cancelled' && customerKey && shippedCustomerNames.has(customerKey)
-
-      // Update resolveLog entry
-      const logEntry = resolveLog.find(l => l.dbId === row.id)
-      if (logEntry) { logEntry.customerKey = customerKey; logEntry.inShippedSet = shippedCustomerNames.has(customerKey) }
 
       if (isCombined) {
         await supabase
@@ -246,21 +230,17 @@ export async function POST() {
             synced_at: new Date().toISOString(),
           })
           .eq('id', row.id)
-        if (logEntry) logEntry.action = 'combined_shipped'
         shipped++
       } else {
         await supabase
           .from('orders')
           .update({ status: 'cancelled', ss_status: ssStatus, synced_at: new Date().toISOString() })
           .eq('id', row.id)
-        if (logEntry) logEntry.action = 'cancelled'
         cancelled++
       }
     }
 
     // ── 3. Backfill shipped orders missing date or label cost ─────────────────
-    // Orders shipped before label-cost tracking was added, plus any that came
-    // back with $0 (shippingAmount from the order, not the actual label cost).
     let backfilled = 0
     const { data: incompleteShipped } = await supabase
       .from('orders')
@@ -290,7 +270,6 @@ export async function POST() {
       cancelled,
       backfilled,
       stores: enabled.map((s) => ({ name: s.storeName, channel: s.channel })),
-      debug: { resolveLog, awaitingLog, shippedNamesCount: shippedCustomerNames.size, shippedNames: [...shippedCustomerNames] },
     })
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
