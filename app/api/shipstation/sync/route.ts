@@ -90,6 +90,7 @@ export async function POST() {
     let cancelled = 0
 
     const seenSsOrderIds = new Set<number>()
+    const awaitingLog: Array<{ ssOrderId: number; orderNumber: string; customerName: string }> = []
 
     for (const store of enabled) {
       // ── 1. Sync awaiting_shipment → status 'open' ────────────────────────────
@@ -97,6 +98,11 @@ export async function POST() {
 
       for (const o of awaitingOrders) {
         seenSsOrderIds.add(o.orderId)
+        awaitingLog.push({
+          ssOrderId: o.orderId,
+          orderNumber: o.orderNumber ?? '',
+          customerName: o.shipTo?.name || o.billTo?.name || o.customerUsername || '',
+        })
 
         const customerName =
           o.shipTo?.name || o.billTo?.name || o.customerUsername || null
@@ -284,7 +290,7 @@ export async function POST() {
       cancelled,
       backfilled,
       stores: enabled.map((s) => ({ name: s.storeName, channel: s.channel })),
-      debug: { resolveLog, shippedNamesCount: shippedCustomerNames.size, shippedNames: [...shippedCustomerNames] },
+      debug: { resolveLog, awaitingLog, shippedNamesCount: shippedCustomerNames.size, shippedNames: [...shippedCustomerNames] },
     })
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)

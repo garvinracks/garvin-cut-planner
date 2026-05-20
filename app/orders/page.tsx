@@ -369,7 +369,7 @@ export default function OrdersPage() {
   const [loading, setLoading]   = useState(true)
   const [syncing, setSyncing]   = useState(false)
   const [syncMessage, setSyncMessage] = useState('')
-  const [syncDebug, setSyncDebug]     = useState<any[]>([])
+  const [syncDebug, setSyncDebug]     = useState<any>(null)
 
   // Table controls
   const [channelFilter, setChannelFilter] = useState<'all' | 'shopify' | 'turn5' | 'ready'>('all')
@@ -554,7 +554,7 @@ export default function OrdersPage() {
       if (data.cancelled > 0) parts.push(`${data.cancelled} cancelled`)
       if (data.backfilled > 0) parts.push(`${data.backfilled} backfilled`)
       setSyncMessage(parts.join(' · '))
-      if (data.debug?.resolveLog?.length > 0) setSyncDebug(data.debug.resolveLog)
+      if (data.debug?.resolveLog?.length > 0 || data.debug?.awaitingLog?.length > 0) setSyncDebug({ resolveLog: data.debug.resolveLog ?? [], awaitingLog: data.debug.awaitingLog ?? [] })
       const reloads: Promise<void>[] = [loadOrders(), loadInventory()]
       if (histLoaded) reloads.push(loadHistory())
       await Promise.all(reloads)
@@ -1181,22 +1181,45 @@ export default function OrdersPage() {
               {syncMessage}
             </div>
           )}
-          {syncDebug.length > 0 && (
+          {syncDebug && (
             <details style={{ marginTop: 10, fontSize: 12, background: '#f8f8f8', border: '1px solid #ddd', borderRadius: 6, padding: '8px 12px' }}>
-              <summary style={{ cursor: 'pointer', fontWeight: 600 }}>🔍 Resolve log ({syncDebug.length} orders checked)</summary>
-              <table style={{ marginTop: 8, width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-                <thead>
-                  <tr style={{ borderBottom: '1px solid #ccc' }}>
-                    <th style={{ textAlign: 'left', padding: '2px 6px' }}>SS Order ID</th>
-                    <th style={{ textAlign: 'left', padding: '2px 6px' }}>DB Status</th>
-                    <th style={{ textAlign: 'left', padding: '2px 6px' }}>SS Status</th>
-                    <th style={{ textAlign: 'left', padding: '2px 6px' }}>Customer Key</th>
-                    <th style={{ textAlign: 'left', padding: '2px 6px' }}>In Shipped Set?</th>
-                    <th style={{ textAlign: 'left', padding: '2px 6px' }}>Action</th>
-                  </tr>
-                </thead>
+              <summary style={{ cursor: 'pointer', fontWeight: 600 }}>🔍 Sync debug</summary>
+              <p style={{ marginTop: 8, fontWeight: 600 }}>Awaiting shipment in SS ({syncDebug.awaitingLog?.length ?? 0} orders) — search for "tang":</p>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                <thead><tr style={{ borderBottom: '1px solid #ccc' }}>
+                  <th style={{ textAlign: 'left', padding: '2px 6px' }}>SS Order ID</th>
+                  <th style={{ textAlign: 'left', padding: '2px 6px' }}>Order #</th>
+                  <th style={{ textAlign: 'left', padding: '2px 6px' }}>Customer</th>
+                </tr></thead>
                 <tbody>
-                  {syncDebug.map((row: any, i: number) => (
+                  {(syncDebug.awaitingLog ?? []).filter((r: any) => r.customerName?.toLowerCase().includes('tang') || r.orderNumber?.includes('1227')).map((r: any, i: number) => (
+                    <tr key={i} style={{ background: '#fef9c3' }}>
+                      <td style={{ padding: '2px 6px' }}>{r.ssOrderId}</td>
+                      <td style={{ padding: '2px 6px' }}>{r.orderNumber}</td>
+                      <td style={{ padding: '2px 6px' }}>{r.customerName}</td>
+                    </tr>
+                  ))}
+                  {(syncDebug.awaitingLog ?? []).filter((r: any) => !r.customerName?.toLowerCase().includes('tang') && !r.orderNumber?.includes('1227')).map((r: any, i: number) => (
+                    <tr key={'other-' + i} style={{ borderBottom: '1px solid #eee' }}>
+                      <td style={{ padding: '2px 6px' }}>{r.ssOrderId}</td>
+                      <td style={{ padding: '2px 6px' }}>{r.orderNumber}</td>
+                      <td style={{ padding: '2px 6px' }}>{r.customerName}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p style={{ marginTop: 8, fontWeight: 600 }}>Resolve log ({syncDebug.resolveLog?.length ?? 0} orders):</p>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                <thead><tr style={{ borderBottom: '1px solid #ccc' }}>
+                  <th style={{ textAlign: 'left', padding: '2px 6px' }}>SS Order ID</th>
+                  <th style={{ textAlign: 'left', padding: '2px 6px' }}>DB Status</th>
+                  <th style={{ textAlign: 'left', padding: '2px 6px' }}>SS Status</th>
+                  <th style={{ textAlign: 'left', padding: '2px 6px' }}>Customer Key</th>
+                  <th style={{ textAlign: 'left', padding: '2px 6px' }}>In Shipped Set?</th>
+                  <th style={{ textAlign: 'left', padding: '2px 6px' }}>Action</th>
+                </tr></thead>
+                <tbody>
+                  {(syncDebug.resolveLog ?? []).map((row: any, i: number) => (
                     <tr key={i} style={{ borderBottom: '1px solid #eee', background: row.action === 'combined_shipped' ? '#d1fae5' : row.action === 'cancelled' ? '#fee2e2' : row.action === 'marked_shipped' ? '#dbeafe' : 'transparent' }}>
                       <td style={{ padding: '2px 6px' }}>{row.ssOrderId}</td>
                       <td style={{ padding: '2px 6px' }}>{row.dbStatus}</td>
