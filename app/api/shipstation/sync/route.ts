@@ -174,13 +174,12 @@ export async function POST() {
     // was already shipped in a prior sync run)
     const shippedCustomerNames = new Set<string>()
 
-    // Pre-load recently shipped orders (last 30 days) from DB
-    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+    // Pre-load ALL shipped orders from DB so we can detect combined shipments
+    // regardless of whether shipped_at is populated (some manual combines may lack it)
     const { data: recentShipped } = await supabase
       .from('orders')
       .select('customer_name')
       .eq('status', 'shipped')
-      .gte('shipped_at', thirtyDaysAgo)
       .not('customer_name', 'is', null)
     for (const r of recentShipped ?? []) {
       if (r.customer_name) shippedCustomerNames.add(r.customer_name.toLowerCase().trim())
