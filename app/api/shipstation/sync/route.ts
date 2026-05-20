@@ -98,6 +98,28 @@ export async function POST() {
       for (const o of awaitingOrders) {
         seenSsOrderIds.add(o.orderId)
 
+        // Filter items first — an empty order means it was absorbed by a combine
+        const items: any[] = (o.items ?? []).filter(
+          (i: any) => i.sku && !i.adjustment && (i.quantity ?? 0) > 0
+        )
+
+        // Empty awaiting_shipment order = items were moved to another order in SS.
+        // Mark it cancelled in our DB (if it exists) and skip re-importing.
+        if (items.length === 0) {
+          await supabase
+            .from('orders')
+            .update({
+              status: 'cancelled',
+              ss_status: 'combined',
+              notes: 'Combined into another order in ShipStation',
+              synced_at: new Date().toISOString(),
+            })
+            .eq('shipstation_order_id', o.orderId)
+            .eq('status', 'open')
+          cancelled++
+          continue
+        }
+
         const customerName =
           o.shipTo?.name || o.billTo?.name || o.customerUsername || null
 
@@ -129,10 +151,6 @@ export async function POST() {
 
         // Re-sync line items: delete old then insert fresh
         await supabase.from('order_lines').delete().eq('order_id', orderRow.id)
-
-        const items: any[] = (o.items ?? []).filter(
-          (i: any) => i.sku && !i.adjustment && (i.quantity ?? 0) > 0
-        )
 
         for (const item of items) {
           const { data: skuMatch } = await supabase
