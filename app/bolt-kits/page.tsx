@@ -125,7 +125,7 @@ export default function BoltKitsPage() {
 
     const { data: ord, error: ordErr } = await supabase
       .from('bolt_kit_orders')
-      .insert({ order_date: orderDate, supplier, shipping_cost: null, notes: notes || null })
+      .insert({ order_date: orderDate, supplier, shipping_cost: 0, notes: notes || null })
       .select('id').single()
 
     if (ordErr || !ord) { showMsg('Error saving order: ' + ordErr?.message, false); setSaving(false); return }
