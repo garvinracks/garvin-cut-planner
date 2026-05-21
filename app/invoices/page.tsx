@@ -88,6 +88,9 @@ export default function InvoicesPage() {
   // Bulk print selection
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<Set<string>>(new Set())
 
+  // Hide shipped+sent orders from the active table by default
+  const [showCompleted, setShowCompleted] = useState(false)
+
   function toggleInvoiceSelect(id: string) {
     setSelectedInvoiceIds((prev) => {
       const next = new Set(prev)
@@ -311,6 +314,10 @@ export default function InvoicesPage() {
   const awaitingCount = openOrders.filter((o) => o.status === 'open').length
   const selectedDraftIds = [...selectedInvoiceIds].filter((id) => invoices.find((i) => i.id === id)?.status === 'draft')
 
+  // Orders that are fully done: shipped + invoice sent
+  const completedOrders = openOrders.filter((o) => o.status === 'shipped' && invoiceMap.get(o.id)?.status === 'sent')
+  const activeOrders    = openOrders.filter((o) => !(o.status === 'shipped' && invoiceMap.get(o.id)?.status === 'sent'))
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
@@ -439,10 +446,19 @@ export default function InvoicesPage() {
               <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
                 <div>
                   <h2 className="card-title">Active Orders</h2>
-                  <div className="card-subtitle">
+                  <div className="card-subtitle" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                     {awaitingCount > 0 && <span>{awaitingCount} awaiting shipment</span>}
-                    {awaitingCount > 0 && shippedCount > 0 && <span style={{ margin: '0 6px', opacity: 0.4 }}>·</span>}
+                    {awaitingCount > 0 && shippedCount > 0 && <span style={{ opacity: 0.4 }}>·</span>}
                     {shippedCount > 0 && <span style={{ color: 'var(--success)' }}>{shippedCount} shipped</span>}
+                    {completedOrders.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setShowCompleted((v) => !v)}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.78rem', color: 'var(--muted)', textDecoration: 'underline', padding: 0 }}
+                      >
+                        {showCompleted ? `Hide ${completedOrders.length} completed` : `Show ${completedOrders.length} completed`}
+                      </button>
+                    )}
                   </div>
                 </div>
                 {openOrders.filter((o) => o.status === 'shipped' && !invoiceMap.has(o.id)).length > 0 && (
@@ -473,7 +489,7 @@ export default function InvoicesPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {openOrders.map((order) => {
+                    {(showCompleted ? openOrders : activeOrders).map((order) => {
                       const inv   = invoiceMap.get(order.id)
                       const total = orderTotal(order, null)
                       return (
