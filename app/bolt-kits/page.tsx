@@ -183,6 +183,18 @@ export default function BoltKitsPage() {
   const skuIdLines = lines.filter((l) => l.sku_id && l.qty)
   const totalQtyForm = skuIdLines.reduce((s, l) => s + (parseInt(l.qty) || 0), 0)
 
+  // SKUs that have been ordered in any existing bolt kit order
+  const orderedSkuIds = useMemo(() =>
+    new Set(orders.flatMap((o) => o.bolt_kit_order_lines.map((l) => l.sku_id))),
+    [orders]
+  )
+
+  // A batch is "covered" if every SKU it needs has been ordered
+  const coveredBatchIds = useMemo(() =>
+    new Set(batches.filter((b) => b.lines.length > 0 && b.lines.every((l) => orderedSkuIds.has(l.sku_id))).map((b) => b.batch_id)),
+    [batches, orderedSkuIds]
+  )
+
   return (
     <main className="container" style={{ paddingTop: 32, paddingBottom: 64 }}>
       <div style={{ marginBottom: 28 }}>
@@ -226,20 +238,25 @@ export default function BoltKitsPage() {
           </div>
           <div className="card-body" style={{ padding: 0 }}>
             {batches.map((b) => {
-              const checked = selectedIds.has(b.batch_id)
-              const isPowder = b.status === 'at_powder'
+              const checked    = selectedIds.has(b.batch_id)
+              const isPowder   = b.status === 'at_powder'
+              const isCovered  = coveredBatchIds.has(b.batch_id)
+              const isDisabled = isPowder || isCovered
               const statusColor = isPowder ? 'var(--warning)' : b.status === 'in_progress' ? 'var(--success)' : 'var(--muted)'
               return (
-                <div key={b.batch_id} style={{ borderBottom: '1px solid var(--border)', padding: '12px 20px', background: checked ? 'rgba(99,102,241,0.06)' : undefined, display: 'flex', alignItems: 'flex-start', gap: 14 }}>
-                  <input type="checkbox" checked={checked} disabled={isPowder}
+                <div key={b.batch_id} style={{ borderBottom: '1px solid var(--border)', padding: '12px 20px', background: isCovered ? 'rgba(34,197,94,0.04)' : checked ? 'rgba(99,102,241,0.06)' : undefined, display: 'flex', alignItems: 'flex-start', gap: 14, opacity: isCovered ? 0.65 : 1 }}>
+                  <input type="checkbox" checked={checked} disabled={isDisabled}
                     onChange={(e) => setSelectedIds((prev) => { const n = new Set(prev); e.target.checked ? n.add(b.batch_id) : n.delete(b.batch_id); return n })}
-                    style={{ marginTop: 3, cursor: isPowder ? 'not-allowed' : 'pointer' }}
+                    style={{ marginTop: 3, cursor: isDisabled ? 'not-allowed' : 'pointer' }}
                   />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, flexWrap: 'wrap' }}>
                       <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>{b.batch_name}</span>
                       <span style={{ fontSize: '0.72rem', fontWeight: 700, color: statusColor, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{b.status.replace(/_/g, ' ')}</span>
-                      {isPowder && <span style={{ fontSize: '0.72rem', color: 'var(--muted)' }}>(already ordered)</span>}
+                      {isCovered && (
+                        <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--success)' }}>✓ Kits Ordered</span>
+                      )}
+                      {isPowder && !isCovered && <span style={{ fontSize: '0.72rem', color: 'var(--muted)' }}>(already ordered)</span>}
                     </div>
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                       {b.lines.map((l) => (
