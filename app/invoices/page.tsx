@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createBrowserClient } from '@/lib/supabase'
 import type { ParsedPO } from '@/app/api/t5/parse-po/route'
+import JSZip from 'jszip'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -87,6 +88,7 @@ export default function InvoicesPage() {
 
   // Bulk print selection
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<Set<string>>(new Set())
+  const [downloading, setDownloading] = useState(false)
 
   // Hide shipped+sent orders from the active table by default
   const [showCompleted, setShowCompleted] = useState(false)
@@ -104,6 +106,116 @@ export default function InvoicesPage() {
       ? `/invoices/print-all?ids=${ids.join(',')}`
       : '/invoices/print-all'
     window.open(url, '_blank')
+  }
+
+  async function downloadDraftsZip(targetInvoiceIds?: string[]) {
+    setDownloading(true)
+    try {
+      const { jsPDF } = await import('jspdf')
+      const zip = new JSZip()
+
+      // Build the list of (invoice, order) pairs to generate
+      const pairs = invoiced
+        .map((order) => ({ order, inv: invoiceMap.get(order.id)! }))
+        .filter(({ inv }) => {
+          if (targetInvoiceIds) return targetInvoiceIds.includes(inv.id)
+          return inv.status === 'draft'
+        })
+
+      for (const { order, inv } of pairs) {
+        const shipping  = inv.shipping_cost ?? order.shipping_cost ?? 0
+        const lineTotal = order.order_lines.reduce((s, l) => s + (l.unit_price ?? 0) * l.qty, 0)
+        const total     = lineTotal + shipping
+        const invoiceNum = `TURN INV-${order.order_number}`
+        const fileName   = `TURN-INV-${order.order_number}.pdf`
+
+        const doc = new jsPDF({ unit: 'pt', format: 'letter' })
+        const W = 612
+        const margin = 56
+        let y = 56
+
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(28)
+        doc.text('Invoice', margin, y)
+
+        doc.setFontSize(8); doc.setFont('helvetica', 'bold')
+        doc.text('Garvin Industries LLC', W - margin, y, { align: 'right' })
+        doc.setFont('helvetica', 'normal')
+        ;['14324 172nd Ave.', 'Grand Haven, MI 49417', '231-375-7197', 'charlie@garvinracks.com', 'garvinracks.com']
+          .forEach((line) => { y += 11; doc.text(line, W - margin, y, { align: 'right' }) })
+
+        y += 28
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(7); doc.setTextColor(150)
+        doc.text('INVOICE DETAILS', margin, y)
+        doc.text('BILL TO', W / 2, y)
+        doc.setTextColor(0); y += 14
+
+        const fmtD = (iso: string) => new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' })
+        const detailRows = [['Invoice #', invoiceNum], ['Date of Issue', fmtD(inv.issue_date)], ['Due Date', fmtD(inv.due_date)]]
+        doc.setFontSize(8.5)
+        for (const [key, val] of detailRows) {
+          doc.setFont('helvetica', 'normal'); doc.setTextColor(120); doc.text(key, margin, y)
+          doc.setFont('helvetica', 'bold'); doc.setTextColor(0); doc.text(val, margin + 80, y)
+          y += 13
+        }
+
+        let by = y - detailRows.length * 13 - 1
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(0)
+        doc.text('Turn5', W / 2, by); by += 13
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(80)
+        doc.text('600 Cedar Hollow Rd', W / 2, by); by += 11
+        doc.text('Paoli, PA 19301', W / 2, by)
+
+        y += 20
+        doc.setFillColor(17, 17, 17); doc.rect(margin, y, W - margin * 2, 20, 'F')
+        doc.setTextColor(255); doc.setFont('helvetica', 'bold'); doc.setFontSize(7.5)
+        const cols = [margin + 6, 150, 220, 430, 490, 540]
+        ;['PO NUMBER', 'SKU', 'DESCRIPTION', 'QTY', 'RATE', 'AMOUNT'].forEach((h, i) =>
+          doc.text(h, cols[i], y + 13, { align: i >= 3 ? 'right' : 'left' }))
+        y += 20
+
+        doc.setTextColor(0); doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5)
+        for (const line of order.order_lines) {
+          y += 16
+          const rate = line.unit_price ?? 0
+          const desc = (line.skus as any)?.[0]?.description ?? line.description ?? '—'
+          doc.setTextColor(0); doc.text(order.order_number, cols[0], y)
+          doc.setFont('helvetica', 'bold'); doc.text(line.ss_sku ?? '—', cols[1], y)
+          doc.setFont('helvetica', 'normal'); doc.text(doc.splitTextToSize(desc, 200)[0], cols[2], y)
+          doc.text(String(line.qty), cols[3], y, { align: 'right' })
+          doc.text('$' + rate.toFixed(2), cols[4], y, { align: 'right' })
+          doc.text('$' + (rate * line.qty).toFixed(2), cols[5] + 10, y, { align: 'right' })
+          doc.setDrawColor(220); doc.line(margin, y + 4, W - margin, y + 4)
+        }
+
+        y += 16; doc.setTextColor(100); doc.setFontSize(8)
+        doc.text('Shipping Cost', cols[0], y)
+        doc.text('$' + shipping.toFixed(2), cols[5] + 10, y, { align: 'right' })
+        y += 6; doc.setDrawColor(17); doc.setLineWidth(1.5); doc.line(margin, y, W - margin, y)
+        doc.setLineWidth(0.5); y += 14
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(0)
+        doc.text('TOTAL', cols[3], y, { align: 'right' })
+        doc.text('$' + total.toFixed(2), cols[5] + 10, y, { align: 'right' })
+        y += 40
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(7); doc.setTextColor(150)
+        doc.text('TERMS', W / 2, y, { align: 'center' })
+        y += 12; doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(0)
+        doc.text('NET 30', W / 2, y, { align: 'center' })
+
+        zip.file(fileName, doc.output('arraybuffer'))
+      }
+
+      if (pairs.length === 0) { showMsg('No draft invoices to download.', 'error'); return }
+
+      const blob = await zip.generateAsync({ type: 'blob' })
+      const url  = URL.createObjectURL(blob)
+      const a    = document.createElement('a')
+      a.href     = url
+      a.download = pairs.length === 1 ? `TURN-INV-${pairs[0].order.order_number}.pdf` : `Turn5-Invoices-${pairs.length}.zip`
+      a.click()
+      URL.revokeObjectURL(url)
+    } finally {
+      setDownloading(false)
+    }
   }
 
   // Create invoice modal state
@@ -637,17 +749,19 @@ export default function InvoicesPage() {
                     <button
                       className="btn btn-secondary"
                       style={{ fontSize: '0.82rem' }}
-                      onClick={() => openPrintAll([...selectedInvoiceIds])}
+                      disabled={downloading}
+                      onClick={() => void downloadDraftsZip([...selectedInvoiceIds])}
                     >
-                      🖨 Print Selected ({selectedInvoiceIds.size})
+                      ⬇ Download Selected ({selectedInvoiceIds.size})
                     </button>
                   )}
                   <button
                     className="btn btn-primary"
                     style={{ fontSize: '0.82rem' }}
-                    onClick={() => openPrintAll()}
+                    disabled={downloading}
+                    onClick={() => void downloadDraftsZip()}
                   >
-                    🖨 Print All
+                    {downloading ? '⏳ Building…' : '⬇ Download All Drafts'}
                   </button>
                 </div>
               </div>
