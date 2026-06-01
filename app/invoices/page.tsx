@@ -285,7 +285,14 @@ export default function InvoicesPage() {
     setImportingAll(true)
     const results: { po: string; ok: boolean; msg: string }[] = []
 
+    // Build set of existing PO numbers in the DB to block duplicates
+    const existingPoNumbers = new Set(orders.map((o) => o.order_number))
+
     for (const po of parsedQueue) {
+      if (existingPoNumbers.has(po.poNumber)) {
+        results.push({ po: po.poNumber, ok: false, msg: `PO ${po.poNumber} already exists — skipped` })
+        continue
+      }
       const res  = await fetch('/api/t5/create-order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -307,6 +314,17 @@ export default function InvoicesPage() {
 
   function removeFromQueue(poNumber: string) {
     setParsedQueue((prev) => prev.filter((p) => p.poNumber !== poNumber))
+  }
+
+  async function deleteDuplicateOrder(order: Order) {
+    if (!confirm(`Delete duplicate PO ${order.order_number} from the app? This will NOT touch ShipStation.`)) return
+    // Delete associated invoices and order lines first, then the order
+    const inv = invoiceMap.get(order.id)
+    if (inv) await supabase.from('turn5_invoices').delete().eq('id', inv.id)
+    await supabase.from('order_lines').delete().eq('order_id', order.id)
+    await supabase.from('orders').delete().eq('id', order.id)
+    showMsg(`✓ Duplicate PO ${order.order_number} removed.`, 'success')
+    await load()
   }
 
   // ── Cancel order ───────────────────────────────────────────────────────────
@@ -430,6 +448,14 @@ export default function InvoicesPage() {
   const completedOrders = openOrders.filter((o) => o.status === 'shipped' && invoiceMap.get(o.id)?.status === 'sent')
   const activeOrders    = openOrders.filter((o) => !(o.status === 'shipped' && invoiceMap.get(o.id)?.status === 'sent'))
 
+  // Duplicate PO detection: PO numbers that appear more than once
+  const poNumberCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const o of orders) counts.set(o.order_number, (counts.get(o.order_number) ?? 0) + 1)
+    return counts
+  }, [orders])
+  const existingPoNumbers = useMemo(() => new Set(orders.map((o) => o.order_number)), [orders])
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
@@ -505,10 +531,18 @@ export default function InvoicesPage() {
                 </thead>
                 <tbody>
                   {parsedQueue.map((po) => {
-                    const total = po.items.reduce((s, i) => s + i.unitPrice * i.qty, 0)
+                    const total     = po.items.reduce((s, i) => s + i.unitPrice * i.qty, 0)
+                    const isDuplicate = existingPoNumbers.has(po.poNumber)
                     return (
-                      <tr key={po.poNumber}>
-                        <td style={{ fontWeight: 700 }}>{po.poNumber}</td>
+                      <tr key={po.poNumber} style={isDuplicate ? { background: 'rgba(239,68,68,0.06)' } : undefined}>
+                        <td style={{ fontWeight: 700 }}>
+                          {po.poNumber}
+                          {isDuplicate && (
+                            <span style={{ marginLeft: 8, background: 'rgba(239,68,68,0.15)', color: 'var(--danger)', borderRadius: 20, padding: '1px 8px', fontSize: '0.7rem', fontWeight: 700 }}>
+                              ⚠ Duplicate
+                            </span>
+                          )}
+                        </td>
                         <td style={{ fontSize: '0.8rem' }}>
                           <div style={{ fontWeight: 600 }}>{po.shipTo.name}</div>
                           <div style={{ color: 'var(--muted)' }}>{po.shipTo.city}, {po.shipTo.state}</div>
@@ -561,7 +595,21 @@ export default function InvoicesPage() {
                   <div className="card-subtitle" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                     {awaitingCount > 0 && <span>{awaitingCount} awaiting shipment</span>}
                     {awaitingCount > 0 && shippedCount > 0 && <span style={{ opacity: 0.4 }}>·</span>}
-                    {shippedCount > 0 && <span style={{ color: 'var(--success)' }}>{shippedCount} shipped</span>}
+                    {shippedCount > 0 && (
+                      <>
+                        <span style={{ color: 'var(--success)' }}>{shippedCount} shipped</span>
+                        {(() => {
+                          const uninvoicedShipped = openOrders.filter((o) => o.status === 'shipped' && !invoiceMap.has(o.id))
+                          if (uninvoicedShipped.length === 0) return null
+                          const total = uninvoicedShipped.reduce((s, o) => s + orderTotal(o, null), 0)
+                          return (
+                            <span style={{ background: 'rgba(245,158,11,0.15)', color: 'var(--warning)', borderRadius: 20, padding: '2px 10px', fontSize: '0.75rem', fontWeight: 700 }}>
+                              ${total.toFixed(2)} uninvoiced
+                            </span>
+                          )
+                        })()}
+                      </>
+                    )}
                     {completedOrders.length > 0 && (
                       <button
                         type="button"
@@ -602,11 +650,17 @@ export default function InvoicesPage() {
                   </thead>
                   <tbody>
                     {(showCompleted ? openOrders : activeOrders).map((order) => {
-                      const inv   = invoiceMap.get(order.id)
-                      const total = orderTotal(order, null)
+                      const inv         = invoiceMap.get(order.id)
+                      const total       = orderTotal(order, null)
+                      const isDuplicate = (poNumberCounts.get(order.order_number) ?? 0) > 1
                       return (
-                        <tr key={order.id} style={order.status === 'shipped' ? { background: 'rgba(34,197,94,0.04)' } : undefined}>
-                          <td style={{ fontWeight: 700 }}>{order.order_number}</td>
+                        <tr key={order.id} style={isDuplicate ? { background: 'rgba(239,68,68,0.06)' } : order.status === 'shipped' ? { background: 'rgba(34,197,94,0.04)' } : undefined}>
+                          <td style={{ fontWeight: 700 }}>
+                            {order.order_number}
+                            {isDuplicate && (
+                              <span style={{ marginLeft: 8, background: 'rgba(239,68,68,0.15)', color: 'var(--danger)', borderRadius: 20, padding: '1px 8px', fontSize: '0.7rem', fontWeight: 700 }}>⚠ Duplicate</span>
+                            )}
+                          </td>
                           <td style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>{fmtDate(order.order_date)}</td>
                           <td style={{ fontSize: '0.8rem', color: 'var(--text-2)' }}>{order.customer_name ?? '—'}</td>
                           <td>
@@ -677,7 +731,13 @@ export default function InvoicesPage() {
                                     title="Delete this draft invoice">✕ Invoice</button>
                                 </>
                               )}
-                              {order.status !== 'shipped' && (
+                              {isDuplicate && (
+                                <button className="btn btn-secondary"
+                                  style={{ fontSize: '0.75rem', color: 'var(--danger)', fontWeight: 700 }}
+                                  onClick={() => void deleteDuplicateOrder(order)}
+                                  title="Remove this duplicate from the app (does not affect ShipStation)">🗑 Remove Duplicate</button>
+                              )}
+                              {order.status !== 'shipped' && !isDuplicate && (
                                 <button className="btn btn-secondary"
                                   style={{ fontSize: '0.75rem', color: 'var(--danger)' }}
                                   onClick={() => void cancelOrder(order)}>✕ Cancel</button>
