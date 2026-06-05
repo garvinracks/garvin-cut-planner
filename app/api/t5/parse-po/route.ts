@@ -104,7 +104,7 @@ function parseT5PO(raw: string): ParsedPO {
   // ── Line items ─────────────────────────────────────────────────────────────
   // SKU can be alphanumeric with hyphens (e.g. "20097-4XE", "44085")
   const items: ParsedPO['items'] = []
-  const itemRe = /\b(\d{1,2})\s+(\d[\dA-Z-]{3,})\s+([A-Z][A-Z0-9]+)\s+([A-Za-z].*?)\s+\$([\d,]+\.\d{2})\s+\$([\d,]+\.\d{2})/g
+  const itemRe = /\b(\d{1,2})\s+(\d[\dA-Z-]{3,})\s+([A-Z][A-Z0-9-]+)\s+([A-Za-z].*?)\s+\$([\d,]+\.\d{2})\s+\$([\d,]+\.\d{2})/g
 
   let m: RegExpExecArray | null
   while ((m = itemRe.exec(text)) !== null) {
